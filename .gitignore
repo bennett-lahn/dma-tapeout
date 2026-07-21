@@ -1,0 +1,22 @@
+# Nested TinyDMA-2C prior-art clone (reference only; not this project's RTL)
+ttsky-tinyDMA/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Sim / build artifacts (future)
+*.vcd
+*.fst
+*.log
+sim_build/
+results.xml
+**/__pycache__/

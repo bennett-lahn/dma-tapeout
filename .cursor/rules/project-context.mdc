@@ -1,0 +1,36 @@
+---
+description: Load DMA tapeout project context and planning constraints
+alwaysApply: true
+---
+
+# DMA Tapeout Project Context
+
+This repo is a Tiny Tapeout scatter-gather DMA project in the **planning / architecture** phase.
+
+## Before nontrivial work
+
+Read `docs/llm/00-index.md` and the files it lists for the task at hand. Prefer those docs over chat memory.
+
+Human summaries live in `docs/human/` (condensed). Do not duplicate long design prose into human docs unless asked.
+
+## Hard constraints
+
+- Budget: **2 Tiny Tapeout tiles max**; treat ~500 DFFs as a soft ceiling
+- Start from scratch; TinyDMA-2C is prior art only, not a code source
+- Obsidian notes under `C:\Users\lahnb\Documents\Obsidian Vault\Projects\Tiny Tapeout\` are **read-only**
+- Prefer shipping a smaller verified V1 over late feature creep
+- When proposing features, state DFF / tile impact
+- **Memory scope (D11/D12):** both PSRAM dies are DMA endpoints (incl. cross-device); V1 is bulk memcpy via 10-byte TCDs (no ALU/ring/cond-stop); ASIC flash R/W is post-V1; see `docs/llm/10-post-v1-features.md`
+
+## TinyDMA-2C prior art (separate context)
+
+- Canonical dump: `docs/llm/prior-art/tinydma-2c.md`
+- Skill: `.cursor/skills/tinydma-prior-art/SKILL.md`
+- **If any claim is drawn from that context, say so explicitly** (e.g. "Per TinyDMA-2C prior art...").
+- Do not present TinyDMA-2C pins, protocols, or widths as this project's decisions unless the user adopts them and docs are updated.
+
+## Implementation style (when RTL exists)
+
+- SystemVerilog port/instance commas at the beginning of lines
+- Synchronous reset-high only
+- No unsolicited extra markdown docs outside `docs/`
