@@ -11,4 +11,4 @@ Not in the V1 ship set. Full sketches: [`../../llm/10-post-v1-features.md`](../.
 
 ## V1 reminder
 
-V1 is a descriptor **bulk mover** across dual PSRAM (pass-through, QSPI, TCD chain, A↔B). No ALU, no ring, no cond-stop, no ASIC flash.
+V1 is a descriptor **bulk mover** across dual PSRAM (pass-through, QSPI, TCD chain with `ptr[23]` device + `QUIT`, A↔B). No ALU, no ring, no cond-stop, no ASIC flash.

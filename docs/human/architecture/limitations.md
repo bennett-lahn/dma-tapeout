@@ -15,7 +15,7 @@ Hard or near-hard limits. Feature proposals must respect these. Deeper PSRAM pro
 
 ### Design implication
 
-DFFs are the scarce resource. Prefer externalizing configuration into PSRAM (TCDs), narrow byte datapaths, and a shared QSPI engine. Avoid multi-channel static register files, deep FIFOs, and wide crypto/DSP paths. Post-V1 may add a tiny combinational ALU (see [`post-v1.md`](post-v1.md)).
+DFFs are the scarce resource. Prefer externalizing configuration into PSRAM (TCDs), narrow byte datapaths, and a shared QSPI engine. Avoid multi-channel static register files, deep FIFOs, and wide crypto/DSP paths. V1 data hold is **1 byte**; do not size on-chip scratch to `tCEM`, and keep FSM/QSPI correctness independent of buffer depth (D20). Post-V1 may add a tiny combinational ALU (see [`post-v1.md`](post-v1.md)).
 
 ## I/O principles
 
@@ -28,16 +28,16 @@ DFFs are the scarce resource. Prefer externalizing configuration into PSRAM (TCD
 | Topic | Constraint |
 |---|---|
 | Power-up | >= 150 us before commands (`tPU`; CE# high) |
-| Boot mode | Standard 1-bit SPI; enter Quad/QPI via command (e.g. `0x35`) |
-| Addressing | Device uses `A[22:0]`; V1 uses **24-bit internal pointers** (full address phase); address `0` reserved null |
+| Boot mode | Powers up SPI; **MCU** Enter Quad (`0x35`) per die before START (D17). ASIC expects QPI |
+| Addressing | Device uses `A[22:0]`; V1 uses **24-bit internal pointers** with `ptr[23]` die select (D19); fixed head at address `0` / PSRAM 0 (D18); `QUIT` ends chain |
 | CE# low (`tCEM`) | Max **4 us** (extended) / **8 us** (standard). Longer holds block refresh and can corrupt memory |
 | CE# high (`tCPH`) | Min **18 ns** between bursts |
 | Read terminate | Prefer **`tCHD > tACLK + tCLK`** so the last beat latches before CE# rises |
-| `tACLK` | CLK-to-Q about **2 ns min / 5.5 ns max** - rising-edge sample margin collapses near 84 MHz |
-| Practical clocks | ~**66 MHz** SPI / ~**84 MHz** QPI linear burst, or lower for margin |
+| `tACLK` | CLK-to-Q about **2 ns min / 5.5 ns max** - rising-edge sample margin is tight at 84 MHz |
+| Clock (D16) | Design / demoboard **84 MHz**; RX on **rising** SCK. Phase 3 must re-validate vs `tACLK` / board / TT before shuttle freeze |
 | Soft reset | After `0x66`/`0x99`, wait `tRST` min **50 ns** |
 
-**Design requirement:** long DMA transfers must be sliced with CE# high gaps. Descriptor **11-byte** fetches may hold CE# across the burst; multi-kilobyte copies must not. DMA data path is QPI-only (SPI config/bring-up only).
+**Design requirement:** long DMA transfers must be sliced with CE# high gaps. Descriptor **11-byte** fetches may hold CE# across the burst; multi-kilobyte copies must not. ASIC data path is QPI-only (`0xEB`/`0x02`); MCU owns enter/exit QPI (D17).
 
 ## Demoboard memory context
 

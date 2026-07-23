@@ -33,17 +33,18 @@ Only one PSRAM CE# low per transaction (shared SIO). Cross-device = read then wr
 
 | Port | Assignment |
 |---|---|
-| `clk` | Design clock (RP2040-generated on demoboard) |
+| `clk` | Design clock **84 MHz** target (RP2040-generated on demoboard; D16) |
 | `rst_n` | Active-low reset |
 | `ui_in[0]` | **START** - accepted only while IDLE/`DONE`; ignored while busy |
-| `ui_in[7:1]` | Reserved (head pointer / arm / **ABORT** / config - pin pack TBD) |
+| `ui_in[1]` | **ABORT** - finish current QPI txn → IDLE |
+| `ui_in[7:2]` | Reserved (config / DFT - packing open) |
 
 ### Outputs: status (partial freeze)
 
 | Port | Assignment |
 |---|---|
 | `uo_out[0]` | **DONE** - high whenever ASIC is idle (incl. after reset); pass-through on iff DONE |
-| `uo_out[7:1]` | Reserved (error, DFT mux - TBD) |
+| `uo_out[7:1]` | Reserved (error, DFT mux - packing open) |
 
 ## Runtime modes (bus ownership)
 
@@ -63,7 +64,7 @@ Pass-through is **shared-bus OE arbitration** on `uio`: idle/`DONE` ⇒ ASIC `ui
 - MCU releases its QSPI GPIOs, then asserts **START** while DONE is high
 - ASIC leaves idle (DONE low); seizes bus (`uio_oe` for SCK + active RAM CS; flash CS OE-off; SIO OE follows QPI phase)
 - Descriptor engine runs across RAM A and/or B (QPI data path)
-- Null `NEXT_TCD` or abort (after current QPI txn) → idle again (DONE, pass-through)
+- Stop TCD (both devices selected) or abort (after current QPI txn) → idle again (DONE, pass-through)
 
 ## Memory layout and interfacing
 
@@ -73,13 +74,14 @@ External store is **two** APS6404L-class QSPI PSRAMs (byte-addressable) on the P
 
 | Rule | Detail |
 |---|---|
-| Internal pointers | **24-bit** (`SRC_PTR`, `DEST_PTR`, `NEXT_TCD`, head) |
-| QSPI address phase | **`ptr[22:0]`** on the wire (device `A[22:0]`); `ptr[23]` unused / 0 |
-| Device select | **`CTRL_FLAGS`**: `SRC_DEV` / `DEST_DEV` / `NEXT_DEV` (PSRAM 0 vs 1) |
-| Null | **Address `0x000000` is reserved** - means null / end-of-chain / invalid link. Do not place a TCD or buffer at 0 |
+| Internal pointers | **24-bit** (`SRC_PTR`, `DEST_PTR`, `NEXT_TCD`) - no head register |
+| QSPI address phase | **`ptr[22:0]`** on the wire (device `A[22:0]`) |
+| Device select | **`ptr[23]`** (`0`=PSRAM 0, `1`=PSRAM 1) |
+| Fixed head | START always fetches **`0x000000` on PSRAM 0** |
+| End of chain | **`CTRL_FLAGS.QUIT=1`** → IDLE / DONE (no execute) |
 | Window | Full device range usable by DMA (APS6404L: `A[22:0]` → 8 MB) per die |
 
-**DFF cost:** working TCD metadata is **88 DFFs**, plus a 24-bit head.
+**DFF cost:** working TCD metadata is **88 DFFs** (no head pointer).
 
 ### Logical memory map (firmware convention, not hardware-enforced)
 
@@ -87,12 +89,12 @@ Software owns placement within the device. Suggested layout for demos:
 
 | Region (example) | Use |
 |---|---|
-| `0x000000` | **Reserved null** - never allocate |
-| Low (e.g. after first TCD) | TCD linked lists |
+| `0x000000` on PSRAM 0 | **Fixed head** - first TCD (or `QUIT` TCD for empty run) |
+| Low (after head / chain) | Further TCDs |
 | Mid | Source staging (firmware patterns) |
 | High | Destinations / copy targets |
 
-Hardware does not enforce region bounds; overlapping TCDs/buffers is a firmware bug. Stay within `0x000001`..`0x7FFFFF` on APS6404L-class parts; pick die via `CTRL_FLAGS`.
+Hardware does not enforce region bounds; overlapping TCDs/buffers is a firmware bug. Stay within `0x000000`..`0x7FFFFF` on APS6404L-class parts; pick die via `ptr[23]`. Address 0 is allowed for TCDs/buffers.
 
 ### TCD layout and behavior
 
@@ -101,8 +103,8 @@ Full field table: [`blocks/tcd.md`](blocks/tcd.md). Summary:
 - Each TCD is an **11-byte** record in PSRAM (`CTRL_FLAGS` included)
 - Fields: `SRC_PTR`, `DEST_PTR`, `TRANSFER_LEN`, `NEXT_TCD`, `CTRL_FLAGS`
 - `TRANSFER_LEN == 0` is a no-op (follow next immediately)
-- On START, engine fetches from the programmed head, byte-copies (QPI), then follows `NEXT_TCD` on `NEXT_DEV`
-- `NEXT_TCD == 0x000000` ends the chain → IDLE / DONE
+- On START, engine fetches `0x000000` / PSRAM 0, byte-copies (QPI), then follows `NEXT_TCD` (die from bit 23)
+- `QUIT=1` ends the chain → IDLE / DONE
 - Descriptor fetch uses a held-CE# **11-byte** burst
 
 Post-V1 (ALU / cond-stop / ring / flash): [`post-v1.md`](post-v1.md).
@@ -112,10 +114,10 @@ Post-V1 (ALU / cond-stop / ring / flash): [`post-v1.md`](post-v1.md).
 | Block | Job | Detail |
 |---|---|---|
 | Host / mode control | Pass-through vs DMA master, START/DONE/abort | [`blocks/host-interface.md`](blocks/host-interface.md) |
-| Working regs | Active TCD only + 8-bit data hold | [`blocks/working-registers.md`](blocks/working-registers.md) |
+| Working regs | Active TCD only + **1-byte** data hold (depth-agnostic; D20) | [`blocks/working-registers.md`](blocks/working-registers.md) |
 | TCD format | 11-byte record in PSRAM | [`blocks/tcd.md`](blocks/tcd.md) |
-| Descriptor FSM | Fetch TCD -> read byte -> write byte -> update/chain | [`blocks/descriptor-fsm.md`](blocks/descriptor-fsm.md) |
-| QSPI engine | Init (SPI config), QPI data, CE# slicing, A/B CS | [`blocks/qspi-engine.md`](blocks/qspi-engine.md) |
+| Descriptor FSM | Fetch TCD -> read → write → update/chain | [`blocks/descriptor-fsm.md`](blocks/descriptor-fsm.md) |
+| QSPI engine | QPI `0xEB`/`0x02`, CE# slicing, A/B CS (MCU enter/exit QPI) | [`blocks/qspi-engine.md`](blocks/qspi-engine.md) |
 | Byte ALU / ring | **Post-V1** stubs | [`blocks/alu.md`](blocks/alu.md), [`blocks/ring-buffer.md`](blocks/ring-buffer.md) |
 
 ## Data path mental model
@@ -124,31 +126,28 @@ Post-V1 (ALU / cond-stop / ring / flash): [`post-v1.md`](post-v1.md).
 PSRAM A/B --QPI--> RX hold --------> TX stage --QPI--> PSRAM A/B
                          ^
                          |
-              CTRL_FLAGS SRC_DEV / DEST_DEV
+              SRC_PTR[23] / DEST_PTR[23]
 ```
 
-Same-device or cross-device. Pure memcpy in V1. Next TCD die from `NEXT_DEV`.
+Same-device or cross-device. Pure memcpy in V1. Next TCD die from `NEXT_TCD[23]`. RX hold is **1 byte** for V1; engine correctness must not assume that depth (D20).
 
 ## MCU setup flow
 
-1. **Create TCDs** in PSRAM (linked list of **11-byte** records) while DONE / idle; never at address 0
-2. Stage source data (firmware patterns) anywhere in the usable device range
-3. Program head pointer / arm via host protocol (encoding TBD on `ui_in[7:1]`; lean head die = PSRAM 0)
-4. High-Z MCU QSPI GPIOs; assert **START** while DONE
-5. Wait for **DONE** again or assert **ABORT**
-6. **Reading memory:** while DONE, MCU reclaims the bus and checks destinations
+1. **PSRAM bring-up over SPI** (pass-through while DONE): on each die DMA will touch, wait `tPU`, issue Reset Enable (`0x66`) then Reset (`0x99`), then Enter Quad (`0x35`). ASIC expects both dies already in **QPI** before START (D17); this work is MCU-only
+2. **Create TCDs** in PSRAM while DONE / idle; first TCD (or `QUIT` TCD) at `0x000000` on PSRAM 0; end chain with `QUIT=1`
+3. Stage source data (firmware patterns) anywhere in the usable device range
+4. High-Z MCU QSPI GPIOs; assert **START** (`ui_in[0]`) while DONE
+5. Wait for **DONE** again or assert **ABORT** (`ui_in[1]`)
+6. **Reading memory / exit QPI:** while DONE, MCU reclaims the bus, checks destinations, and may Exit Quad (`0xF5`) or reset if firmware needs SPI again
 
 ## Open architecture items
 
 Tracked in detail at [`../../llm/08-open-questions.md`](../../llm/08-open-questions.md). Biggest remaining V1 gaps:
 
-- Who initializes PSRAM (ASIC boot FSM vs MCU via pass-through; **both dies**) and whether init runs before pass-through enables
-- Head / **ABORT** / status / DFT pin packing on unused `ui_in` / `uo_out`
-- Head device at START (lean PSRAM 0); self-pointing descriptor policy vs abort
-- Which QPI read opcode (`0x0B` vs `0xEB`)
-- Clock target and RX sample edge
+- Status / DFT packing on `uo_out[7:1]` (and optional `ui_in[7:2]`)
+- Self-pointing descriptor policy vs abort
 
-Settled for V1: **24-bit** pointers; **11-byte** TCD with device `CTRL_FLAGS`; zero-length no-op; address 0 is null; idle/START/DONE/abort/pass-through (D14); QPI data path (D15); `ui_in[0]=START`; `uo_out[0]=DONE`; QSPI on `uio` per table above; **dual PSRAM** DMA (incl. cross-device); **ASIC flash unsupported** (MCU pass-through only). Post-V1 ladder: [`post-v1.md`](post-v1.md).
+Settled for V1: **24-bit** pointers with **`ptr[23]` device**; **11-byte** TCD with **`QUIT`** flag; fixed head at 0/PSRAM0; zero-length no-op; idle/START/ABORT/DONE/pass-through (D14/D18/D19); QPI data `0xEB`/`0x02` (D15/D17); **MCU** enter/exit QPI (D17); **84 MHz** rising-edge RX (D16); **1-byte** data buffer, depth-agnostic (D20); `ui_in[0]=START`, `ui_in[1]=ABORT`, `uo_out[0]=DONE`; QSPI on `uio`; **dual PSRAM** DMA; **ASIC flash unsupported**. Post-V1 ladder: [`post-v1.md`](post-v1.md).
 
 ## See also
 

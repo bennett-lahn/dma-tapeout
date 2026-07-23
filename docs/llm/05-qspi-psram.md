@@ -54,7 +54,8 @@ From datasheet (APS6404L-3SQR Rev 2.3) and planning notes:
 - Enter Quad Mode (`0x35`) over 1-bit SPI only; thereafter command/addr/data use 4-bit phases in QPI
 - Exit Quad Mode (`0xF5`) is QPI-only and returns the device to SPI
 - Linear burst crosses a 1K page at most once per CE# pulse and caps at 84 MHz when crossing; Wrap32 (`0xC0` toggle) is optional and not the power-up default
-- Practical clock caution: limit to ~**66 MHz SPI** / ~**84 MHz QPI** linear burst for simplicity; QPI Fast Read `0x0B` max 66 MHz; other ops often quoted to 109/133 MHz wrap or 84 MHz linear page-cross - prefer lower clocks and/or falling-edge RX sample for TT
+- Clock policy (D16): design / demoboard **84 MHz** QPI; sample read data on **rising** SCK. Phase 3 must re-check `tACLK` / board / TT timing against 84 MHz rising-edge before shuttle freeze
+- Mode ownership (D17): **MCU** Enter/Exit Quad via pass-through; ASIC expects dies already in QPI before START. Sole ASIC QPI read = **`0xEB`**
 
 ### Full device command set (datasheet truth table)
 
@@ -78,38 +79,37 @@ Widths: S = serial (1-bit), Q = quad (4-bit). Wait = dummy cycles before data-ou
 
 ### ASIC-supported commands (planned V1 / D15)
 
-**Policy:** QPI is the default for all DMA **data** read/write (TCD fetch and byte copy). **SPI is never used for data.** SPI appears only in the explicitly documented config / bring-up opcodes below.
+**Policy (D15 / D17):** QPI for all ASIC DMA **data** read/write. ASIC emits **no SPI** and **no** Enter/Exit Quad / reset. MCU owns mode bring-up and teardown via pass-through.
 
-These are the opcodes the **on-chip QSPI engine** is expected to emit (not merely allow via MCU pass-through).
+These are the opcodes the **on-chip QSPI engine** emits (not MCU pass-through).
 
-#### SPI-only config / bring-up (not data path)
-
-| Role | Opcode | Mode | V1 status |
-|---|---|---|---|
-| Reset Enable | `0x66` | SPI (and optionally QPI) | **Config only** - if ASIC owns init / recovery |
-| Reset | `0x99` | SPI (and optionally QPI) | **Config only** - must immediately follow `0x66` |
-| Enter Quad Mode | `0x35` | SPI | **Config only** - SPI → QPI; required if ASIC owns init; else MCU precondition |
-
-#### QPI data path (DMA)
+#### MCU pass-through only (not ASIC)
 
 | Role | Opcode | Mode | V1 status |
 |---|---|---|---|
-| QPI Fast Read | `0x0B` or `0xEB` | QPI | **Required** - pick one primary read opcode (open: see below) |
-| QPI Write | `0x02` (or `0x38`) | QPI | **Required** - in QPI both are equivalent; prefer one (`0x02`) |
+| Reset Enable | `0x66` | SPI (and optionally QPI) | **MCU** - init / recovery |
+| Reset | `0x99` | SPI (and optionally QPI) | **MCU** - must immediately follow `0x66` |
+| Enter Quad Mode | `0x35` | SPI | **MCU** - SPI → QPI before START (D17 precondition) |
+| Exit Quad Mode | `0xF5` | QPI | **MCU** - QPI → SPI after DONE if firmware needs SPI |
+| Read ID / SPI diagnostics | `0x9F`, SPI `0x03`/`0x0B`/… | SPI | **MCU** |
 
-Init ownership is still open (see `08-open-questions.md` Q2). If MCU owns init via pass-through, the ASIC still needs the QPI read/write opcodes for DMA, and may omit ASIC-side SPI config entirely unless a recovery path is kept.
+#### QPI data path (ASIC DMA)
+
+| Role | Opcode | Mode | V1 status |
+|---|---|---|---|
+| Fast Read Quad | `0xEB` | QPI | **Required** - sole ASIC read (6 wait cycles; D17) |
+| QPI Write | `0x02` | QPI | **Required** - prefer over `0x38` (equivalent in QPI) |
 
 #### Other commands: include or not?
 
 | Command | Recommendation | Why |
 |---|---|---|
-| Exit Quad Mode `0xF5` | **Strongly consider for V1** | Cheap (command-only, QPI). Lets ASIC/MCU return the part to SPI after QPI DMA, recover a stuck QE=1 device, and match pass-through firmware that assumes SPI. Without it, only a successful `0x66`/`0x99` reset returns to SPI. |
-| Wrap Boundary Toggle `0xC0` | **Defer (not V1)** | Default is already Linear Burst, which matches long DMA copies. Wrap32 is an optimization / higher-clock path and adds mode state the engine must track. |
-| Read ID `0x9F` | **MCU via pass-through, not ASIC** | Useful for board bring-up and KGD check; SPI-only diagnostic - not a DMA data opcode. |
-| SPI Read `0x03` / SPI Fast Read `0x0B` / SPI Write `0x02`/`0x38` | **Not in ASIC (D15)** | DMA data path is QPI-only. MCU pass-through covers SPI diagnostics. |
-| Fast Read Quad `0xEB` vs Fast Read `0x0B` | **Pick one QPI read for V1** | `0x0B`: 4 wait cycles, max 66 MHz. `0xEB`: 6 wait cycles, higher max freq. For a conservative TT clock, `0x0B` is simpler timing; `0xEB` is the throughput choice if clock allows. Supporting both costs little decode but two wait-length paths. |
+| Exit Quad Mode `0xF5` | **MCU only (D17)** | Cut from ASIC for simplicity; firmware exits after DONE if needed |
+| Enter Quad / Reset `0x35`/`0x66`/`0x99` | **MCU only (D17)** | No ASIC SPI config FSM |
+| Wrap Boundary Toggle `0xC0` | **Defer (not V1)** | Default Linear Burst matches long DMA copies |
+| Fast Read `0x0B` | **Not in ASIC (D17)** | Sole read is `0xEB` (also over `0x0B` QPI max at 84 MHz) |
 
-**Lean for V1 ASIC opcode set:** SPI config `0x66`/`0x99`/`0x35` only if ASIC-owned init; QPI data = one read (`0x0B` preferred until clock target is frozen) + write `0x02`; plus **`0xF5` Exit Quad** for recovery / bus handback. Leave `0xC0` and `0x9F` to firmware/pass-through.
+**V1 ASIC opcode set (frozen):** QPI read **`0xEB`** + write **`0x02`** only.
 
 ### Transaction phases (QPI)
 
@@ -138,25 +138,25 @@ Datasheet/notes also recommend, for latching the last read beat before terminati
 
 **Design requirement:** the QSPI engine must slice long DMA bursts into CE#-high-bounded segments even if the logical transfer is longer. Track CE# low time against `tCEM` for the chosen device grade.
 
-## High-speed read sampling note
+## High-speed read sampling note (D16)
 
-Datasheet-style note discussed in planning:
+**Frozen for V1:** target clock **84 MHz**; sample read data on the **rising** edge of SCK. DLL / pattern training is a non-goal.
 
-- `tACLK` CLK-to-output delay roughly min 2 ns, max 5.5 ns ("make" in OCR/notes = max)
-- Above ~84 MHz, sampling read data on the next rising edge can leave ~0.45 ns theoretical setup before PCB flight time - not viable
-- Mitigations:
-  1. Sample on falling edge (about one full period of launch-to-sample margin; adds half-cycle latency)
-  2. Training / pattern-based sample point alignment (JEDEC-style eye centering; likely too heavy for this ASIC)
+Datasheet-style margin note (still relevant for Phase 3 review):
 
-For a 2-tile student/tapeout project, prefer **lower clock** and/or **falling-edge RX sample** over DLL training.
+- `tACLK` CLK-to-output delay roughly min 2 ns, max 5.5 ns
+- At ~84 MHz, next-rising-edge sample leaves little theoretical setup before PCB flight time
+- Fallback if Phase 3 hardware check fails: lower clock and/or falling-edge RX (half-cycle extra launch-to-sample margin)
+
+Phase 3 (demoboard + hardening) must **double-check** `tACLK`, board flight time, and TT I/O against this 84 MHz / rising-edge target before shuttle freeze.
 
 ## Implications for this DMA
 
-1. **Address width:** V1 uses **24-bit** internal pointers; QSPI address phase drives `A[22:0]`. Device select is in TCD `CTRL_FLAGS` (D13), not `ptr[23]`.
-2. **Dual die:** engine must mux RAM A vs RAM B CS from `SRC_DEV` / `DEST_DEV` / `NEXT_DEV`; never assert both; flash CS OE stays off (D11). Cross-device = sequential read/write with CS switch.
-3. **Init ownership:** someone must wait 150 us, reset, and enter quad mode on **each** PSRAM used before useful DMA. Could be MCU (via pass-through) or ASIC boot FSM. SPI only for those config steps (D15).
-4. **Descriptor fetch efficiency:** hold CE# across the **11-byte** TCD read (die from `NEXT_DEV` / head policy).
-5. **Byte copy efficiency vs refresh:** holding CE# across huge copies is illegal; engine must track CE# low time per active die. Data beats are QPI-only.
+1. **Address width:** V1 uses **24-bit** internal pointers; QSPI address phase drives `A[22:0]` from `ptr[22:0]`. Device select is **`ptr[23]`** (D19).
+2. **Dual die:** engine must mux RAM A vs RAM B CS from pointer MSBs (`SRC_PTR[23]` / `DEST_PTR[23]` / `NEXT_TCD[23]`); never assert both; flash CS OE stays off (D11). Cross-device = sequential read/write with CS switch.
+3. **Init ownership (D17):** MCU waits 150 us, resets, and Enter Quad on **each** PSRAM used before START; ASIC assumes QPI already. Exit Quad is MCU-only after DONE.
+4. **Descriptor fetch efficiency:** hold CE# across the **11-byte** TCD read (first: addr 0 / PSRAM 0; later `NEXT_TCD` die from bit 23); read opcode `0xEB`.
+5. **Byte copy efficiency vs refresh:** holding CE# across huge copies is illegal; engine must track CE# low time per active die. Data beats are QPI-only (`0xEB`/`0x02`). On-chip scratch is **1 byte** for V1; max held payload per read/write phase follows buffer depth `N` (parameter; D20), which stays well under `tCEM` at 84 MHz.
 6. **Pass-through / bus OE:** demoboard shares `uio` among RP2040, ASIC, and PSRAM/flash PMOD. Pass-through means idle/`DONE` and ASIC `uio_oe=0` (D14); DMA means MCU GPIOs high-Z and ASIC drives with phase-accurate SIO OE + RAM CS mux. Both masters enabled is contention - see host-interface bus-ownership doc.
 7. **Abort:** finish current QPI transaction, then idle (D14).
 8. **Flash:** not in V1 ASIC opcode set. NOR erase/BUSY/page semantics are why write is stretch-only; see W25Q128JV converted datasheet.

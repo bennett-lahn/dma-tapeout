@@ -1,6 +1,6 @@
 # Architecture (Human)
 
-Planning-level human docs for the Zero-Overhead Scatter-Gather DMA. V1 freezes START/DONE (= idle) pins, idle/abort/pass-through (D14), QSPI `uio` map (dual PSRAM; flash OE-off from ASIC), 24-bit/null address model, **11-byte TCD** with `CTRL_FLAGS` device bits (D13), QPI data path (D15). Remaining open: ABORT/head pin pack, clock, QPI read opcode. Post-V1: ALU → cond-stop → ring → flash.
+Planning-level human docs for the Zero-Overhead Scatter-Gather DMA. V1 freezes START/ABORT/DONE pins (D14/D18), idle/abort/pass-through, QSPI `uio` map (dual PSRAM; flash OE-off from ASIC), fixed head at `0x000000`/PSRAM0 (D18), **11-byte TCD** with `ptr[23]` device select + `QUIT` flag (D19), QPI data `0xEB`/`0x02` (D15/D17), MCU-owned enter/exit QPI (D17), **84 MHz** / rising-edge RX (D16). Remaining open: `uo_out[7:1]` status pack. Post-V1: ALU → cond-stop → ring → flash.
 
 Verbose agent context: `../../llm/03-architecture.md`, `../../llm/04-tcd-and-datapath.md`, `../../llm/05-qspi-psram.md`, `../../llm/10-post-v1-features.md`.
 
@@ -18,7 +18,7 @@ Verbose agent context: `../../llm/03-architecture.md`, `../../llm/04-tcd-and-dat
 |---|---|---|
 | Host / mode control | [`blocks/host-interface.md`](blocks/host-interface.md) | OE phases + START/DONE; dual RAM CS; flash OE-off |
 | Working registers | [`blocks/working-registers.md`](blocks/working-registers.md) | 88 DFF TCD working set |
-| TCD format | [`blocks/tcd.md`](blocks/tcd.md) | 11-byte / 24-bit + `CTRL_FLAGS` device bits |
+| TCD format | [`blocks/tcd.md`](blocks/tcd.md) | 11-byte / 24-bit `ptr[23]` device + `QUIT` |
 | Descriptor FSM | [`blocks/descriptor-fsm.md`](blocks/descriptor-fsm.md) | fetch/read/write/update (no PROCESS) |
 | QSPI engine | [`blocks/qspi-engine.md`](blocks/qspi-engine.md) | skeleton + A/B CS mux; no flash opcodes V1 |
 | Byte ALU | [`blocks/alu.md`](blocks/alu.md) | **post-V1** stub |

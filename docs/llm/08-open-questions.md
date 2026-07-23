@@ -4,34 +4,19 @@ Unresolved items that block a frozen architecture. When one is decided, move the
 
 ## Q1 - Upper address bits for 24-bit PSRAM phases
 
-**Decided (V1 / D10 / D13):** full **24-bit** internal pointers; address `0x000000` reserved for null. Device select is in `CTRL_FLAGS`, not `ptr[23]`. QSPI address phase uses `ptr[22:0]` (`A[22:0]`). Working TCD metadata **88 DFFs** (11-byte TCD). See `03-architecture.md` / `04-tcd-and-datapath.md`.
+**Decided (V1 / D10 / D18 / D19):** full **24-bit** internal pointers. Device select is **`ptr[23]`** (`0`=PSRAM 0, `1`=PSRAM 1). QSPI address phase uses `ptr[22:0]` (`A[22:0]`). Address `0x000000` is a **valid** location (fixed head on PSRAM 0). End-of-chain is `CTRL_FLAGS.QUIT`. Working TCD metadata **88 DFFs** (11-byte TCD; no head register). See `03-architecture.md` / `04-tcd-and-datapath.md`.
 
 ## Q2 - Who initializes PSRAM (reset + enter quad)?
 
-Options:
-
-1. MCU always initializes via pass-through before START.
-2. ASIC runs a fixed boot FSM on reset, then enables pass-through.
-3. Hybrid: ASIC ensures safe reset defaults; MCU enters quad.
-
-Related: does init happen **before** pass-through to the MCU is enabled? (lean: probably yes if ASIC-owned).
-
-Datasheet requires Reset immediately after Reset Enable, then `tRST` >= 50 ns before the next command.
-
-**Lean:** MCU-owned init for V1 (less ASIC state), ASIC documents required preconditions. With dual PSRAM (D11), MCU (or ASIC) must init **each die** that DMA will touch before START. Per D15, init SPI opcodes (`0x66`/`0x99`/`0x35`) are the only SPI the ASIC may emit if it owns init; DMA data path is QPI-only.
+**Decided (D17):** **MCU-owned** via pass-through. MCU resets / Enter Quad / Exit Quad on each die; ASIC emits none of those opcodes and expects both dies already in QPI before START.
 
 ## Q3 - Exact host pin protocol
 
-**Decided (behavior / D14):** IDLE waits for START; START ignored until back in IDLE; null `NEXT_TCD` → IDLE; DONE = idle; pass-through iff DONE; abort finishes current QPI txn then IDLE.
+**Decided (behavior / D14; pins / D18; quit / D19):** IDLE waits for START; START ignored until back in IDLE; `QUIT=1` TCD → IDLE; DONE = idle; pass-through iff DONE; abort finishes current QPI txn then IDLE.
 
-**Still open (pin encoding):**
+**Frozen pins:** `ui_in[0] = START`, `ui_in[1] = ABORT`, `uo_out[0] = DONE`; QSPI on `uio` per system I/O map. **No head-pointer pins** (fixed head at `0x000000` / PSRAM 0).
 
-- ABORT bit on `ui_in[7:1]`
-- head pointer programming (24-bit; optional head-device bit - lean PSRAM 0)
-- status / error / debug observe on `uo_out[7:1]`
-- optional arm bits
-
-Frozen indices: `ui_in[0] = START`, `uo_out[0] = DONE`; QSPI on `uio` per system I/O map.
+**Still open:** status / error / debug observe on `uo_out[7:1]`; optional use of `ui_in[7:2]`.
 
 Per TinyDMA-2C prior art, command/payload strobes are one known reference pattern, not a requirement for this project.
 
@@ -39,18 +24,18 @@ Per TinyDMA-2C prior art, command/payload strobes are one known reference patter
 
 **Decided (D14):** pass-through restores automatically whenever IDLE/`DONE` is asserted. No host ACK required for OE release. Illegal: host drives `uio` while ASIC is not idle (not DONE).
 
-## Q5 - Null / zero-length semantics
+## Q5 - Null / zero-length / chain-end semantics
 
-**Decided (D13 / D14):**
+**Decided (D14 / D18 / D19):**
 
-- `NEXT_TCD == 0x000000` → end of chain → IDLE (DONE, pass-through)
-- `TRANSFER_LEN == 0` → **no-op** descriptor; immediately follow `NEXT_TCD` / `NEXT_DEV` with no data moved
-- Address `0x000000` reserved (no TCD or buffer there)
+- **End of chain:** fetched TCD with **`CTRL_FLAGS.QUIT=1`** → IDLE (DONE, pass-through); no copy for that TCD
+- `TRANSFER_LEN == 0` → **no-op** descriptor; immediately follow `NEXT_TCD` with no data moved (unless the TCD is already a quit TCD)
+- Fixed head: START always fetches `0x000000` on PSRAM 0; place a `QUIT` TCD there for an empty run
+- `NEXT_TCD` with address bits `0x000000` is a **valid** next address (die from `NEXT_TCD[23]`), not end-of-chain
 
 **Still open:**
 
 - Can a descriptor point to itself? Without cond-stop this only spins until **abort**/reset - allow with abort, or reject?
-- Head `0x000000` at START: immediate IDLE/DONE (consistent with null) vs sticky error?
 
 ## Q6 - ALU immediate storage
 
@@ -62,15 +47,11 @@ Per TinyDMA-2C prior art, command/payload strobes are one known reference patter
 
 ## Q8 - SPI vs QPI for V1 data path
 
-**Decided (D15):** QPI default for all DMA data read/write. SPI never used for data; SPI only for documented config / Enter Quad (and SPI-form reset if ASIC-owned init).
-
-**Still open:** which QPI read opcode - `0x0B` (4 wait, 66 MHz max) vs `0xEB` (6 wait, higher max). Also whether Exit Quad `0xF5` is in the ASIC or only via MCU pass-through.
+**Decided (D15 / D17):** QPI for all ASIC DMA data read/write. ASIC emits **no SPI** and **no** Enter/Exit Quad. Sole QPI read opcode is **`0xEB`** (write `0x02`). MCU owns enter/exit QPI via pass-through.
 
 ## Q9 - Clock frequency target
 
-Trade throughput vs `tACLK` sample margin vs CE# budgeting.
-
-Need a chosen demoboard clock and RX sample edge policy.
+**Decided (D16):** demoboard / design target **84 MHz**; sample read data on the **rising** edge of SCK. Phase 3 must re-validate `tACLK` / board / TT timing against this target before shuttle freeze.
 
 ## Q10 - Sensor data ingress path
 
@@ -80,9 +61,9 @@ Optional later: streamed host-pin ingress and/or telemetry features in `10-post-
 
 ## Q11 - Feature freeze for first shuttle
 
-**Decided (D12 / D13 / D14 / D15):** V1 = pass-through + QPI data path + dual CS + 11-byte TCD + cross-device + chaining + abort + idle/DONE protocol. **Out of V1:** ALU, conditional stop, ring, ASIC flash (post-V1 ladder in `10-post-v1-features.md`).
+**Decided (D12 / D14 / D15 / D16 / D17 / D18 / D19 / D20):** V1 = pass-through + QPI (`0xEB`/`0x02`) + MCU enter/exit QPI + dual CS + 11-byte TCD + `ptr[23]` device select + `QUIT` end-of-chain + fixed head at 0/PSRAM0 + cross-device + chaining + START/ABORT/DONE pins + 84 MHz rising-edge RX + **1-byte** data buffer with depth-agnostic correctness. **Out of V1:** ALU, conditional stop, ring, ASIC flash (post-V1 ladder in `10-post-v1-features.md`).
 
-Still open inside V1: clock (Q9), QPI read opcode (Q8 remainder), multi-outstanding (lean: no), head/ABORT pin packing (Q3 remainder).
+Still open inside V1: multi-outstanding (lean: no), `uo_out[7:1]` status packing (Q3 remainder).
 
 ## Q12 - Error model
 
@@ -92,10 +73,8 @@ Which conditions sticky-error vs ignore vs halt?
 - Bad descriptor address
 - CE# policy violation (should be impossible if engine correct)
 - External memory timeout (if detectable at all)
-- Illegal device select / both RAM CS asserted (should be impossible if engine correct)
+- Illegal both RAM CS asserted during a data TCD (should be impossible if engine correct; quit TCD never asserts CS for a copy)
 
 ## Q13 - PSRAM device select encoding (dual-die)
 
-**Decided (D13):** `CTRL_FLAGS` holds `SRC_DEV`, `DEST_DEV`, `NEXT_DEV` (PSRAM 0 vs 1). Full address space preserved (`ptr[23]` not used for device). Cross-device byte copy: read-then-write with only one CE# low at a time (required on shared SIO); no multi-outstanding for V1.
-
-**Still open:** head-pointer device at START (lean: PSRAM 0). Init ownership per die remains Q2.
+**Decided (D19):** device select is **`ptr[23]`** on `SRC_PTR` / `DEST_PTR` / `NEXT_TCD` (`0`=PSRAM0, `1`=PSRAM1). QSPI drives `A[22:0]` from `ptr[22:0]`. End-of-chain is **`CTRL_FLAGS.QUIT`**, not a device encoding. Cross-device byte copy: read-then-write with only one CE# low at a time; no multi-outstanding for V1. Fixed head on PSRAM 0 at address 0 (D18).

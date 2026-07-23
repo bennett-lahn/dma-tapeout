@@ -1,5 +1,12 @@
-# Nested TinyDMA-2C prior-art clone (reference only; not this project's RTL)
+# Nested TinyDMA-2C reference clone (prior art RTL; not this project's code)
 ttsky-tinyDMA/
+
+# Prior-art dump (keep locally; do not publish)
+docs/llm/prior-art/
+
+# Manufacturer PDFs (local source; markdown conversions in docs/datasheets/md/ are tracked)
+*.pdf
+docs/datasheets/pdfs/
 
 # OS / editor
 .DS_Store

@@ -20,7 +20,7 @@ Human summaries live in `docs/human/` (condensed). Do not duplicate long design 
 - Obsidian notes under `C:\Users\lahnb\Documents\Obsidian Vault\Projects\Tiny Tapeout\` are **read-only**
 - Prefer shipping a smaller verified V1 over late feature creep
 - When proposing features, state DFF / tile impact
-- **Memory scope (D11/D12):** both PSRAM dies are DMA endpoints (incl. cross-device); V1 is bulk memcpy via 10-byte TCDs (no ALU/ring/cond-stop); ASIC flash R/W is post-V1; see `docs/llm/10-post-v1-features.md`
+- **Memory scope (D11/D12/D19):** both PSRAM dies are DMA endpoints (incl. cross-device); V1 is bulk memcpy via 11-byte TCDs (`ptr[23]` device, `QUIT` end-of-chain; no ALU/ring/cond-stop); ASIC flash R/W is post-V1; see `docs/llm/10-post-v1-features.md`
 
 ## TinyDMA-2C prior art (separate context)
 

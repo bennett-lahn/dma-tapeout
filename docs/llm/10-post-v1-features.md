@@ -28,7 +28,7 @@ Bulk A↔B memcpy does not need it. Costs TCD bits or an `IMM` byte, working-reg
 ### Implement later
 
 1. **Add module** `dma_byte_alu` (combinational 8-bit): ops pass / invert / XOR imm / ADD / SUB.
-2. **Extend existing `CTRL_FLAGS`** (V1 already reserves bits `[7:3]` after device select) with ALU op select / ADD vs SUB, and prefer a dedicated **`IMM` byte** (12-byte TCD if flags+imm; or pack tiny imm into flags).
+2. **Extend existing `CTRL_FLAGS`** (V1 uses bit 0 for `QUIT`; reserves `[7:1]`) with ALU op select / ADD vs SUB, and prefer a dedicated **`IMM` byte** (12-byte TCD if flags+imm; or pack tiny imm into flags).
 3. **Working registers:** already latch `CTRL_FLAGS`; add `IMM` (+8 DFFs).
 4. **FSM:** restore `STATE_PROCESS` between `STATE_READ` and `STATE_WRITE` (or fold combo ALU into the READ→WRITE path with a registered hold). Descriptor **fetch bypasses** the ALU.
 5. **Datapath:** `byte = ALU(rx_hold, op, IMM)` then WRITE.
@@ -36,7 +36,7 @@ Bulk A↔B memcpy does not need it. Costs TCD bits or an `IMM` byte, working-reg
 
 ### DFF / tile impact
 
-Low: ~8 DFFs for IMM + a few flag bits in the working TCD set; ALU itself is combo. Flag packing competes with device-select / ring / COND bits if those also return.
+Low: ~8 DFFs for IMM + a few flag bits in the working TCD set; ALU itself is combo. Flag packing competes with `QUIT` / ring / COND bits if those also return.
 
 ### Depends on / enables
 
@@ -49,7 +49,7 @@ Low: ~8 DFFs for IMM + a few flag bits in the working TCD set; ALU itself is com
 
 ### Intent
 
-After **READ**, before ALU/WRITE: if enabled and `predicate(byte, IMM)` is true, **do not** finish the beat (skip ALU, WRITE, pointer update, length decrement); cleanly end the QSPI beat (raise CE#), then proceed to `NEXT_TCD` (or DONE if null).
+After **READ**, before ALU/WRITE: if enabled and `predicate(byte, IMM)` is true, **do not** finish the beat (skip ALU, WRITE, pointer update, length decrement); cleanly end the QSPI beat (raise CE#), then proceed to `NEXT_TCD` (or DONE if next is a `QUIT` TCD).
 
 Predicates (minimal useful set):
 
@@ -106,7 +106,7 @@ Hardware watermarks / half-full IRQs stay non-goals unless separately scoped.
 
 ### Why deferred
 
-Bulk linear A↔B copies do not need wrap. Mask encoding fights `CTRL_FLAGS` budget (device select, ALU, COND). Software can modulo offline between DMA runs.
+Bulk linear A↔B copies do not need wrap. Mask encoding fights `CTRL_FLAGS` budget (`QUIT`, ALU, COND). Software can modulo offline between DMA runs.
 
 ### Implement later
 
@@ -149,7 +149,7 @@ MCU pass-through already covers flash. Flash write is a product-sized effort and
 
 ### Implement later
 
-1. Allow flash as a device-select value (extend beyond A/B); never assert two CE#s.
+1. Allow flash as a device-select value (extend beyond A/B pointer MSB encoding, or add flag bits); never assert two CE#s.
 2. QSPI engine: flash opcode set, dummy cycles, (for write) status poll FSM.
 3. TCD or host policy: erase/program length rules; refuse illegal lengths.
 4. Verification: models for BUSY, page boundaries, erase time (sim shortcuts).
@@ -163,8 +163,8 @@ Read: medium (opcodes + timing). Write: medium–high (program/erase/BUSY). Last
 
 ## Interaction with V1 baseline
 
-V1 TCD is an **11-byte** memmove record with `CTRL_FLAGS` holding `SRC_DEV` / `DEST_DEV` / `NEXT_DEV` and reserved bits `[7:3]`. Post-V1 features that need more flags/`IMM` **extend** that byte (and optionally grow the TCD); plan a single compatible extension rather than a parallel layout.
+V1 TCD is an **11-byte** memmove record with device in **`ptr[23]`** and `CTRL_FLAGS` holding **`QUIT`** plus reserved bits `[7:1]`. Post-V1 features that need more flags/`IMM` **extend** that byte (and optionally grow the TCD); plan a single compatible extension rather than a parallel layout.
 
-Device select stays in the three V1 flag bits; do not migrate back to pointer MSB.
+Device select stays in pointer MSBs (D19); do not reintroduce per-field device flags unless flash or a third target forces it.
 
 Host **abort** exists in V1 (behavior frozen D14); post-V1 `COND_STOP` depends on it for safe until-loops.

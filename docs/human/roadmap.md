@@ -6,17 +6,19 @@
 - [x] Capture dual documentation set (`docs/human`, `docs/llm`)
 - [x] Dual-PSRAM in scope; ASIC flash out of V1 (MCU pass-through only) - D11
 - [x] V1 cut: bulk mover only; ALU / cond-stop / ring / flash → post-V1 - D12
-- [x] Freeze TCD device-select packing (`CTRL_FLAGS` SRC/DEST/NEXT_DEV) and null/zero-length rules - D13
+- [x] Freeze TCD layout + zero-length rules (`CTRL_FLAGS` byte; later encoding revised by D19) - D13
 - [x] Freeze pin/host protocol behavior (idle / START / DONE / abort / pass-through) - D14
-- [x] Freeze SPI vs QPI for V1 data path (QPI data; SPI config only) - D15
-- [ ] Freeze ABORT / head-pointer pin packing on `ui_in[7:1]`
-- [ ] Freeze QPI read opcode (`0x0B` vs `0xEB`) and clock / RX sample policy
+- [x] Freeze SPI vs QPI for V1 data path (QPI data) - D15
+- [x] Freeze ABORT = `ui_in[1]`; fixed head at `0x000000`/PSRAM0; address 0 valid - D18
+- [x] Freeze `ptr[23]` device select + `QUIT` end-of-chain (replaces flag device bits / both-devices stop) - D19
+- [x] Freeze clock / RX sample policy - **84 MHz**, rising-edge RX (D16)
+- [x] Freeze MCU-owned enter/exit QPI; ASIC QPI opcodes `0xEB` / `0x02` only - D17
 
 ## Phase 1 - Skeleton RTL
 
 - [ ] Tiny Tapeout wrapper + pin map
 - [ ] Pass-through mux + mode control (flash CS always OE-off from ASIC; pass-through iff DONE)
-- [ ] QSPI engine (SPI config bring-up if needed, QPI read/write, CE# time limit, **RAM A/B CS mux**)
+- [ ] QSPI engine (QPI `0xEB` read / `0x02` write, CE# time limit, **RAM A/B CS mux**; no ASIC enter/exit quad)
 - [ ] Working register file (11-byte TCD fields)
 
 ## Phase 2 - Descriptor DMA (V1 feature complete)
@@ -31,7 +33,7 @@
 
 - [ ] RP2 demoboard scripts (bulk A↔B / scatter-gather patterns)
 - [ ] Area/DFF audit vs 2-tile budget
-- [ ] Timing/clock policy freeze
+- [ ] Re-check hardware constraints (`tACLK`, board flight, TT I/O, RP2040 clocking) against **84 MHz** / rising-edge RX target (D16); drop clock or revisit sample edge only if that review fails
 - [ ] CI + GDS flow green
 - [ ] Freeze RTL for shuttle
 
@@ -59,7 +61,5 @@ Do not pull post-V1 items above chaining to “save” the interview story - the
 
 Tracked in detail at `../llm/08-open-questions.md`. Biggest remaining V1 decisions:
 
-- MCU vs ASIC memory initialization (both PSRAM dies)
-- ABORT / head-pointer / status pin packing
-- QPI read opcode + clock / RX sample edge
+- Status / DFT packing on `uo_out[7:1]`
 - Error model sticky bits; self-pointing TCD policy

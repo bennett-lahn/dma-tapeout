@@ -119,7 +119,7 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 **Decision (superseded lean):** earlier lean was 16-bit pointers with upper byte zero.
 
-**Decision (current, updated by D13):** **24-bit** internal pointers in TCD / working regs / head; **`0x000000` reserved null** (end of chain). QSPI address phase uses full device `A[22:0]` (`ptr[22:0]`; `ptr[23]` unused / must be 0). Device select lives in `CTRL_FLAGS` (D13), not pointer MSB - preserves the full 8 MB APS6404L window.
+**Decision (current, updated by D18 / D19):** **24-bit** internal pointers in TCD / working regs (no head register). QSPI address phase uses device `A[22:0]` from `ptr[22:0]`. ~~Device select in `CTRL_FLAGS` (D13/D18).~~ **Superseded by D19:** `ptr[23]` selects die. ~~`0x000000` reserved null.~~ **Superseded by D18:** address 0 is valid (fixed head on PSRAM 0). ~~End-of-chain = both-devices stop.~~ **Superseded by D19:** `CTRL_FLAGS.QUIT`.
 
 ## D11 - Dual PSRAM in scope; flash out of ASIC V1
 
@@ -139,15 +139,15 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 **DFF / tile impact:** low for dual-PSRAM (CS select mux; ~2 flag bits or equivalent for src/dest device). Flash stretch is deferred precisely because write path is medium–high FSM/DFF cost.
 
-**Encoding:** superseded by D13 (`CTRL_FLAGS` device bits).
+**Encoding:** ~~superseded by D13 (`CTRL_FLAGS` device bits).~~ **Superseded by D19:** device in `ptr[23]`.
 
 ## D12 - V1 = dual-PSRAM bulk mover; telemetry extras post-V1
 
 **Decision:**
 
 1. **V1 product:** isolated descriptor DMA for **learning / resume** and **bulk moves between PSRAM A and B** (same-device and cross-device). ADC / live sensor ingress is not a V1 commitment.
-2. **V1 TCD:** **11-byte** memmove record (`SRC`, `DEST`, `LEN`, `NEXT`, `CTRL_FLAGS`). Flags carry device select only in V1 (D13); no ALU, ring, or conditional stop.
-3. **V1 host:** START / DONE / abort behavior frozen in D14 (exact abort pin index still open).
+2. **V1 TCD:** **11-byte** memmove record (`SRC`, `DEST`, `LEN`, `NEXT`, `CTRL_FLAGS`). ~~Flags carry device select (D13).~~ **D19:** flags carry **`QUIT` only** in V1; device is `ptr[23]`. No ALU, ring, or conditional stop.
+3. **V1 host:** START / DONE / abort behavior in D14; pin indices and fixed head in **D18** (`ui_in[0]=START`, `ui_in[1]=ABORT`).
 4. **Post-V1 add order** (documented in `10-post-v1-features.md`):
    1. In-flight byte ALU (extend reserved `CTRL_FLAGS` bits + `IMM`, `STATE_PROCESS`)
    2. Conditional stop (LT/Z/NZ after READ; `LEN==0` until; needs abort)
@@ -160,26 +160,21 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 - Shrinks verification surface for the shuttle vs telemetry extras.
 - Keeps a clear implement-later path so telemetry-shaped ideas are not lost.
 
-**DFF / tile impact:** V1 pays **8 DFFs** for a reserved `CTRL_FLAGS` byte (3 used). Post-V1 ALU/IMM/ring reintroduce further cost in the order above.
+**DFF / tile impact:** V1 pays **8 DFFs** for a reserved `CTRL_FLAGS` byte (**1 used** for `QUIT` per D19). Post-V1 ALU/IMM/ring reintroduce further cost in the order above.
 
 ## D13 - `CTRL_FLAGS` device select (reject pointer MSB)
 
-**Decision:**
+**Decision (superseded for device/stop encoding by D19):**
 
-1. Re-add a full **`CTRL_FLAGS` byte** to the V1 TCD (**11 bytes** total; working metadata **88 DFFs**).
-2. V1 uses only **three 1-bit flags** (rest of byte reserved for post-V1):
-   - `SRC_DEV` - source buffer in PSRAM 0 vs 1
-   - `DEST_DEV` - dest buffer in PSRAM 0 vs 1
-   - `NEXT_DEV` - next TCD (fetch target) in PSRAM 0 vs 1
-3. **Do not** steal `ptr[23]` for device select. Pointers remain full device addresses; QSPI drives `A[22:0]`; device bits stay in flags and are **preserved** for the life of that TCD (pointer increments do not change device).
-4. **`TRANSFER_LEN == 0`:** no-op descriptor - skip data moves; immediately follow `NEXT_TCD` (using `NEXT_DEV`).
-5. **`NEXT_TCD == 0x000000`:** null / end-of-chain (see D14 for idle transition).
+1. Re-add a full **`CTRL_FLAGS` byte** to the V1 TCD (**11 bytes** total; working metadata **88 DFFs**) - **still binding**.
+2. ~~V1 device fields in `CTRL_FLAGS`.~~ **Superseded by D19:** device is `ptr[23]`; `CTRL_FLAGS` holds `QUIT` + reserved.
+3. ~~Do not steal `ptr[23]` for device select.~~ **Superseded by D19.**
+4. **`TRANSFER_LEN == 0`:** no-op descriptor - skip data moves; immediately follow `NEXT_TCD` (device from `NEXT_TCD[23]`) - **still binding**.
+5. ~~`NEXT_TCD == 0x000000` end-of-chain.~~ **Superseded by D18** (valid address); end-of-chain is **`QUIT`** per D19.
 
-**Why:** keeps the full 8 MB window per die; gives an explicit next-TCD device (cross-die chains); reserves flag room for post-V1 without another layout break.
+~~**Rejected then:** `ptr[23]` device-select lean.~~ **Re-adopted by D19** (APS6404L already uses only `A[22:0]`; MSB is free for die select).
 
-**Rejected:** `ptr[23]` device-select lean (Q13) - halves usable address space per die encoding and couples increment wrap to die identity.
-
-**Still open:** which die holds the **head** at START (lean: PSRAM 0 until head protocol adds a device bit).
+~~**Still open:** head die at START.~~ **Superseded by D18** (fixed head at address 0 / PSRAM 0).
 
 ## D14 - Host protocol: idle / START / DONE / abort / pass-through
 
@@ -189,12 +184,12 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 |---|---|
 | Idle wait | From **IDLE**, wait for **START**; accept START only in IDLE |
 | START while busy | **Ignored** until the ASIC returns to IDLE |
-| Null TCD | `NEXT_TCD == 0x000000` → transition to **IDLE** |
+| End of chain | ~~`NEXT_TCD == 0`.~~ ~~Both-devices stop (D18).~~ **Superseded by D19:** `CTRL_FLAGS.QUIT=1` after fetch → **IDLE** (no execute) |
 | DONE | Asserted **whenever** the ASIC is IDLE (including after reset / before first START) |
 | Pass-through | Enabled iff DONE (idle); disabled while not idle (DMA active) |
 | Abort | If **ABORT** asserted while active: finish the **current QPI transaction**, then transition to IDLE (DONE, pass-through on) |
 
-**Pin indices still open:** ABORT on `ui_in[7:1]`; head-pointer / arm programming; optional ERROR / DFT on `uo_out[7:1]`. Frozen indices remain `ui_in[0]=START`, `uo_out[0]=DONE`.
+~~Pin indices open for ABORT / head.~~ **Superseded by D18:** `ui_in[0]=START`, `ui_in[1]=ABORT`, `uo_out[0]=DONE`; no head-pointer pins. `ui_in[7:2]` / `uo_out[7:1]` still open for status/DFT.
 
 **Supersedes Q4:** no host-ACK gate for bus restore; restore tracks idle/`DONE`.
 
@@ -204,5 +199,80 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 1. **QPI is the default** for all ASIC PSRAM **data** read/write (descriptor fetch and byte copy).
 2. **SPI is never used** for reading or writing payload / TCD data.
-3. **SPI may be used only for config / mode bring-up** that enables QPI (explicitly: Enter Quad `0x35`; Reset Enable/Reset `0x66`/`0x99` when issued in SPI before QPI). Document every SPI opcode the ASIC emits in `05-qspi-psram.md`.
-4. Primary QPI read opcode choice (`0x0B` vs `0xEB`) remains open (clock / wait tradeoff).
+3. ~~SPI may be used for config / Enter Quad on the ASIC.~~ **Superseded by D17:** ASIC emits **no** SPI and **no** Enter/Exit Quad; MCU owns mode bring-up via pass-through.
+4. ~~Primary QPI read opcode open.~~ **Superseded by D17:** sole QPI read opcode is **`0xEB`**.
+
+## D16 - Clock target 84 MHz; rising-edge RX sample
+
+**Decision:**
+
+1. Design / demoboard target clock: **84 MHz** (QPI linear-burst class for APS6404L).
+2. Sample PSRAM read data on the **rising** edge of SCK (next rising after launch; no falling-edge RX path in V1).
+3. DLL / pattern-based eye training remains a V1 non-goal.
+4. Phase 3 (demoboard + hardening) must **re-check hardware constraints** (`tACLK`, board flight time, TT I/O, RP2040 clocking) against this 84 MHz / rising-edge target before shuttle freeze; drop clock or revisit sample edge only if that review fails.
+
+**Why:** Matches the device's linear-burst frequency class and keeps the RX path simple (one sample edge). Rising-edge at 84 MHz is margin-tight vs `tACLK` max 5.5 ns - accepted as the plan, with an explicit hardening gate rather than pre-emptively choosing falling-edge or a lower clock.
+
+## D17 - MCU owns QPI enter/exit; sole QPI read is `0xEB`
+
+**Decision:**
+
+1. **MCU** (via pass-through while DONE) owns PSRAM reset / Enter Quad (`0x35`) / Exit Quad (`0xF5`) for **each die** DMA will touch. ASIC does **not** emit `0x35`, `0xF5`, `0x66`, or `0x99`.
+2. Before START, ASIC **expects** both dies already in **QPI mode**. After DONE, MCU may Exit Quad (or reset) if firmware needs SPI again.
+3. ASIC QPI data opcodes only: Fast Read Quad **`0xEB`** (sole read; 6 wait cycles) and Write **`0x02`**. No `0x0B` path.
+4. Closes Q2 and Q8.
+
+**Why:** Cuts SPI config FSM and dual wait-length read paths from the 2-tile budget; mode bring-up is already natural MCU firmware work during pass-through.
+
+## D18 - Fixed head; ABORT pin; both-devices stop TCD
+
+**Decision (stop encoding superseded by D19; fixed head / ABORT / address-0 still binding):**
+
+1. **`ui_in[1] = ABORT`** (next free `ui_in` after START). Behavior unchanged from D14 (finish current QPI txn → IDLE).
+2. **No head-pointer / arm input vector.** Remove on-chip head register (~24 DFFs saved).
+3. On START, always fetch the first TCD from **address `0x000000` on PSRAM 0** (device 0; pointer encoding `0x000000` with `ptr[23]=0`).
+4. **Address `0x000000` is a valid TCD/buffer address** (null-at-zero revoked). `NEXT_TCD` with address bits 0 is a normal link (die from `NEXT_TCD[23]`), not end-of-chain.
+5. ~~**End-of-chain / DONE:** both-devices one-hot `2'b11`.~~ **Superseded by D19:** `CTRL_FLAGS.QUIT`.
+6. ~~**Device-select encoding** in `CTRL_FLAGS`.~~ **Superseded by D19:** `ptr[23]`.
+
+7. Closes Q3 pin packing for START/ABORT/head; closes Q5 null-head / null-next items; closes Q13 head-device open (device 0).
+
+**Why:** Eliminates host pin bandwidth for a 24-bit head; fixed entry point is enough for V1 demos. Address 0 remains usable for the head TCD on device 0. Empty run: place a `QUIT` TCD at `0x000000` on PSRAM 0 (D19).
+
+## D19 - `ptr[23]` device select; `QUIT` flag (replace both-devices stop)
+
+**Decision:**
+
+1. **Remove** `SRC_DEV` / `DEST_DEV` / `NEXT_DEV` from `CTRL_FLAGS`.
+2. **Device select** is the **MSB of each pointer**:
+   - `ptr[23] = 0` → PSRAM 0
+   - `ptr[23] = 1` → PSRAM 1
+   - QSPI address phase drives **`ptr[22:0]`** as device `A[22:0]` (full 8 MB per die; MSB is not a byte address bit on APS6404L).
+3. Pointer increments bump only the address field and **preserve `ptr[23]`** for the life of that TCD's SRC/DEST (device does not change mid-descriptor).
+4. **`CTRL_FLAGS` V1 map:**
+
+| Bits | Name | Encoding |
+|---|---|---|
+| 0 | `QUIT` | `1` = after FETCH, go IDLE / DONE **without** executing this TCD; `0` = run (or no-op if `LEN==0`) |
+| 7:1 | reserved | Write 0; post-V1 (ALU / cond-stop / ring) |
+
+5. **End-of-chain / DONE:** after `STATE_FETCH`, if `QUIT==1`, transition to IDLE / DONE (no copy). Never assert both CS lines for a quit TCD.
+6. **Fixed head unchanged (D18):** first TCD still at address **`0x000000` on PSRAM 0**. Address **0 remains allowed** for TCDs/buffers (`NEXT_TCD` address bits may be 0). Empty run: `QUIT=1` TCD at head.
+7. Re-closes Q1 / Q5 / Q13 for the new encoding. Supersedes D13 device-in-flags and D18 both-devices stop.
+
+**Why:** One flag bit is enough for chain end once address 0 is valid; packing die into `ptr[23]` removes six device bits from flags and matches the unused protocol/address MSB on this PSRAM class.
+
+**DFF / tile impact:** still **11-byte** TCD / **88 DFFs** working metadata; CS mux keys off pointer MSBs instead of flag fields.
+
+## D20 - 1-byte data buffer; depth-agnostic correctness
+
+**Decision:**
+
+1. V1 on-chip RX→TX **data buffer depth is 1 byte** (`N=1`, 8 DFFs).
+2. Descriptor FSM and QSPI engine **must not depend on a specific `N` for correctness**. Treat buffer depth as a parameter: each copy step moves `k = min(N, TRANSFER_LEN)` bytes, then advances SRC/DEST/`TRANSFER_LEN` by `k`.
+3. Changing `N` later (deeper scratch for fewer cmd+addr reissues) is a **performance / DFF trade only** - no TCD format, host protocol, CE# refresh policy, or cross-device CS rule changes.
+4. `tCEM` / page-cross slicing remains mandatory in the QSPI engine regardless of `N` (with `N=1`, `tCEM` is not the binding limit on payload size).
+
+**Why:** Keeps V1 DFF cost minimal while avoiding a byte-hardcoded datapath that would need a redesign to widen. Soft 2-tile budget (~500 DFFs) cannot host a `tCEM`-sized scratch (~120 B) anyway.
+
+**DFF / tile impact:** **+8 DFFs** for the V1 hold (already assumed in working-reg notes). Larger `N` costs `~8*N` DFFs plus a small fill/count; not planned for V1.

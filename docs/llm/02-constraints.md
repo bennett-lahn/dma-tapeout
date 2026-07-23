@@ -43,13 +43,14 @@ Demoboard/PMOD ecosystem parts of interest: 128 M-bit QSPI Flash (**25Q128JVSM**
 | Topic | Constraint |
 |---|---|
 | Power-up | >= 150 us before commands (`tPU`; CE# high) |
-| Boot mode | Standard 1-bit SPI; must enter Quad/QPI via command (e.g. 0x35) |
-| Addressing | Device has large address space (`A[22:0]`); V1 uses **24-bit internal pointers** matching the QSPI address phase |
+| Boot mode | Powers up SPI; **MCU** must Enter Quad (`0x35`) on each die before START (D17). ASIC expects QPI already |
+| Addressing | Device has large address space (`A[22:0]`); V1 uses **24-bit internal pointers** with `ptr[23]` die select (D19); fixed head at `0x000000` / PSRAM 0 (D18); `QUIT` ends chain |
 | CE# low time (`tCEM`) | Continuous CE# low cannot exceed max CE# low pulse width or **internal DRAM refresh is blocked and data can corrupt**. Max **4 us** (extended grade) / **8 us** (standard grade). Large transfers must be sliced with CE# high gaps. |
 | CE# high between bursts (`tCPH`) | Min **18 ns** |
 | Last-byte read terminate | Datasheet/notes recommend longer CE# hold: **`tCHD > tACLK + tCLK`** so the controller latches the final beat before raising CE# |
-| Timing | At high clocks, `tACLK` (CLK-to-Q, min ~2 ns / max ~5.5 ns) destroys rising-edge sample margin above ~84 MHz; may need falling-edge sample or lower clock |
-| Practical clock targets (notes) | Consider limiting to ~66 MHz SPI / ~84 MHz QPI linear burst, or lower for timing margin |
+| Timing | `tACLK` (CLK-to-Q, min ~2 ns / max ~5.5 ns) makes rising-edge sample margin tight at **84 MHz** (D16); Phase 3 must re-validate before shuttle freeze |
+| Clock target (D16) | Design / demoboard **84 MHz**; RX sample on **rising** SCK |
+| ASIC opcodes (D17) | QPI only: read **`0xEB`**, write **`0x02`**. No Enter/Exit Quad / reset on ASIC |
 | Soft reset recovery | After `0x66`/`0x99`, wait `tRST` min **50 ns** before next valid command |
 
 ## Schedule constraint

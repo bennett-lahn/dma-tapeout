@@ -38,13 +38,13 @@ V1 ingress: **pre-staged buffers in PSRAM** (MCU wrote them before START). Live 
 
 Need: move N bytes across multiple extents / dies.
 
-Mechanism: when `TRANSFER_LEN` hits 0, fetch next TCD and continue until `NEXT_TCD == 0`.
+Mechanism: when `TRANSFER_LEN` hits 0, fetch next TCD and continue until a `QUIT=1` TCD (`CTRL_FLAGS` bit 0).
 
 ### 2. Cross-device A↔B
 
 Need: ping-pong or evacuate one die to the other on the shared QSPI bus.
 
-Mechanism: device select per SRC/DEST/NEXT via TCD `CTRL_FLAGS` (`SRC_DEV` / `DEST_DEV` / `NEXT_DEV`); read-then-write with one CE# low at a time.
+Mechanism: device select via `ptr[23]` on SRC/DEST/NEXT; read-then-write with one CE# low at a time.
 
 ### 3. Long transfers with refresh
 
