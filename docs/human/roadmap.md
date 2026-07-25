@@ -11,7 +11,7 @@
 - [x] Freeze SPI vs QPI for V1 data path (QPI data) - D15
 - [x] Freeze ABORT = `ui_in[1]`; fixed head at `0x000000`/PSRAM0; address 0 valid - D18
 - [x] Freeze `ptr[23]` device select + `QUIT` end-of-chain (replaces flag device bits / both-devices stop) - D19
-- [x] Freeze clock / RX sample policy - **84 MHz**, rising-edge RX (D16)
+- [x] Freeze clock / RX sample policy - **66 MHz `clk`**, **SCK=clk/2**, rising-edge RX (D16)
 - [x] Freeze MCU-owned enter/exit QPI; ASIC QPI opcodes `0xEB` / `0x02` only - D17
 
 ## Phase 1 - Skeleton RTL
@@ -33,7 +33,7 @@
 
 - [ ] RP2 demoboard scripts (bulk A↔B / scatter-gather patterns)
 - [ ] Area/DFF audit vs 2-tile budget
-- [ ] Re-check hardware constraints (`tACLK`, board flight, TT I/O, RP2040 clocking) against **84 MHz** / rising-edge RX target (D16); drop clock or revisit sample edge only if that review fails
+- [ ] Re-check hardware constraints against **66 MHz `clk` / 33 MHz SCK** / rising-edge RX (D16) per [`architecture/timing.md`](architecture/timing.md) / [`../llm/11-timing-analysis.md`](../llm/11-timing-analysis.md); drop clock or revisit sample edge only if that review fails
 - [ ] CI + GDS flow green
 - [ ] Freeze RTL for shuttle
 

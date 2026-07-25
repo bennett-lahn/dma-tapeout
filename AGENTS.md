@@ -17,7 +17,7 @@ Related skill: [`.cursor/skills/tinydma-prior-art/SKILL.md`](.cursor/skills/tiny
 
 ## Current phase
 
-Planning / architecture. No RTL yet. Resolve items in `docs/llm/08-open-questions.md` before freezing interfaces.
+Planning / architecture. Early RTL under `src/rtl/`. Resolve items in `docs/llm/08-open-questions.md` before freezing interfaces.
 
 ## Do / don't
 

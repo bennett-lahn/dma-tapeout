@@ -55,7 +55,7 @@ A successful project can claim all of the following:
 1. Host can install a TCD chain in PSRAM (via pass-through or equivalent programming path).
 2. Host can start DMA; ASIC masters QSPI and executes the chain without further host SPI traffic.
 3. End-to-end demoboard demo: bulk copy in PSRAM (same-device and cross-device A↔B).
-4. Cocotb suite covers happy path + key fault/edge cases (`QUIT` TCD, zero length, CE# refresh slicing, invalid/incomplete host sequences, dual-CS selection, abort).
+4. Cocotb suite covers happy path + key fault/edge cases (`QUIT` TCD, zero length, invalid/incomplete host sequences, dual-CS selection, abort).
 5. Design closes in OpenLane / TT flow within 2 tiles with known DFF budget.
 6. Idle pass-through still lets MCU access flash on the PMOD; ASIC never asserts flash CS in V1.
 

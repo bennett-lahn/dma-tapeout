@@ -20,12 +20,12 @@ Approximate working metadata: **88 DFFs**, plus:
 
 - **Data buffer** between read and write (**1 byte / 8 DFFs for V1**; D20)
 - FSM state flops
-- QSPI shifter / bit counters / CE# timing counters
+- QSPI shifter / bit counters
 - Error sticky bits
 
 ### Data buffer depth (D20)
 
-V1 implements a **1-byte** RX→TX hold. **Correctness must not depend on buffer depth:** the descriptor FSM and QSPI engine should treat depth as a parameter `N` (V1: `N=1`). A later deeper scratch (for fewer cmd+addr reissues) must remain a pure performance / DFF trade, not a semantic change to TCD fields, pointer updates, CE# refresh policy, or cross-device CS rules.
+V1 implements a **1-byte** RX→TX hold. **Correctness must not depend on buffer depth:** the descriptor FSM and QSPI engine should treat depth as a parameter `N` (V1: `N=1`). A later deeper scratch (for fewer cmd+addr reissues) must remain a pure performance / DFF trade, not a semantic change to TCD fields, pointer updates, or cross-device CS rules. Short held CE# pulses at `N=1` also make `tCEM` / Linear Burst page slicing a non-goal until **`N ≥ 60`** (`tCEM` 4 us / read @ 33 MHz SCK) or **`N ≥ 1026`** (two page crosses) - see [`descriptor-fsm.md`](descriptor-fsm.md).
 
 No on-chip head pointer (fixed start at `0x000000` / PSRAM 0). No ALU immediate in V1. Post-V1 register growth: [`../post-v1.md`](../post-v1.md).
 

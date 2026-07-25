@@ -33,7 +33,7 @@ Only one PSRAM CE# low per transaction (shared SIO). Cross-device = read then wr
 
 | Port | Assignment |
 |---|---|
-| `clk` | Design clock **84 MHz** target (RP2040-generated on demoboard; D16) |
+| `clk` | Design clock **66 MHz** target (RP2040-generated on demoboard; D16); QSPI engine SCK = clk/2 |
 | `rst_n` | Active-low reset |
 | `ui_in[0]` | **START** - accepted only while IDLE/`DONE`; ignored while busy |
 | `ui_in[1]` | **ABORT** - finish current QPI txn → IDLE |
@@ -75,7 +75,7 @@ External store is **two** APS6404L-class QSPI PSRAMs (byte-addressable) on the P
 | Rule | Detail |
 |---|---|
 | Internal pointers | **24-bit** (`SRC_PTR`, `DEST_PTR`, `NEXT_TCD`) - no head register |
-| QSPI address phase | **`ptr[22:0]`** on the wire (device `A[22:0]`) |
+| QSPI address phase | **24 bits** on the wire; device uses `A[22:0]` from `ptr[22:0]`; phase MSB unused (die is `ptr[23]` → `die_sel`, not address MSB) |
 | Device select | **`ptr[23]`** (`0`=PSRAM 0, `1`=PSRAM 1) |
 | Fixed head | START always fetches **`0x000000` on PSRAM 0** |
 | End of chain | **`CTRL_FLAGS.QUIT=1`** → IDLE / DONE (no execute) |
@@ -117,7 +117,7 @@ Post-V1 (ALU / cond-stop / ring / flash): [`post-v1.md`](post-v1.md).
 | Working regs | Active TCD only + **1-byte** data hold (depth-agnostic; D20) | [`blocks/working-registers.md`](blocks/working-registers.md) |
 | TCD format | 11-byte record in PSRAM | [`blocks/tcd.md`](blocks/tcd.md) |
 | Descriptor FSM | Fetch TCD -> read → write → update/chain | [`blocks/descriptor-fsm.md`](blocks/descriptor-fsm.md) |
-| QSPI engine | QPI `0xEB`/`0x02`, CE# slicing, A/B CS (MCU enter/exit QPI) | [`blocks/qspi-engine.md`](blocks/qspi-engine.md) |
+| QSPI engine | QPI `0xEB`/`0x02`, A/B CS; SCK=clk/2; D21 `~busy` / `wdata_next` (no `txn_ready`/`wdone`) | [`blocks/qspi-engine.md`](blocks/qspi-engine.md) |
 | Byte ALU / ring | **Post-V1** stubs | [`blocks/alu.md`](blocks/alu.md), [`blocks/ring-buffer.md`](blocks/ring-buffer.md) |
 
 ## Data path mental model
@@ -147,7 +147,7 @@ Tracked in detail at [`../../llm/08-open-questions.md`](../../llm/08-open-questi
 - Status / DFT packing on `uo_out[7:1]` (and optional `ui_in[7:2]`)
 - Self-pointing descriptor policy vs abort
 
-Settled for V1: **24-bit** pointers with **`ptr[23]` device**; **11-byte** TCD with **`QUIT`** flag; fixed head at 0/PSRAM0; zero-length no-op; idle/START/ABORT/DONE/pass-through (D14/D18/D19); QPI data `0xEB`/`0x02` (D15/D17); **MCU** enter/exit QPI (D17); **84 MHz** rising-edge RX (D16); **1-byte** data buffer, depth-agnostic (D20); `ui_in[0]=START`, `ui_in[1]=ABORT`, `uo_out[0]=DONE`; QSPI on `uio`; **dual PSRAM** DMA; **ASIC flash unsupported**. Post-V1 ladder: [`post-v1.md`](post-v1.md).
+Settled for V1: **24-bit** pointers with **`ptr[23]` device**; **11-byte** TCD with **`QUIT`** flag; fixed head at 0/PSRAM0; zero-length no-op; idle/START/ABORT/DONE/pass-through (D14/D18/D19); QPI data `0xEB`/`0x02` (D15/D17); **MCU** enter/exit QPI (D17); **66 MHz `clk`**, **SCK = clk/2**, rising-edge RX (D16); D21 handshake (`~busy` / `wdata_next` / length-driven write end); **1-byte** data buffer, depth-agnostic (D20); `ui_in[0]=START`, `ui_in[1]=ABORT`, `uo_out[0]=DONE`; QSPI on `uio`; **dual PSRAM** DMA; **ASIC flash unsupported**. Post-V1 ladder: [`post-v1.md`](post-v1.md).
 
 ## See also
 

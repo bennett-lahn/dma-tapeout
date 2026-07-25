@@ -53,8 +53,8 @@ From datasheet (APS6404L-3SQR Rev 2.3) and planning notes:
 - Soft reset over SPI or QPI: Reset Enable (`0x66`) then Reset (`0x99`) immediately after (datasheet: issue Reset immediately)
 - Enter Quad Mode (`0x35`) over 1-bit SPI only; thereafter command/addr/data use 4-bit phases in QPI
 - Exit Quad Mode (`0xF5`) is QPI-only and returns the device to SPI
-- Linear burst crosses a 1K page at most once per CE# pulse and caps at 84 MHz when crossing; Wrap32 (`0xC0` toggle) is optional and not the power-up default
-- Clock policy (D16): design / demoboard **84 MHz** QPI; sample read data on **rising** SCK. Phase 3 must re-check `tACLK` / board / TT timing against 84 MHz rising-edge before shuttle freeze
+- Linear burst crosses a 1K page at most once per CE# pulse and caps at **84 MHz** when crossing (device max; ASIC SCK is lower); Wrap32 (`0xC0` toggle) is optional and not the power-up default
+- Clock policy (D16): design / demoboard **66 MHz `clk`**, **SCK=clk/2** (≈33 MHz); sample read data on **rising** SCK. Phase 3 must re-check `tACLK` / board / TT timing against this target before shuttle freeze
 - Mode ownership (D17): **MCU** Enter/Exit Quad via pass-through; ASIC expects dies already in QPI before START. Sole ASIC QPI read = **`0xEB`**
 
 ### Full device command set (datasheet truth table)
@@ -107,7 +107,7 @@ These are the opcodes the **on-chip QSPI engine** emits (not MCU pass-through).
 | Exit Quad Mode `0xF5` | **MCU only (D17)** | Cut from ASIC for simplicity; firmware exits after DONE if needed |
 | Enter Quad / Reset `0x35`/`0x66`/`0x99` | **MCU only (D17)** | No ASIC SPI config FSM |
 | Wrap Boundary Toggle `0xC0` | **Defer (not V1)** | Default Linear Burst matches long DMA copies |
-| Fast Read `0x0B` | **Not in ASIC (D17)** | Sole read is `0xEB` (also over `0x0B` QPI max at 84 MHz) |
+| Fast Read `0x0B` | **Not in ASIC (D17)** | Sole read is `0xEB` (also over `0x0B` QPI max at 66 MHz) |
 
 **V1 ASIC opcode set (frozen):** QPI read **`0xEB`** + write **`0x02`** only.
 
@@ -117,6 +117,14 @@ These are the opcodes the **on-chip QSPI engine** emits (not MCU pass-through).
 2. **Address** - 24-bit address (6 clocks)
 3. **Dummy / wait** - device-specific; required for fast reads so DRAM array can produce data
 4. **Data** - 2 clocks per byte in quad mode
+
+### Engine bit order and CE# sequencing
+
+Human summary: `docs/human/architecture/blocks/qspi-engine.md` (Engine behavior notes).
+
+1. **QPI bit order:** MSB-first within the byte; each clock drives one nibble on `SIO[3:0]` with **SIO[3] = MSB** of that nibble (SIO[0] = LSB). Upper nibble on the first SCK of the byte, lower nibble on the second.
+2. **`tCPH` wait @ 66 MHz `clk`:** min CE# high is **18 ns**; one `clk` is ≈ 15.2 ns (short), two `clk` ≈ 30.3 ns (ok). After every read/write, keep CE# high for **≥ 2 `clk`** before the next CE# falling edge. Engine SCK is **clk/2** (≈33 MHz) when enabled.
+3. **CE# / SCK padding:** assert CE# low for **one `clk`** with no SCK before the first SCK edge (`CS_ON`); after the last SCK edge, keep CE# low for **one `clk`** with no SCK (`SCLK_OFF`) before raising CE# (`CS_OFF`).
 
 ### Refresh / CE# warning (critical)
 
@@ -136,30 +144,45 @@ Key timing numbers (APS6404L Table 10 class):
 
 Datasheet/notes also recommend, for latching the last read beat before termination: provide a longer CE# hold such that **`tCHD > tACLK + tCLK`**.
 
-**Design requirement:** the QSPI engine must slice long DMA bursts into CE#-high-bounded segments even if the logical transfer is longer. Track CE# low time against `tCEM` for the chosen device grade.
+**Design requirement (device physics):** continuous CE# low must stay under `tCEM`, and Linear Burst may cross a 1K page at most once per CE# pulse. **V1 implementation:** buffer depth `N=1` plus 11-byte TCD fetch keep every CE# pulse far under both limits, so the engine does **not** need a CE# low-time counter or page-boundary slicer.
+
+**Numeric thresholds @ 33 MHz SCK** (full-buffer hold in one CE# pulse; overhead = 14 SCK `0xEB` / 8 SCK `0x02`; 2 SCK/byte):
+
+| Rule | Max safe `N` | First failing `N` |
+|---|---|---|
+| `tCEM` 4 us (≈132 SCK) | read 59 / write 62 | **60 / 63** |
+| `tCEM` 8 us (≈264 SCK) | read 125 / write 128 | **126 / 129** |
+| Linear Burst ≤1 page cross | 1025 (any align) | **1026** (worst align) |
+
+Binding limit when enlarging `N` is **`tCEM`**, starting at **60**. Detail: `docs/human/architecture/blocks/descriptor-fsm.md`.
+
+## Post-RTL timing checklist
+
+After RTL is feature-complete, run the Phase 3 checks in `11-timing-analysis.md` (CE#↔SCK sequencing in sim; `tACLK` / setup-hold / board on STA + demoboard). Human pointer: `../human/architecture/timing.md`.
 
 ## High-speed read sampling note (D16)
 
-**Frozen for V1:** target clock **84 MHz**; sample read data on the **rising** edge of SCK. DLL / pattern training is a non-goal.
+**Frozen for V1:** system **`clk` 66 MHz**; engine **SCK = clk/2** (≈ 33 MHz toggle FF); sample read data on the **rising** edge of SCK into `clk`-domain `rdata`. DLL / pattern training is a non-goal.
 
 Datasheet-style margin note (still relevant for Phase 3 review):
 
 - `tACLK` CLK-to-output delay roughly min 2 ns, max 5.5 ns
-- At ~84 MHz, next-rising-edge sample leaves little theoretical setup before PCB flight time
-- Fallback if Phase 3 hardware check fails: lower clock and/or falling-edge RX (half-cycle extra launch-to-sample margin)
+- At ≈ 33 MHz SCK, rising-edge sample has more margin than a full-rate 66 MHz pad clock
+- Fallback if Phase 3 hardware check fails: lower `clk` and/or falling-edge RX
 
-Phase 3 (demoboard + hardening) must **double-check** `tACLK`, board flight time, and TT I/O against this 84 MHz / rising-edge target before shuttle freeze.
+Phase 3 (demoboard + hardening) must **double-check** `tACLK`, board flight time, and TT I/O against **66 MHz clk / 33 MHz SCK** rising-edge before shuttle freeze.
 
 ## Implications for this DMA
 
-1. **Address width:** V1 uses **24-bit** internal pointers; QSPI address phase drives `A[22:0]` from `ptr[22:0]`. Device select is **`ptr[23]`** (D19).
+1. **Address width:** V1 uses **24-bit** internal pointers. The QPI **address phase is always 24 bits** on the wire (`qspi_addr_t`); the device only consumes `A[22:0]` from `addr[22:0]` / `ptr[22:0]`. **`addr[23]` is unused** (drive 0) - it is not the die bit. Device select is **`die_sel`** from **`ptr[23]`** (D19), which steers `ram_*_cs_n`.
 2. **Dual die:** engine must mux RAM A vs RAM B CS from pointer MSBs (`SRC_PTR[23]` / `DEST_PTR[23]` / `NEXT_TCD[23]`); never assert both; flash CS OE stays off (D11). Cross-device = sequential read/write with CS switch.
 3. **Init ownership (D17):** MCU waits 150 us, resets, and Enter Quad on **each** PSRAM used before START; ASIC assumes QPI already. Exit Quad is MCU-only after DONE.
 4. **Descriptor fetch efficiency:** hold CE# across the **11-byte** TCD read (first: addr 0 / PSRAM 0; later `NEXT_TCD` die from bit 23); read opcode `0xEB`.
-5. **Byte copy efficiency vs refresh:** holding CE# across huge copies is illegal; engine must track CE# low time per active die. Data beats are QPI-only (`0xEB`/`0x02`). On-chip scratch is **1 byte** for V1; max held payload per read/write phase follows buffer depth `N` (parameter; D20), which stays well under `tCEM` at 84 MHz.
+5. **Byte copy vs refresh / pages:** V1 scratch is **1 byte**, so each data phase is cmd+addr(+dummy)+1 byte then CE# high. Device limits only matter if `N` grows: **`N ≥ 60`** can exceed `tCEM` 4 us on `0xEB` @ 33 MHz SCK; **`N ≥ 1026`** can cross two 1K pages. Data beats are QPI-only (`0xEB`/`0x02`).
 6. **Pass-through / bus OE:** demoboard shares `uio` among RP2040, ASIC, and PSRAM/flash PMOD. Pass-through means idle/`DONE` and ASIC `uio_oe=0` (D14); DMA means MCU GPIOs high-Z and ASIC drives with phase-accurate SIO OE + RAM CS mux. Both masters enabled is contention - see host-interface bus-ownership doc.
 7. **Abort:** finish current QPI transaction, then idle (D14).
 8. **Flash:** not in V1 ASIC opcode set. NOR erase/BUSY/page semantics are why write is stretch-only; see W25Q128JV converted datasheet.
+9. **FSM ↔ engine (D21):** pulse-start when `~busy` (no `txn_ready`); fixed `byte_len` (`[QSPI_BYTE_LEN_W-1:0]`); FSM holds request (engine does not latch); write first nibble on `wdata` with `txn_valid`; `busy` / `rdata_valid` (rising-SCK capture pulse) / `wdata_next` (falling-SCK pulse); write ends on `2 * byte_len` SCK (no `wdone`); SCK = clk/2; no SPI stall for FSM; engine owns CE# pad + `tCPH`. See human `qspi-engine.md` and `03-architecture.md`.
 
 ## Hardware ecosystem links (see also references)
 

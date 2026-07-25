@@ -5,7 +5,7 @@ alwaysApply: true
 
 # DMA Tapeout Project Context
 
-This repo is a Tiny Tapeout scatter-gather DMA project in the **planning / architecture** phase.
+This repo is a Tiny Tapeout scatter-gather DMA project in the **planning / architecture** phase (early RTL under `src/rtl/`).
 
 ## Before nontrivial work
 
@@ -32,5 +32,5 @@ Human summaries live in `docs/human/` (condensed). Do not duplicate long design 
 ## Implementation style (when RTL exists)
 
 - SystemVerilog port/instance commas at the beginning of lines
-- Synchronous reset-high only
+- Synchronous active-low reset only (`rst_n`; assert with `if (~rst_n)`)
 - No unsolicited extra markdown docs outside `docs/`

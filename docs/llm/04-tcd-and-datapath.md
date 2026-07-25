@@ -69,13 +69,15 @@ loop:
         SRC_PTR[22:0] += k
         DEST_PTR[22:0] += k
         TRANSFER_LEN -= k
-        honor CE# refresh slicing as needed inside READ/WRITE engine
+        # V1 N=1: CE# rises every short txn; tCEM / page slicer not required
     fetch_ptr = NEXT_TCD
 ```
 
 Host **ABORT** (`ui_in[1]`): finish the current QPI transaction, then IDLE / DONE / pass-through (D14/D18).
 
-**Data buffer (D20):** V1 implements `N=1` (8 DFFs). FSM / QSPI path must remain correct for any `N >= 1`; deepening the scratch is optional performance work, not a protocol or TCD change.
+**Data buffer (D20):** V1 implements `N=1` (8 DFFs). FSM / QSPI path must remain correct for any `N >= 1`; deepening the scratch is optional performance work, not a protocol or TCD change. Short held CE# pulses also make APS6404L `tCEM` and Linear Burst one-page-cross rules non-binding for V1 (see human [`descriptor-fsm.md`](../human/architecture/blocks/descriptor-fsm.md)).
+
+**FSM ↔ QSPI (D21):** start with `txn_valid` only when `~busy` (no `txn_ready` / no `wdone`). Engine does not latch the request; FSM holds `{cmd, addr, die_sel, byte_len}`. `byte_len` width is `QSPI_BYTE_LEN_W` from `qspi_pkg`. Writes: first nibble on `wdata` with `txn_valid`; follow `wdata_next` pulses; engine ends after `2 * byte_len` SCK. SCK = clk/2. Detail: [`03-architecture.md`](03-architecture.md) / human [`qspi-engine.md`](../human/architecture/blocks/qspi-engine.md).
 
 ## Host programming model (firmware view)
 
@@ -121,7 +123,7 @@ Minimum interesting checks:
 - `NEXT_TCD` address bits `== 0` as a valid link (not end-of-chain)
 - Abort mid-run: current QPI txn completes, then IDLE
 - START ignored while not idle
-- CE# high inserted before max low time during long moves
+- Short CE# pulses from `N=1` / 11-byte fetch (no dedicated `tCEM` slicer required in V1)
 - Pass-through only while DONE
 - Addresses above 64 KB (e.g. `0x010000`) work end-to-end
 - Full `A[22:0]` window with die select in `ptr[23]`

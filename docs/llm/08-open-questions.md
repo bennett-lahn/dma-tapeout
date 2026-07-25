@@ -51,7 +51,7 @@ Per TinyDMA-2C prior art, command/payload strobes are one known reference patter
 
 ## Q9 - Clock frequency target
 
-**Decided (D16):** demoboard / design target **84 MHz**; sample read data on the **rising** edge of SCK. Phase 3 must re-validate `tACLK` / board / TT timing against this target before shuttle freeze.
+**Decided (D16):** demoboard / design **`clk` 66 MHz**; engine **SCK = clk/2**; sample read data on the **rising** edge of SCK. Phase 3 must re-validate `tACLK` / board / TT timing against this target before shuttle freeze.
 
 ## Q10 - Sensor data ingress path
 
@@ -61,7 +61,7 @@ Optional later: streamed host-pin ingress and/or telemetry features in `10-post-
 
 ## Q11 - Feature freeze for first shuttle
 
-**Decided (D12 / D14 / D15 / D16 / D17 / D18 / D19 / D20):** V1 = pass-through + QPI (`0xEB`/`0x02`) + MCU enter/exit QPI + dual CS + 11-byte TCD + `ptr[23]` device select + `QUIT` end-of-chain + fixed head at 0/PSRAM0 + cross-device + chaining + START/ABORT/DONE pins + 84 MHz rising-edge RX + **1-byte** data buffer with depth-agnostic correctness. **Out of V1:** ALU, conditional stop, ring, ASIC flash (post-V1 ladder in `10-post-v1-features.md`).
+**Decided (D12 / D14 / D15 / D16 / D17 / D18 / D19 / D20 / D21):** V1 = pass-through + QPI (`0xEB`/`0x02`) + MCU enter/exit QPI + dual CS + 11-byte TCD + `ptr[23]` device select + `QUIT` end-of-chain + fixed head at 0/PSRAM0 + cross-device + chaining + START/ABORT/DONE pins + 66 MHz `clk` / SCK=clk/2 / rising-edge RX + D21 (`~busy` / `wdata_next` / length-driven write) + **1-byte** data buffer with depth-agnostic correctness. **Out of V1:** ALU, conditional stop, ring, ASIC flash (post-V1 ladder in `10-post-v1-features.md`).
 
 Still open inside V1: multi-outstanding (lean: no), `uo_out[7:1]` status packing (Q3 remainder).
 

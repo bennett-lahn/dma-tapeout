@@ -73,7 +73,7 @@ Chronological distillation of the idea -> proposal -> selection process. Verbose
 **Implied V1 triage order (highest keep-priority first) - updated by D12:**
 
 1. Pass-through + START/DONE/**abort** bus ownership (MCU can still reach flash + both PSRAMs when idle)
-2. QSPI engine with CE# refresh slicing + **RAM A/B CS mux**
+2. QSPI engine with **RAM A/B CS mux** (V1: short CE# pulses from `N=1` / 11-byte fetch; no dedicated `tCEM` slicer)
 3. Single TCD memmove (same-device)
 4. Cross-device PSRAM copy (A↔B)
 5. TCD chaining (scatter-gather)
@@ -202,16 +202,17 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 3. ~~SPI may be used for config / Enter Quad on the ASIC.~~ **Superseded by D17:** ASIC emits **no** SPI and **no** Enter/Exit Quad; MCU owns mode bring-up via pass-through.
 4. ~~Primary QPI read opcode open.~~ **Superseded by D17:** sole QPI read opcode is **`0xEB`**.
 
-## D16 - Clock target 84 MHz; rising-edge RX sample
+## D16 - Clock target 66 MHz; rising-edge RX sample
 
 **Decision:**
 
-1. Design / demoboard target clock: **84 MHz** (QPI linear-burst class for APS6404L).
-2. Sample PSRAM read data on the **rising** edge of SCK (next rising after launch; no falling-edge RX path in V1).
-3. DLL / pattern-based eye training remains a V1 non-goal.
-4. Phase 3 (demoboard + hardening) must **re-check hardware constraints** (`tACLK`, board flight time, TT I/O, RP2040 clocking) against this 84 MHz / rising-edge target before shuttle freeze; drop clock or revisit sample edge only if that review fails.
+1. Design / demoboard **system `clk`:** **66 MHz**.
+2. QSPI engine generates pad **SCK as a registered toggle** while enabled → **SCK = clk/2** (≈ 33 MHz); SCK held low in pad/idle states. Do **not** mux/gate `clk` onto the SCK pad.
+3. Sample PSRAM read data on the **rising** edge of SCK (captured into `clk`-domain `rdata`; pulse `rdata_valid`). No falling-edge RX path in V1.
+4. DLL / pattern-based eye training remains a V1 non-goal.
+5. Phase 3 must **re-check** `tACLK` / board / TT / RP2040 clocking against **66 MHz clk / 33 MHz SCK** rising-edge before shuttle freeze.
 
-**Why:** Matches the device's linear-burst frequency class and keeps the RX path simple (one sample edge). Rising-edge at 84 MHz is margin-tight vs `tACLK` max 5.5 ns - accepted as the plan, with an explicit hardening gate rather than pre-emptively choosing falling-edge or a lower clock.
+**Why:** Avoids fragile clock-gate/mux of `clk` onto SCK while keeping a simple rising-edge RX path. Half-rate SCK eases `tACLK` margin vs a full-rate 66 MHz pad clock; still within APS6404L Linear Burst capability.
 
 ## D17 - MCU owns QPI enter/exit; sole QPI read is `0xEB`
 
@@ -270,9 +271,26 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 1. V1 on-chip RX→TX **data buffer depth is 1 byte** (`N=1`, 8 DFFs).
 2. Descriptor FSM and QSPI engine **must not depend on a specific `N` for correctness**. Treat buffer depth as a parameter: each copy step moves `k = min(N, TRANSFER_LEN)` bytes, then advances SRC/DEST/`TRANSFER_LEN` by `k`.
-3. Changing `N` later (deeper scratch for fewer cmd+addr reissues) is a **performance / DFF trade only** - no TCD format, host protocol, CE# refresh policy, or cross-device CS rule changes.
-4. `tCEM` / page-cross slicing remains mandatory in the QSPI engine regardless of `N` (with `N=1`, `tCEM` is not the binding limit on payload size).
+3. Changing `N` later (deeper scratch for fewer cmd+addr reissues) is a **performance / DFF trade only** - no TCD format, host protocol, or cross-device CS rule changes.
+4. At V1 `N=1` (and 11-byte TCD fetch), `tCEM` and Linear Burst one-page-cross are **not binding** - no CE# refresh timer or page slicer. **Thresholds at 33 MHz SCK** if a later design holds CE# for a full `N`-byte payload: first `tCEM` (4 us extended) violation at **`N ≥ 60`** on `0xEB` read (**`N ≥ 63`** on `0x02` write); first possible two-page-cross at **`N ≥ 1026`**. Page limit is unreachable before `tCEM` fails. See human `descriptor-fsm.md`.
 
-**Why:** Keeps V1 DFF cost minimal while avoiding a byte-hardcoded datapath that would need a redesign to widen. Soft 2-tile budget (~500 DFFs) cannot host a `tCEM`-sized scratch (~120 B) anyway.
+**Why:** Keeps V1 DFF cost minimal while avoiding a byte-hardcoded datapath that would need a redesign to widen. Soft 2-tile budget (~500 DFFs) cannot host a `tCEM`-sized scratch (~59 B read budget at 33 MHz SCK) anyway; with `N=1`, refresh/page physics are satisfied by construction.
 
 **DFF / tile impact:** **+8 DFFs** for the V1 hold (already assumed in working-reg notes). Larger `N` costs `~8*N` DFFs plus a small fill/count; not planned for V1.
+
+## D21 - Descriptor FSM ↔ QSPI engine handshake
+
+**Decision:**
+
+1. FSM issues a **transaction request** (not a TCD slice): `cmd`, `addr`, `die_sel`, exact `byte_len` (`qspi_pkg` types; `die_sel` ≠ pad CE#). `byte_len` width is `QSPI_BYTE_LEN_W = $clog2(QSPI_MAX_BYTES + 1)` with `QSPI_MAX_BYTES = max(DMA_BUF_DEPTH, QSPI_TCD_BYTES)`.
+2. Start is a **1-cycle `txn_valid` pulse**, legal only when **`~busy`**. There is **no `txn_ready`** port (`busy` is the start qualifier; CE# pad + `tCPH` are folded into `busy` / idle sequencing).
+3. Engine does **not** latch the request; FSM must hold `{cmd, addr, die_sel, byte_len}` stable from `txn_valid` until `busy` low.
+4. Data path is nibble-wide (`rdata`/`wdata` `[3:0]`); two SCK beats per payload byte.
+5. Read: on each rising SCK in the data phase, engine captures `sio_in` → `rdata` and pulses **`rdata_valid`** one `clk`. FSM always sinks; engine transfers exactly `2 * byte_len` nibbles.
+6. Write: first nibble on `wdata` with `txn_valid`. Engine pulses **`wdata_next`** on **falling SCK** when the next nibble is required; FSM updates `wdata` for the following rise. **No `wdone`:** engine ends the write after `2 * byte_len` SCK beats, then end-pad / raise CE#.
+7. Engine **never stalls** SCK/CE# for the FSM; owns CE# start (`CS_ON`) / end (`SCLK_OFF` then `CS_OFF`) pad and ≥2-`clk` `tCPH` (`CS_OFF` + `IDLE`).
+8. FSM grants `uio_oe` while `busy`; reclaims when `busy` clears. ABORT waits for current txn (`busy`→0).
+
+**Why:** Minimal FSM↔engine surface (`busy` / pulsed nibble beats / length-driven end). Dropping `txn_ready` and `wdone` avoids redundant handshake state; half-rate SCK + edge-timed `wdata_next` keeps TX setup clean without gating `clk` onto the pad.
+
+**DFF / tile impact:** SCK toggle + edge detects + `rdata` hold / valid pulse + beat counters; no request-shadow flops; no extra buffer beyond D20.

@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Status: planning-level. V1 freezes: QSPI on `uio`, `ui_in[0]=START`, `ui_in[1]=ABORT`, `uo_out[0]=DONE` (= idle), idle/START/abort/pass-through (D14/D18), **24-bit** pointers with **`ptr[23]` device select** + **`QUIT`** end-of-chain (D19), fixed head at `0x000000`/PSRAM0 (D18), **11-byte** TCD (D19), **QPI data path** `0xEB`/`0x02` (D15/D17), MCU-owned enter/exit QPI (D17), **84 MHz** clock + rising-edge RX sample (D16), **1-byte** data buffer with depth-agnostic correctness (D20), **dual PSRAM** DMA (incl. cross-device), **ASIC flash unsupported** (MCU pass-through only). ALU / cond-stop / ring / ASIC flash are **post-V1** (`10-post-v1-features.md`). Remaining open: `uo_out[7:1]` status pack.
+Status: planning-level. V1 freezes: QSPI on `uio`, `ui_in[0]=START`, `ui_in[1]=ABORT`, `uo_out[0]=DONE` (= idle), idle/START/abort/pass-through (D14/D18), **24-bit** pointers with **`ptr[23]` device select** + **`QUIT`** end-of-chain (D19), fixed head at `0x000000`/PSRAM0 (D18), **11-byte** TCD (D19), **QPI data path** `0xEB`/`0x02` (D15/D17), MCU-owned enter/exit QPI (D17), **66 MHz** `clk` + **SCK=clk/2** + rising-edge RX (D16), **1-byte** data buffer with depth-agnostic correctness (D20), FSM↔QSPI pulse-start handshake (D21), **dual PSRAM** DMA (incl. cross-device), **ASIC flash unsupported** (MCU pass-through only). ALU / cond-stop / ring / ASIC flash are **post-V1** (`10-post-v1-features.md`). Remaining open: `uo_out[7:1]` status pack.
 
 ## Product framing
 
@@ -122,7 +122,7 @@ Responsibilities:
 
 - Detect START (`ui_in[0]`) and ABORT (`ui_in[1]`)
 - Drive status (done, error, debug mux on remaining `uo_out`)
-- Own mode switch between pass-through and DMA master by gating `uio_oe` (idle: all clear; active: engine-driven per pin/phase)
+- Own mode switch between pass-through and DMA master via descriptor-FSM `uio_oe` arbitration (idle: FSM clears OE; active txn: FSM grants OE to QSPI engine)
 
 Frozen: `ui_in[0]=START`, `ui_in[1]=ABORT`, `uo_out[0]=DONE` (D14/D18); no head-pointer pins. Per TinyDMA-2C prior art, that design used `ui_in` + `uio` strobes with a command/payload config adapter and a **fixed** SPI `uio_oe` mask; this project needs dynamic SIO OE for QSPI and a shared-bus pass-through model instead. Same I/O scarcity applies.
 
@@ -152,7 +152,7 @@ Approximate working metadata: **88 DFFs**, plus at least:
 - QSPI shifter / bit counters / CE# timing counters
 - Error sticky bits (no head pointer)
 
-**Buffer depth (D20):** V1 uses `N=1`. FSM / QSPI sequencing must treat `N` as a parameter: correctness (TCD semantics, pointer/`TRANSFER_LEN` updates, CE# refresh slicing, single-CS cross-device) must not depend on a specific buffer length. Deepening the scratch later is a performance/DFF trade only.
+**Buffer depth (D20):** V1 uses `N=1`. FSM / QSPI sequencing must treat `N` as a parameter: correctness (TCD semantics, pointer/`TRANSFER_LEN` updates, single-CS cross-device) must not depend on a specific buffer length. Deepening the scratch later is a performance/DFF trade only. At `N=1` (and 11-byte TCD fetch), `tCEM` / Linear Burst page-cross limits are not binding. First failing depths @ 33 MHz SCK for a full-buffer hold: **`N ≥ 60`** (`tCEM` 4 us / `0xEB`), **`N ≥ 1026`** (two 1K page crosses).
 
 ### 3. Dataflow FSM (descriptor engine)
 
@@ -168,10 +168,11 @@ Notes from planning:
 
 - `STATE_UPDATE` may fold into `STATE_WRITE` to save states.
 - Descriptor fetch should use a **held-CE# burst** so command+address overhead is not paid per TCD byte.
-- Data moves are QPI byte-oriented in V1 (D15); CE# refresh slicing remains mandatory for long transfers.
+- Data moves are QPI byte-oriented in V1 (D15). With `N=1`, each READ/WRITE raises CE# after one byte - no CE# refresh / page slicer required; revisit if `N` grows (D20).
 - Buffer depth `N=1` for V1; do not bake `N` into correctness assumptions (D20).
 - Abort: finish current QPI txn, then IDLE.
 - No `STATE_PROCESS` in V1 (ALU / cond-stop are post-V1).
+- **`uio_oe` arbitration:** descriptor FSM owns OE by default (idle / between txns → typically clear for pass-through); grants the QSPI engine the per-pin OE mask only while a transaction is in flight, then reclaims it.
 
 ### 4. Post-V1 blocks (not in V1 silicon plan)
 
@@ -185,14 +186,14 @@ Distinct submodule responsible for:
 - QPI command, address, dummy (6 wait for `0xEB`), data phases
 - Burst holds vs CE# high refresh windows
 - Bidirectional SIO direction control
-- Read sampling: rising-edge of SCK at **84 MHz** (D16)
+- Read sampling: rising-edge of SCK; system **`clk` 66 MHz**, **SCK=clk/2** (D16)
 
 QSPI summary: four data lines reused for I/O, approaching **4x** throughput vs 1-bit SPI. ASIC never emits SPI; MCU owns enter/exit QPI (D17).
 
 #### Transaction phases (QPI)
 
 1. **Command** - 8-bit instruction (2 cycles at 4 bits/clock)
-2. **Address** - 24-bit memory address (6 cycles)
+2. **Address** - 24-bit phase on the wire (6 cycles); useful bits are `A[22:0]`; phase MSB unused (`addr[23]=0`); die via `die_sel`
 3. **Wait / dummy** - 6 empty cycles for `0xEB`; float host data pins while DRAM produces data
 4. **Data** - sample read data on rising SCK; capture / drive bytes
 
@@ -207,7 +208,20 @@ ASIC expects the MCU to put each PSRAM die into **QPI mode** before START (and t
 
 Full opcode / timing truth lives in `05-qspi-psram.md`.
 
-The DMA FSM issues transaction requests; the QSPI engine owns bit-level timing.
+The DMA FSM issues transaction requests and arbitrates `uio_oe` (FSM default; QSPI engine while a txn is granted); the QSPI engine owns bit-level timing and the granted per-pin OE mask.
+
+#### FSM ↔ QSPI engine handshake (D21)
+
+Request (not a TCD): `{cmd, addr, die_sel, byte_len}` via `qspi_pkg` (`qspi_cmd_t`, `qspi_addr_t`, `qspi_die_sel_t`, `QSPI_BYTE_LEN_W` in `src/rtl/qspi.svh`). `qspi_addr_t` is **24-bit** to match the QPI address phase; device uses `addr[22:0]` (`A[22:0]`); **`addr[23]` unused** (drive 0). `die_sel` selects PSRAM 0/1 (`ptr[23]`); pad CE#s remain `ram_a_cs_n` / `ram_b_cs_n`. `byte_len` is `logic [QSPI_BYTE_LEN_W-1:0]` with `QSPI_BYTE_LEN_W = $clog2(QSPI_MAX_BYTES + 1)` and `QSPI_MAX_BYTES = max(DMA_BUF_DEPTH, QSPI_TCD_BYTES)`. Engine does **not** latch the request: FSM must keep it stable from `txn_valid` until `busy` low. Engine SCK is a registered toggle (**SCK = clk/2**); no `txn_ready` / no `wdone`.
+
+| Signal | Dir | Contract |
+|---|---|---|
+| `txn_valid` | FSM → eng | **1-cycle pulse** to start; only when `~busy` |
+| `busy` | eng → FSM | In-flight txn; also the start qualifier; ABORT / OE reclaim wait for clear |
+| `rdata_valid` | eng → FSM | **1-`clk` pulse** with captured read **nibble** (`rdata[3:0]`) on rising SCK; eng transfers exactly `2 * byte_len` nibbles |
+| `wdata_next` | eng → FSM | **1-`clk` pulse** on falling SCK in write data: present next `wdata` nibble for the following rise |
+
+Write: first nibble on `wdata` with `txn_valid`; engine ends after `2 * byte_len` SCK beats (length-driven). Read/write: engine never stalls SCK/CE# for the FSM. Human detail: `docs/human/architecture/blocks/qspi-engine.md`.
 
 ## MCU set-up flow
 
@@ -237,11 +251,11 @@ PMOD-class hardware context (`mole99/qspi-pmod` style):
 | Winbond **W25Q128JV** (128 M-bit QSPI Flash) | On PMOD; **MCU pass-through only** in V1. ASIC never masters flash CS. Post-V1: ASIC flash read (maybe write). |
 | **2x** AP Memory **APS6404L-3SQR** (64 M-bit QSPI PSRAM) | **Both** are first-class DMA working memory (TCDs, buffers; cross-device copies OK) |
 
-Device notes: `A[22:0]` addressing; design clock **84 MHz** QPI (D16); powers up in SPI mode; **MCU** enters QPI via pass-through before START (D17). Internal design uses **24-bit** pointers; device select in `ptr[23]` (D19); `QUIT` in `CTRL_FLAGS`. ASIC data opcodes: `0xEB` / `0x02` only (D15/D17).
+Device notes: `A[22:0]` addressing; design **`clk` 66 MHz**, **SCK=clk/2** (D16); powers up in SPI mode; **MCU** enters QPI via pass-through before START (D17). Internal design uses **24-bit** pointers; device select in `ptr[23]` (D19); `QUIT` in `CTRL_FLAGS`. ASIC data opcodes: `0xEB` / `0x02` only (D15/D17).
 
 ## Clock note (D16)
 
-Target **84 MHz** demoboard / design clock. Sample PSRAM read data on the **rising** edge of SCK. `tACLK` up to **5.5 ns** makes rising-edge margin tight at this frequency; Phase 3 must re-check board/TT/`tACLK` constraints against this target before shuttle freeze. DLL training is a V1 non-goal (see `05-qspi-psram.md`).
+Target **66 MHz** demoboard / design `clk` (**SCK=clk/2** ≈ 33 MHz). Sample PSRAM read data on the **rising** edge of SCK. Phase 3 must re-check board/TT/`tACLK` against this target before shuttle freeze. DLL training is a V1 non-goal (see `05-qspi-psram.md`).
 
 ## What makes this different from a trivial memcpy DMA
 

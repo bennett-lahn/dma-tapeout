@@ -33,7 +33,7 @@ V1 target: **bulk mover** between PSRAM A and B (learning / resume demo). ADC te
 
 ## Status
 
-Architecture / planning. RTL not started. TinyDMA-2C (Andrew Kim, TT 296) is prior-art feasibility context only; implementation will be original. Details live in `../llm/prior-art/tinydma-2c.md` and must be cited when used.
+Architecture / planning. Early RTL under `src/rtl/` (QSPI package + engine skeleton). TinyDMA-2C (Andrew Kim, TT 296) is prior-art feasibility context only; implementation will be original. Details live in `../llm/prior-art/tinydma-2c.md` and must be cited when used.
 
 ## See also
 

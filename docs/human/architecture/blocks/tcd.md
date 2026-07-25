@@ -60,7 +60,7 @@ loop:
         WRITE(DEST_PTR, byte)    # CS from DEST_PTR[23]
         SRC_PTR[22:0] += 1; DEST_PTR[22:0] += 1   # keep [23]
         TRANSFER_LEN -= 1
-        (CE# refresh slicing inside QSPI engine)
+        # V1: each READ/WRITE is N=1 byte; CE# rises each txn (no tCEM slicer)
     fetch_ptr = NEXT_TCD
 ```
 

@@ -172,7 +172,9 @@ RTL shape (conceptual):
 
 ```systemverilog
 assign uio_out = qspi_out;
-assign uio_oe  = dma_active ? qspi_oe : 8'h00;
+// Descriptor FSM arbitrates OE: default FSM (pass-through / release);
+// grant to QSPI engine only while a txn is live.
+assign uio_oe  = fsm_grant_oe_to_qspi ? qspi_oe : fsm_oe; // fsm_oe typically 8'h00
 // qspi_oe[flash_cs] = 0 always (V1)
 // qspi_oe[ram_a_cs] / qspi_oe[ram_b_cs] = 1 only for the selected die, never both
 // qspi_oe[SCK] = 1 while master;
@@ -227,7 +229,8 @@ Mitigations:
 ## Related
 
 - Modes: `[../system.md](../system.md)`
-- QSPI engine (phase OE consumer): `[qspi-engine.md](qspi-engine.md)`
+- Descriptor FSM (`uio_oe` arbiter): `[descriptor-fsm.md](descriptor-fsm.md)`
+- QSPI engine (phase OE when granted): `[qspi-engine.md](qspi-engine.md)`
 - Agent detail: `[../../../llm/03-architecture.md](../../../llm/03-architecture.md)`
 - Open questions: `[../../../llm/08-open-questions.md](../../../llm/08-open-questions.md)` (Q3 remainder, Q12)
 - Decisions: D14 / D15 / D18 / D19 in `[../../../llm/07-decision-log.md](../../../llm/07-decision-log.md)`

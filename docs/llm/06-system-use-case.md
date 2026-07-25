@@ -48,9 +48,9 @@ Mechanism: device select via `ptr[23]` on SRC/DEST/NEXT; read-then-write with on
 
 ### 3. Long transfers with refresh
 
-Need: copies larger than a single CE# low window.
+Need: copies larger than a single CE# low window (`tCEM`).
 
-Mechanism: QSPI engine inserts CE# high gaps (`tCEM` / `tCPH`).
+**V1 mechanism:** buffer depth `N=1` forces CE# high after every byte read and every byte write (plus between dies on cross-device). Long `TRANSFER_LEN` is many short pulses, so no dedicated `tCEM` / page slicer. First depth that can hit extended-grade `tCEM` (4 us) at 33 MHz SCK on a full-buffer `0xEB` hold: **`N ≥ 60`**. Two-page-cross only at **`N ≥ 1026`**. See `docs/human/architecture/blocks/descriptor-fsm.md`.
 
 ## What V1 can demo
 

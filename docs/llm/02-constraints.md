@@ -45,11 +45,11 @@ Demoboard/PMOD ecosystem parts of interest: 128 M-bit QSPI Flash (**25Q128JVSM**
 | Power-up | >= 150 us before commands (`tPU`; CE# high) |
 | Boot mode | Powers up SPI; **MCU** must Enter Quad (`0x35`) on each die before START (D17). ASIC expects QPI already |
 | Addressing | Device has large address space (`A[22:0]`); V1 uses **24-bit internal pointers** with `ptr[23]` die select (D19); fixed head at `0x000000` / PSRAM 0 (D18); `QUIT` ends chain |
-| CE# low time (`tCEM`) | Continuous CE# low cannot exceed max CE# low pulse width or **internal DRAM refresh is blocked and data can corrupt**. Max **4 us** (extended grade) / **8 us** (standard grade). Large transfers must be sliced with CE# high gaps. |
+| CE# low time (`tCEM`) | Continuous CE# low cannot exceed max CE# low pulse width or **internal DRAM refresh is blocked and data can corrupt**. Max **4 us** (extended grade) / **8 us** (standard grade). V1 `N=1` / 11-byte fetch pulses stay well under this without a dedicated slicer. |
 | CE# high between bursts (`tCPH`) | Min **18 ns** |
 | Last-byte read terminate | Datasheet/notes recommend longer CE# hold: **`tCHD > tACLK + tCLK`** so the controller latches the final beat before raising CE# |
-| Timing | `tACLK` (CLK-to-Q, min ~2 ns / max ~5.5 ns) makes rising-edge sample margin tight at **84 MHz** (D16); Phase 3 must re-validate before shuttle freeze |
-| Clock target (D16) | Design / demoboard **84 MHz**; RX sample on **rising** SCK |
+| Timing | `tACLK` (CLK-to-Q, min ~2 ns / max ~5.5 ns); Phase 3 checklist: `11-timing-analysis.md` |
+| Clock target (D16) | System **`clk` 66 MHz**; engine **SCK = clk/2** (≈ 33 MHz); RX on **rising** SCK |
 | ASIC opcodes (D17) | QPI only: read **`0xEB`**, write **`0x02`**. No Enter/Exit Quad / reset on ASIC |
 | Soft reset recovery | After `0x66`/`0x99`, wait `tRST` min **50 ns** before next valid command |
 
@@ -64,4 +64,4 @@ Demoboard/PMOD ecosystem parts of interest: 128 M-bit QSPI Flash (**25Q128JVSM**
 - TinyDMA-2C prior art may be cited with explicit attribution; copying architecture/RTL is not allowed. See `prior-art/tinydma-2c.md`.
 - Human docs stay condensed; LLM docs stay verbose and current.
 - Obsidian vault notes are handwritten working notes: **read-only**, do not edit from this repo workflow.
-- Verilog/SystemVerilog: leading commas on ports/instantiations; synchronous reset-high only when resets are introduced.
+- Verilog/SystemVerilog: leading commas on ports/instantiations; synchronous **active-low** reset (`rst_n`) only when resets are introduced.

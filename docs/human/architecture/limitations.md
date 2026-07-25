@@ -31,13 +31,13 @@ DFFs are the scarce resource. Prefer externalizing configuration into PSRAM (TCD
 | Boot mode | Powers up SPI; **MCU** Enter Quad (`0x35`) per die before START (D17). ASIC expects QPI |
 | Addressing | Device uses `A[22:0]`; V1 uses **24-bit internal pointers** with `ptr[23]` die select (D19); fixed head at address `0` / PSRAM 0 (D18); `QUIT` ends chain |
 | CE# low (`tCEM`) | Max **4 us** (extended) / **8 us** (standard). Longer holds block refresh and can corrupt memory |
-| CE# high (`tCPH`) | Min **18 ns** between bursts |
+| CE# high (`tCPH`) | Min **18 ns** between bursts → **≥ 2 `clk`** CE# high @ 66 MHz before next CE# low |
 | Read terminate | Prefer **`tCHD > tACLK + tCLK`** so the last beat latches before CE# rises |
-| `tACLK` | CLK-to-Q about **2 ns min / 5.5 ns max** - rising-edge sample margin is tight at 84 MHz |
-| Clock (D16) | Design / demoboard **84 MHz**; RX on **rising** SCK. Phase 3 must re-validate vs `tACLK` / board / TT before shuttle freeze |
+| `tACLK` | CLK-to-Q about **2 ns min / 5.5 ns max** - eased by **SCK = clk/2** (≈ 33 MHz) |
+| Clock (D16) | System **`clk` 66 MHz**; engine **SCK = clk/2**; RX on **rising** SCK. Phase 3 re-validate vs `tACLK` / board / TT |
 | Soft reset | After `0x66`/`0x99`, wait `tRST` min **50 ns** |
 
-**Design requirement:** long DMA transfers must be sliced with CE# high gaps. Descriptor **11-byte** fetches may hold CE# across the burst; multi-kilobyte copies must not. ASIC data path is QPI-only (`0xEB`/`0x02`); MCU owns enter/exit QPI (D17).
+**V1 implication:** with a **1-byte** data hold (and 11-byte TCD fetch), each CE# pulse is short; no dedicated `tCEM` / page-boundary slicer is required. First risky depths at 33 MHz SCK: **`N ≥ 60`** (`tCEM` 4 us read), **`N ≥ 1026`** (two page crosses). ASIC data path is QPI-only (`0xEB`/`0x02`); MCU owns enter/exit QPI (D17). Detail: [`blocks/descriptor-fsm.md`](blocks/descriptor-fsm.md).
 
 ## Demoboard memory context
 
@@ -50,4 +50,5 @@ DFFs are the scarce resource. Prefer externalizing configuration into PSRAM (TCD
 
 - Overview: [`overview.md`](overview.md)
 - System map: [`system.md`](system.md)
+- Post-RTL timing checklist: [`timing.md`](timing.md)
 - Agent constraints: [`../../llm/02-constraints.md`](../../llm/02-constraints.md)
