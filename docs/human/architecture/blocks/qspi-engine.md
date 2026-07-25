@@ -47,29 +47,32 @@ Phase lengths are counted in **SCK beats**. Pad states (`CS_ON`, `SCLK_OFF`, `CS
 
 ## Descriptor FSM interface (D21)
 
-Engine is a **transaction slave** of the descriptor FSM. Request is **not** a TCD; TCD fields stay in the FSM.
+Engine is a **transaction slave** of the descriptor FSM. Request is **not** a TCD; TCD fields stay in the FSM. Types: `qspi_pkg` in [`../../../../src/rtl/qspi.svh`](../../../../src/rtl/qspi.svh). RTL: [`../../../../src/rtl/qspi_engine.sv`](../../../../src/rtl/qspi_engine.sv).
 
-There is **no `txn_ready`** and **no `wdone`**. Start legality is `~busy`. Write length is entirely from `byte_len` (engine counts `2 * byte_len` SCK beats, then end-pad / raise CE#).
+Start legality is `~busy`. Write/read length is entirely from `byte_len` (engine counts `2 * byte_len` SCK beats, then `SCLK_OFF` → `CS_OFF` → `IDLE`). Engine does **not** latch the request: FSM holds `{cmd, addr, die_sel, byte_len}` from `txn_valid` until `busy` falls. Engine never stalls SCK/CE# for the FSM.
 
-### Request (FSM-held; engine does **not** latch)
+### Port contract
 
-Engine samples `cmd` / `addr` / `die_sel` / `byte_len` live. FSM must keep the full request **stable from `txn_valid` until `busy` falls**.
-
-| Field | Type (`qspi.svh`) | Role |
-|---|---|---|
-| `cmd` | `qspi_cmd_t` | V1: `QSPI_CMD_FAST_READ` (`0xEB`) or `QSPI_CMD_WRITE` (`0x02`) |
-| `addr` | `qspi_addr_t` `[23:0]` | Full 24-bit QPI address phase. Device uses `addr[22:0]` as `A[22:0]`; **`addr[23]` unused** (drive 0). Do not put `ptr[23]` here. |
-| `die_sel` | `qspi_die_sel_t` | Which PSRAM (`QSPI_PSRAM0` / `QSPI_PSRAM1` from `ptr[23]`); not a pad CE# |
-| `byte_len` | `logic [QSPI_BYTE_LEN_W-1:0]` | Exact payload length for this CE# pulse (FETCH=`QSPI_TCD_BYTES`, data=`k` ≤ `N`). Width from `qspi_pkg`: `QSPI_BYTE_LEN_W = $clog2(QSPI_MAX_BYTES + 1)`, `QSPI_MAX_BYTES = max(DMA_BUF_DEPTH, QSPI_TCD_BYTES)` (V1: `N=1`, TCD=11 → width 4). |
-
-### Handshake signals
-
-| Signal | Dir | Meaning |
-|---|---|---|
-| `txn_valid` | FSM → eng | **1-cycle pulse** to start; legal only when `~busy` |
-| `busy` | eng → FSM | Transaction in flight (accept through CE# complete / back to `IDLE`); ABORT and OE reclaim wait for this; also the “can start” qualifier (`txn_valid` only while low) |
-| `rdata` / `rdata_valid` | eng → FSM | Read **nibble** captured on rising SCK; `rdata_valid` is a **1-`clk` pulse** with the new `rdata` |
-| `wdata` / `wdata_next` | FSM → eng / eng → FSM | Write nibble on `wdata[3:0]`. `wdata_next` is a **1-`clk` pulse** on **falling SCK** in the write data phase: FSM must present the next nibble after that pulse (setup for the following rising SCK). No `wdata_next` on the last nibble’s fall before the engine leaves write (length-driven). |
+| Signal | Dir | Type / width | Contract |
+|---|---|---|---|
+| `clk` | in | 1 | System clock (**66 MHz**). |
+| `rst_n` | in | 1 | Sync **active-low** reset. |
+| `txn_valid` | in | 1 | **1-`clk` pulse** to start; legal **only when `~busy`**. |
+| `cmd` | in | `qspi_cmd_t` | V1: `QSPI_CMD_FAST_READ` (`0xEB`) or `QSPI_CMD_WRITE` (`0x02`). Hold until `!busy`. |
+| `addr` | in | `qspi_addr_t` `[23:0]` | Full 24-bit QPI address phase. Device uses `addr[22:0]` as `A[22:0]`; **`addr[23]=0`**. Do not put `ptr[23]` here. Hold until `!busy`. |
+| `die_sel` | in | `qspi_die_sel_t` | `QSPI_PSRAM0` / `QSPI_PSRAM1` from `ptr[23]`; steers `ram_*_cs_n`. Hold until `!busy`. |
+| `byte_len` | in | `[QSPI_BYTE_LEN_W-1:0]` | Payload bytes this CE# (FETCH=`QSPI_TCD_BYTES`, data=`k` ≤ `N`). `QSPI_BYTE_LEN_W = $clog2(QSPI_MAX_BYTES + 1)`, `QSPI_MAX_BYTES = max(DMA_BUF_DEPTH, QSPI_TCD_BYTES)`. Hold until `!busy`. |
+| `wdata` | in | `[3:0]` | Write nibble. **Must be valid on the `txn_valid` cycle**; update after each `wdata_next` for the next rising SCK. |
+| `busy` | out | 1 | High while not `IDLE` (in flight through CE# complete). Start qualifier; ABORT and OE reclaim wait for 0. |
+| `rdata` | out | `[3:0]` | Last captured read nibble (held between captures). |
+| `rdata_valid` | out | 1 | **1-`clk` pulse** with new `rdata` on each rising SCK in `READ_DATA`. FSM always sinks. Exactly `2 * byte_len` pulses per read. |
+| `wdata_next` | out | 1 | **1-`clk` pulse** on **falling SCK** in `WRITE_DATA`: present next `wdata` for the following rise. Length-driven end. |
+| `sio_in` | in | `[3:0]` | Pad SIO sample. |
+| `sclk` | out | 1 | QSPI SCK: **clk/2** toggle while enabled; **0** in `IDLE` / `CS_ON` / `SCLK_OFF` / `CS_OFF`. |
+| `ram_a_cs_n` | out | 1 | RAM A CE# (active low). Never both RAM CE#s low. |
+| `ram_b_cs_n` | out | 1 | RAM B CE# (active low). |
+| `sio_out` | out | `[3:0]` | Pad SIO drive data (cmd/addr/write). |
+| `sio_oe` | out | `[3:0]` | Per-pin OE for this engine; FSM grants `uio_oe` at top level (flash CS OE forced off). |
 
 ### Flows
 
@@ -77,15 +80,15 @@ Engine samples `cmd` / `addr` / `die_sel` / `byte_len` live. FSM must keep the f
 
 1. When `~busy`, FSM presents request and pulses `txn_valid` (1 cycle).
 2. Engine runs cmd/addr/dummy/data; on each data-phase rising SCK captures `sio_in` → `rdata` and pulses `rdata_valid`.
-3. FSM sinks every `rdata_valid` pulse (assumed always ready). Engine transfers exactly `2 * byte_len` nibbles, then `SCLK_OFF` → `CS_OFF` → `IDLE`.
+3. FSM sinks every `rdata_valid` pulse. Engine transfers exactly `2 * byte_len` nibbles, then end-pad / raise CE#.
 4. When `busy` clears, FSM may start the next txn.
 
 **Write (STATE_WRITE):**
 
 1. When `~busy`, FSM presents request with the **first write nibble already on `wdata`**, and pulses `txn_valid` (same cycle).
 2. Engine does not stage that nibble; FSM keeps it on `wdata` until `wdata_next`, then updates for the next beat.
-3. On each falling SCK in the write data phase (except after the final beat completes the count), engine pulses `wdata_next`; FSM places the next nibble in time for the next rising SCK.
-4. Engine ends the write after exactly `2 * byte_len` SCK beats (no `wdone` from the FSM), then end-pad / raise CE# (`SCLK_OFF` → `CS_OFF` → `IDLE`).
+3. On falling SCK in the write data phase, engine pulses `wdata_next`; FSM places the next nibble in time for the next rising SCK.
+4. Engine ends after exactly `2 * byte_len` SCK beats, then `SCLK_OFF` → `CS_OFF` → `IDLE`.
 5. Engine never waits on the FSM after accept; never writes past `byte_len`.
 
 ### Rules
@@ -94,10 +97,8 @@ Engine samples `cmd` / `addr` / `die_sel` / `byte_len` live. FSM must keep the f
 2. On writes, the first nibble must be on `wdata` in the same cycle as `txn_valid`.
 3. Engine **never stalls** SCK/CE# waiting on the FSM (deterministic QPI).
 4. FSM pulses `txn_valid` only while `~busy`.
-5. Engine owns start/end CE# pad and ≥2-`clk` `tCPH` (via `CS_OFF` + `IDLE` before the next CE# fall).
-6. FSM grants `uio_oe` for the live txn; reclaim when `busy` clears (idle / between txns → OE off for pass-through).
-
-RTL cheat-sheet: [`../../../../src/rtl/qspi_engine.sv`](../../../../src/rtl/qspi_engine.sv).
+5. Engine owns start/end CE# pad and ≥2-`clk` `tCPH` (via `CS_OFF` + `IDLE` before the next CE# fall). Never both `ram_a_cs_n` and `ram_b_cs_n` low; flash CS off at top level.
+6. FSM grants `uio_oe` for the live txn; reclaim when `busy` clears (idle / between txns / `BUS_GNT` yield → OE off). Do not start a new txn while `BUS_REQ` (D22).
 
 ## Engine behavior notes
 

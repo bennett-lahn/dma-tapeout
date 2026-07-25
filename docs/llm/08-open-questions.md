@@ -12,17 +12,17 @@ Unresolved items that block a frozen architecture. When one is decided, move the
 
 ## Q3 - Exact host pin protocol
 
-**Decided (behavior / D14; pins / D18; quit / D19):** IDLE waits for START; START ignored until back in IDLE; `QUIT=1` TCD → IDLE; DONE = idle; pass-through iff DONE; abort finishes current QPI txn then IDLE.
+**Decided (behavior / D14; pins / D18; quit / D19; pass-through grant / D22):** IDLE waits for START; START ignored until back in IDLE; `QUIT=1` TCD → IDLE; DONE = idle; abort finishes current QPI txn then IDLE. MCU may drive `uio` only while **`BUS_GNT`** (D22); not merely when DONE.
 
-**Frozen pins:** `ui_in[0] = START`, `ui_in[1] = ABORT`, `uo_out[0] = DONE`; QSPI on `uio` per system I/O map. **No head-pointer pins** (fixed head at `0x000000` / PSRAM 0).
+**Frozen pins:** `ui_in[0] = START`, `ui_in[1] = ABORT`, `ui_in[2] = BUS_REQ`, `uo_out[0] = DONE`, `uo_out[1] = BUS_GNT`; QSPI on `uio` per system I/O map. **No head-pointer pins** (fixed head at `0x000000` / PSRAM 0).
 
-**Still open:** status / error / debug observe on `uo_out[7:1]`; optional use of `ui_in[7:2]`.
+**Still open:** status / error / debug observe on `uo_out[7:2]`; optional use of `ui_in[7:3]`.
 
 Per TinyDMA-2C prior art, command/payload strobes are one known reference pattern, not a requirement for this project.
 
 ## Q4 - Bus release / re-entrancy rules after DONE
 
-**Decided (D14):** pass-through restores automatically whenever IDLE/`DONE` is asserted. No host ACK required for OE release. Illegal: host drives `uio` while ASIC is not idle (not DONE).
+**Decided (D14 / D22):** ASIC clears `uio_oe` when IDLE or when yielding for `BUS_REQ` (after the current QPI txn). No host ACK for OE release. **Illegal: MCU drives `uio` while `BUS_GNT` is low.** Idle/`DONE` alone is not a drive permit; MCU must assert `BUS_REQ` and wait for `BUS_GNT`.
 
 ## Q5 - Null / zero-length / chain-end semantics
 
@@ -61,9 +61,9 @@ Optional later: streamed host-pin ingress and/or telemetry features in `10-post-
 
 ## Q11 - Feature freeze for first shuttle
 
-**Decided (D12 / D14 / D15 / D16 / D17 / D18 / D19 / D20 / D21):** V1 = pass-through + QPI (`0xEB`/`0x02`) + MCU enter/exit QPI + dual CS + 11-byte TCD + `ptr[23]` device select + `QUIT` end-of-chain + fixed head at 0/PSRAM0 + cross-device + chaining + START/ABORT/DONE pins + 66 MHz `clk` / SCK=clk/2 / rising-edge RX + D21 (`~busy` / `wdata_next` / length-driven write) + **1-byte** data buffer with depth-agnostic correctness. **Out of V1:** ALU, conditional stop, ring, ASIC flash (post-V1 ladder in `10-post-v1-features.md`).
+**Decided (D12 / D14 / D15 / D16 / D17 / D18 / D19 / D20 / D21 / D22):** V1 = `BUS_REQ`/`BUS_GNT` pass-through + QPI (`0xEB`/`0x02`) + MCU enter/exit QPI + dual CS + 11-byte TCD + `ptr[23]` device select + `QUIT` end-of-chain + fixed head at 0/PSRAM0 + cross-device + chaining + START/ABORT/DONE/BUS_REQ/BUS_GNT pins + 66 MHz `clk` / SCK=clk/2 / rising-edge RX + D21 (`~busy` / `wdata_next` / length-driven write) + **1-byte** data buffer with depth-agnostic correctness. **Out of V1:** ALU, conditional stop, ring, ASIC flash (post-V1 ladder in `10-post-v1-features.md`).
 
-Still open inside V1: multi-outstanding (lean: no), `uo_out[7:1]` status packing (Q3 remainder).
+Still open inside V1: multi-outstanding (lean: no), `uo_out[7:2]` status packing (Q3 remainder).
 
 ## Q12 - Error model
 

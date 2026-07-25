@@ -13,11 +13,12 @@
 - [x] Freeze `ptr[23]` device select + `QUIT` end-of-chain (replaces flag device bits / both-devices stop) - D19
 - [x] Freeze clock / RX sample policy - **66 MHz `clk`**, **SCK=clk/2**, rising-edge RX (D16)
 - [x] Freeze MCU-owned enter/exit QPI; ASIC QPI opcodes `0xEB` / `0x02` only - D17
+- [x] Freeze pass-through request/grant: `ui_in[2]=BUS_REQ`, `uo_out[1]=BUS_GNT` (MCU priority; atomic QPI) - D22
 
 ## Phase 1 - Skeleton RTL
 
 - [ ] Tiny Tapeout wrapper + pin map
-- [ ] Pass-through mux + mode control (flash CS always OE-off from ASIC; pass-through iff DONE)
+- [ ] Pass-through mux + mode control (flash CS always OE-off from ASIC; `BUS_REQ`/`BUS_GNT`)
 - [ ] QSPI engine (QPI `0xEB` read / `0x02` write, CE# time limit, **RAM A/B CS mux**; no ASIC enter/exit quad)
 - [ ] Working register file (11-byte TCD fields)
 
@@ -61,5 +62,5 @@ Do not pull post-V1 items above chaining to “save” the interview story - the
 
 Tracked in detail at `../llm/08-open-questions.md`. Biggest remaining V1 decisions:
 
-- Status / DFT packing on `uo_out[7:1]`
+- Status / DFT packing on `uo_out[7:2]`
 - Error model sticky bits; self-pointing TCD policy

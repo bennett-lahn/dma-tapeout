@@ -1,6 +1,6 @@
 # TCD Format, Datapath, and Control Details
 
-Status: **11-byte** TCD layout, 24-bit address model (`ptr[23]` = device), fixed head at `0x000000`/PSRAM0, `QUIT` end-of-chain, zero-length no-op, QPI data path, and **1-byte** depth-agnostic data buffer are V1 planning freezes (D14 / D15 / D18 / D19 / D20). No ALU / ring / conditional-stop in V1.
+Status: **11-byte** TCD layout, 24-bit address model (`ptr[23]` = device), fixed head at `0x000000`/PSRAM0, `QUIT` end-of-chain, zero-length no-op, QPI data path, and **1-byte** depth-agnostic data buffer are V1 planning freezes (D14 / D15 / D18 / D19 / D20 / D22). No ALU / ring / conditional-stop in V1.
 
 Post-V1 (ALU, `COND_STOP`, ring, flash): [`10-post-v1-features.md`](10-post-v1-features.md).
 
@@ -73,7 +73,7 @@ loop:
     fetch_ptr = NEXT_TCD
 ```
 
-Host **ABORT** (`ui_in[1]`): finish the current QPI transaction, then IDLE / DONE / pass-through (D14/D18).
+Host **ABORT** (`ui_in[1]`): finish the current QPI transaction, then IDLE / DONE (D14/D18). Mid-run bus yield uses **BUS_REQ** / **BUS_GNT** (D22), not abort.
 
 **Data buffer (D20):** V1 implements `N=1` (8 DFFs). FSM / QSPI path must remain correct for any `N >= 1`; deepening the scratch is optional performance work, not a protocol or TCD change. Short held CE# pulses also make APS6404L `tCEM` and Linear Burst one-page-cross rules non-binding for V1 (see human [`descriptor-fsm.md`](../human/architecture/blocks/descriptor-fsm.md)).
 
@@ -83,12 +83,12 @@ Host **ABORT** (`ui_in[1]`): finish the current QPI transaction, then IDLE / DON
 
 At boot / setup:
 
-1. Ensure both PSRAM dies are in QPI (MCU via pass-through; D17).
-2. **Creating TCDs:** pack **11-byte** TCDs into PSRAM while ASIC is idle (`DONE`, `uio_oe=0`). First TCD (or a `QUIT` TCD for empty run) at **`0x000000` on PSRAM 0**. Chain with `NEXT_TCD` (die in bit 23). Terminate with a TCD whose `QUIT=1`.
+1. Ensure both PSRAM dies are in QPI (MCU via `BUS_REQ`/`BUS_GNT`; D17/D22).
+2. **Creating TCDs:** pack **11-byte** TCDs into PSRAM under grant (`BUS_GNT`, `uio_oe=0`). First TCD (or a `QUIT` TCD for empty run) at **`0x000000` on PSRAM 0**. Chain with `NEXT_TCD` (die in bit 23). Terminate with a TCD whose `QUIT=1`.
 3. Place source and destination regions in the usable device range; set pointer MSBs for die.
-4. High-Z MCU QSPI; assert **START** (`ui_in[0]`) while DONE is high.
-5. Wait for **DONE** again (`uo_out[0]`) or assert **ABORT** (`ui_in[1]`).
-6. **Reading memory:** while DONE, pass-through is on; firmware re-enables MCU QSPI and checks destinations.
+4. High-Z MCU QSPI; drop **BUS_REQ**; wait for **BUS_GNT** low; assert **START** (`ui_in[0]`) while DONE is high.
+5. Wait for **DONE** again (`uo_out[0]`), assert **ABORT** (`ui_in[1]`), or pause with **BUS_REQ**.
+6. **Reading memory:** assert `BUS_REQ`, wait for `BUS_GNT`; firmware re-enables MCU QSPI and checks destinations.
 
 ### Example chain (bulk mover)
 

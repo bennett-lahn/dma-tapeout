@@ -1,6 +1,6 @@
 # Descriptor FSM
 
-Status: skeleton. State names and whether UPDATE folds into WRITE are open. Idle / DONE / abort / quit-TCD / zero-length rules follow D14 / D18 / D19.
+Status: skeleton. State names and whether UPDATE folds into WRITE are open. Idle / DONE / abort / quit-TCD / zero-length rules follow D14 / D18 / D19. Bus yield via `BUS_REQ`/`BUS_GNT` follows D22.
 
 ## Role
 
@@ -12,14 +12,14 @@ The descriptor FSM **arbitrates** which block drives ASIC `uio_oe`:
 
 | Owner | When | `uio_oe` behavior |
 |---|---|---|
-| **Descriptor FSM** (default) | Idle, between QSPI transactions, and any time the engine is not live | Force pass-through / release: typically `uio_oe = 0` (DONE / idle); may hold a static master mask only if explicitly required between engine grants |
-| **QSPI engine** | While a granted transaction is in flight | Phase-accurate per-pin mask (SCK + selected RAM CS; flash CS OE off; SIO drive on cmd/addr/write, float on dummy/read) |
+| **Descriptor FSM** (default) | Idle, between QSPI transactions, yielding for `BUS_GNT`, and any time the engine is not live | Force release: `uio_oe = 0` |
+| **QSPI engine** | While a granted transaction is in flight and `~BUS_GNT` | Phase-accurate per-pin mask (SCK + selected RAM CS; flash CS OE off; SIO drive on cmd/addr/write, float on dummy/read) |
 
-FSM grants OE to the engine only for the duration of a requested QPI transaction, then reclaims it. Never leave both sources driving conflicting OE without a single mux select. Bus handoff phases: [`host-interface.md`](host-interface.md).
+FSM grants OE to the engine only for the duration of a requested QPI transaction, then reclaims it. **MCU priority (D22):** while `BUS_REQ` is high, do **not** pulse `txn_valid`; if `busy`, wait for the current QPI txn to finish (atomic), then keep OE off and assert `BUS_GNT`. Never leave both sources driving conflicting OE without a single mux select. Bus handoff phases: [`host-interface.md`](host-interface.md).
 
 ## Planned states (V1)
 
-1. `IDLE` - DONE high; pass-through enabled (`uio_oe=0`); wait for **START** (`ui_in[0]`). START ignored in every other state.
+1. `IDLE` - DONE high; `uio_oe=0`; wait for **START** (`ui_in[0]`) with **`~BUS_REQ`**. START ignored in every other state.
 2. `STATE_FETCH` - QPI read **11 bytes** into working regs. First fetch: `0x000000` / PSRAM 0; later: `NEXT_TCD` (die from bit 23). If `QUIT=1` → **IDLE.**
 3. `STATE_READ` - read up to buffer depth `N` source bytes from `SRC_PTR` into the data buffer (V1: `N=1`; skipped if `TRANSFER_LEN == 0`)
 4. `STATE_WRITE` - write buffered bytes to `DEST_PTR` (same `N`)
@@ -44,8 +44,9 @@ Handshake summary: 1-cycle `txn_valid` only when `~busy` (no `txn_ready`); FSM h
 - Zero-length TCD: after FETCH (and quit check), skip READ/WRITE and immediately follow `NEXT_TCD`
 - Data moves stay QPI byte-oriented in V1 for simplicity (D15)
 - Buffer depth `N=1` for V1; do not hard-code depth into correctness (D20)
-- **ABORT** (`ui_in[1]`): finish current QPI transaction (`busy`→0), then IDLE / DONE / pass-through
-- After abort / quit / return to IDLE, FSM must reclaim `uio_oe` and clear it for MCU pass-through
+- **ABORT** (`ui_in[1]`): finish current QPI transaction (`busy`→0), then IDLE / DONE
+- **BUS_REQ** (`ui_in[2]`): finish current QPI transaction if any, assert `BUS_GNT`, pause (no new `txn_valid`); when REQ drops, deassert `BUS_GNT` and resume if not IDLE (D22)
+- After abort / quit / return to IDLE / yield, FSM must reclaim `uio_oe` and clear it (`BUS_GNT` may then follow REQ)
 
 ## CE# refresh and Linear Burst page boundaries
 

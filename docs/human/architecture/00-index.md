@@ -17,6 +17,7 @@ Verbose agent context: `../../llm/03-architecture.md`, `../../llm/04-tcd-and-dat
 
 | Block | Doc | Status |
 |---|---|---|
+| Top / host sync | [`blocks/host-interface.md`](blocks/host-interface.md) | Two-flop sync of MCU `START`/`ABORT`/`BUS_REQ` into `clk` |
 | Host / mode control | [`blocks/host-interface.md`](blocks/host-interface.md) | OE phases + START/DONE; dual RAM CS; flash OE-off |
 | Working registers | [`blocks/working-registers.md`](blocks/working-registers.md) | 88 DFF TCD working set |
 | TCD format | [`blocks/tcd.md`](blocks/tcd.md) | 11-byte / 24-bit `ptr[23]` device + `QUIT` |

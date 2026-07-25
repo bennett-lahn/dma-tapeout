@@ -100,7 +100,7 @@ Obsidian vault notes remain handwritten and external; agents may read, must not 
 - Idle = ASIC `uio_oe=0` + MCU master; DMA = MCU GPIO Hi-Z + ASIC master with phase-accurate SIO OE.
 - Contends if both enable; protocol must release-before-seize.
 
-**Superseded for restore timing by D14:** pass-through tracks idle/`DONE` (auto on idle; no host ACK).
+**Superseded for restore timing by D14 / drive legality by D22:** OE clears on idle or yield; MCU drives only under `BUS_GNT`.
 
 Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-architecture.md`.
 
@@ -186,12 +186,12 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 | START while busy | **Ignored** until the ASIC returns to IDLE |
 | End of chain | ~~`NEXT_TCD == 0`.~~ ~~Both-devices stop (D18).~~ **Superseded by D19:** `CTRL_FLAGS.QUIT=1` after fetch → **IDLE** (no execute) |
 | DONE | Asserted **whenever** the ASIC is IDLE (including after reset / before first START) |
-| Pass-through | Enabled iff DONE (idle); disabled while not idle (DMA active) |
-| Abort | If **ABORT** asserted while active: finish the **current QPI transaction**, then transition to IDLE (DONE, pass-through on) |
+| Pass-through | ~~Enabled iff DONE (idle); disabled while not idle (DMA active).~~ **Superseded by D22:** MCU may drive `uio` only while `BUS_GNT` is high (request/grant). |
+| Abort | If **ABORT** asserted while active: finish the **current QPI transaction**, then transition to IDLE (DONE; pass-through via D22 grant if requested) |
 
-~~Pin indices open for ABORT / head.~~ **Superseded by D18:** `ui_in[0]=START`, `ui_in[1]=ABORT`, `uo_out[0]=DONE`; no head-pointer pins. `ui_in[7:2]` / `uo_out[7:1]` still open for status/DFT.
+~~Pin indices open for ABORT / head.~~ **Superseded by D18:** `ui_in[0]=START`, `ui_in[1]=ABORT`, `uo_out[0]=DONE`; no head-pointer pins. ~~`ui_in[7:2]` / `uo_out[7:1]` still open.~~ **D22:** `ui_in[2]=BUS_REQ`, `uo_out[1]=BUS_GNT`; `ui_in[7:3]` / `uo_out[7:2]` still open for status/DFT.
 
-**Supersedes Q4:** no host-ACK gate for bus restore; restore tracks idle/`DONE`.
+**Supersedes Q4 (partial):** no host-ACK gate for IDLE restore. **Superseded for drive legality by D22:** MCU drives only under `BUS_GNT`, not merely when DONE.
 
 ## D15 - QPI default for DMA data path
 
@@ -294,3 +294,29 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 **Why:** Minimal FSM↔engine surface (`busy` / pulsed nibble beats / length-driven end). Dropping `txn_ready` and `wdone` avoids redundant handshake state; half-rate SCK + edge-timed `wdata_next` keeps TX setup clean without gating `clk` onto the pad.
 
 **DFF / tile impact:** SCK toggle + edge detects + `rdata` hold / valid pulse + beat counters; no request-shadow flops; no extra buffer beyond D20.
+
+## D22 - Pass-through request / grant (`BUS_REQ` / `BUS_GNT`)
+
+**Decision:**
+
+1. **Pins:**
+   - `ui_in[2]` = **`BUS_REQ`** (MCU → ASIC): MCU wants the shared bidirectional QSPI `uio` bus.
+   - `uo_out[1]` = **`BUS_GNT`** (ASIC → MCU): MCU has been given control of that bus (ASIC drivers released).
+2. **MCU drive rule:** MCU keeps its QSPI GPIOs Hi-Z unless **`BUS_GNT` is high**. While `BUS_GNT` is low, MCU lets the ASIC drive (or float) the bidirectional nets.
+3. **ASIC priority:** MCU bus request has priority over DMA. While `BUS_REQ` is high, the descriptor FSM must **not start a new QPI transaction**. If a QPI transaction is already in flight, it completes atomically (`busy` → 0), then ASIC clears `uio_oe` and asserts `BUS_GNT`. Single QPI operations remain atomic (no mid-command tear).
+4. **Grant / release sequence (release before seize):**
+   1. MCU asserts `BUS_REQ` (drivers still Hi-Z).
+   2. ASIC finishes any in-flight QPI txn, holds `uio_oe = 0`, asserts `BUS_GNT`.
+   3. MCU sees `BUS_GNT`, enables its QSPI drivers, runs SPI/QSPI as needed.
+   4. MCU finishes, Hi-Zs its QSPI GPIOs, then deasserts `BUS_REQ`.
+   5. ASIC deasserts `BUS_GNT`. If not IDLE, DMA may resume (next txn after grant falls).
+5. **Idle:** when IDLE/`DONE`, grant follows request promptly (`BUS_GNT` tracks `BUS_REQ` once OE is clear). Idle alone does **not** authorize MCU drive without grant.
+6. **START:** accepted only in IDLE with **`~BUS_REQ`** (hence `~BUS_GNT`). MCU must drop request and see grant low before START.
+7. **ABORT vs `BUS_REQ`:** ABORT still ends the DMA run (finish current QPI txn → IDLE). `BUS_REQ` **pauses** an active run between atomic txns and yields the bus; DMA resumes when request is released (unless ABORT / quit / reset also applies).
+8. Supersedes D14 "pass-through iff DONE" for drive legality. Closes Q3/Q4 remainder for this handshake.
+
+**Why:** Explicit request/grant removes the race of MCU assuming DONE ≡ safe to drive, and lets firmware reclaim flash/PSRAM mid-DMA without aborting the whole chain, while keeping QPI CE# windows intact.
+
+**DFF / tile impact:** ~1 registered `BUS_GNT` (plus FSM "yield / no new txn while REQ" gating). Negligible vs 2-tile budget.
+
+**Host CDC:** MCU `ui_in` levels (incl. `BUS_REQ`) are async to design `clk`. The **top-level** module two-flop-synchronizes `START` / `ABORT` / `BUS_REQ` before `sys_controller` / the descriptor FSM sample them (~2 DFFs per bit). See `03-architecture.md` § Top module / host-input synchronizers.
