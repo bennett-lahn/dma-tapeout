@@ -47,3 +47,38 @@ localparam int unsigned QSPI_BYTE_LEN_W = $clog2(QSPI_MAX_BYTES + 1);
 localparam int unsigned QSPI_CYCLE_CNT_W = $clog2(2 * QSPI_MAX_BYTES + 1);
 
 endpackage : qspi_pkg
+
+package sys_control_pkg;
+
+import qspi_pkg::qspi_cmd_t;
+import qspi_pkg::qspi_addr_t;
+import qspi_pkg::qspi_die_sel_t;
+
+typedef enum logic [2:0] {
+   IDLE
+   ,NEW_FETCH
+   ,FETCH
+   ,NEW_OP
+   ,READ
+   ,WRITE
+   ,UPDATE
+   ,STALL
+} sys_control_state_t;
+
+typedef struct packed {
+   logic quit;
+   logic [6:0] reserved;
+} tcd_ctrl_flags_t;
+
+typedef struct packed {
+   qspi_addr_t src_ptr;
+   qspi_addr_t dest_ptr;
+   logic [7:0] transfer_len;
+   qspi_die_sel_t device;
+   qspi_addr_t next_tcd;
+   tcd_ctrl_flags_t ctrl;
+} tcd_t;
+
+localparam TCD_LEN
+
+endpackage: sys_control_pkg
