@@ -1,7 +1,7 @@
 package qspi_pkg;
 
 typedef enum logic [3:0] {
-   IDLE
+   QSPI_IDLE
    ,CS_ON
    ,SEND_CMD_1
    ,SEND_CMD_2
@@ -28,23 +28,30 @@ function automatic logic [2:0] qspi_wait_cycles(input qspi_cmd_t cmd);
 endfunction
 
 // QPI address phase is 24 bits on the wire. APS6404L only uses A[22:0];
-// addr[23] is unused (drive 0). Die select is die_sel, not addr[23].
+// addr[23] is unused (drive 0). Device select is device_sel, not addr[23].
 typedef logic [23:0] qspi_addr_t;
 
-// Which PSRAM die (ptr[23]). Not a pad CE# - engine maps this to ram_*_cs_n.
+// Which PSRAM device (CTRL_FLAGS device bits / device_sel). Not a pad CE# - engine maps this to ram_*_cs_n.
 typedef enum logic {
    QSPI_PSRAM0 = 1'b0
    ,QSPI_PSRAM1 = 1'b1
-} qspi_die_sel_t;
+} qspi_device_sel_t;
 
 localparam int unsigned DMA_BUF_DEPTH = 1;   // N (D20)
-localparam int unsigned QSPI_TCD_BYTES = 11; // Must be > 2 for qspi_engine correctness
-localparam int unsigned QSPI_MAX_BYTES =
-   (DMA_BUF_DEPTH > QSPI_TCD_BYTES) ? DMA_BUF_DEPTH : QSPI_TCD_BYTES;
+localparam int unsigned QPI_TCD_BYTES = 11; // Must be > 2 for qspi_engine correctness
+localparam int unsigned QPI_MAX_BYTES =
+   (DMA_BUF_DEPTH > QPI_TCD_BYTES) ? DMA_BUF_DEPTH : QPI_TCD_BYTES;
 
-localparam int unsigned QSPI_BYTE_LEN_W = $clog2(QSPI_MAX_BYTES + 1);
-// READ counts nibbles (= 2 * bytes); also covers addr/wait (6)
-localparam int unsigned QSPI_CYCLE_CNT_W = $clog2(2 * QSPI_MAX_BYTES + 1);
+localparam int unsigned QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1);
+// QPI payload uses 2 SCK cycles per byte; also covers addr/wait (6)
+localparam int unsigned QPI_CYCLE_CNT_W = $clog2((2 * QPI_MAX_BYTES) + 1);
+
+// QPI byte transfer length type (covers max possible transaction size)
+typedef logic [QPI_BYTE_LEN_W-1:0] qpi_byte_len_t;
+
+// Remaining payload nibbles, including zero (2 nibbles per byte)
+// Capable of representing the maximum number of nibbles in a QPI transaction
+typedef logic [QPI_CYCLE_CNT_W-1:0] qpi_payload_nibble_cnt_t;
 
 endpackage : qspi_pkg
 
@@ -52,10 +59,10 @@ package sys_control_pkg;
 
 import qspi_pkg::qspi_cmd_t;
 import qspi_pkg::qspi_addr_t;
-import qspi_pkg::qspi_die_sel_t;
+import qspi_pkg::qspi_device_sel_t;
 
 typedef enum logic [2:0] {
-   IDLE
+   SYS_CTRL_IDLE
    ,NEW_FETCH
    ,FETCH
    ,NEW_OP
@@ -65,20 +72,22 @@ typedef enum logic [2:0] {
    ,STALL
 } sys_control_state_t;
 
+// 11-byte / 88-bit TCD. Last byte is CTRL_FLAGS in memory (QUIT + device selects + reserved);
+// Packed LSB = CTRL_FLAGS bit 0 (`quit`); matches D24 flag bit map.
 typedef struct packed {
-   logic quit;
-   logic [6:0] reserved;
-} tcd_ctrl_flags_t;
-
-typedef struct packed {
-   qspi_addr_t src_ptr;
-   qspi_addr_t dest_ptr;
-   logic [7:0] transfer_len;
-   qspi_die_sel_t device;
-   qspi_addr_t next_tcd;
-   tcd_ctrl_flags_t ctrl;
+   qspi_addr_t     src_ptr;
+   qspi_addr_t     dest_ptr;
+   logic     [7:0] transfer_len;
+   qspi_addr_t     next_tcd;
+   // CTRL_FLAGS (TCD byte offset 10): bits [7:4]=reserved, [3]=NEXT, [2]=DEST, [1]=SRC, [0]=QUIT
+   logic     [3:0] reserved;
+   qspi_device_sel_t  next_tcd_device;
+   qspi_device_sel_t  dest_device;
+   qspi_device_sel_t  src_device;
+   logic           quit;
 } tcd_t;
 
-localparam TCD_LEN
+// Length of TCD in nibbles
+localparam int unsigned TCD_LEN = $bits(tcd_t) / 4;
 
 endpackage: sys_control_pkg

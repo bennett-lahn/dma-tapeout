@@ -1,5 +1,5 @@
 // qspi_engine - QPI master for dual APS6404L (D15/D17/D21)
-// Consumer: descriptor FSM. Types: qspi.svh. Spec: docs/human/architecture/blocks/qspi-engine.md
+// Consumer: descriptor FSM. Types: types.svh. Spec: docs/human/architecture/blocks/qspi-engine.md
 //
 // clk 66 MHz; SCLK = clk/2 when enabled, else 0. V1 cmds: 0xEB (+6 wait), 0x02.
 // Transaction request is not latched. Send start only when ~busy.
@@ -10,13 +10,13 @@
 // txn_valid    in   1-clk start pulse; legal only when ~busy
 // cmd          in   QSPI_CMD_FAST_READ / QSPI_CMD_WRITE (hold until ~busy)
 // addr         in   24-bit QPI address phase; addr[23]=0); A[22:0] in addr[22:0]
-// die_sel      in   QSPI_PSRAM0/1 -> which ram_*_cs_n
-// byte_len     in   payload bytes this CE#; width QSPI_BYTE_LEN_W; hold until ~busy
+// device_sel      in   QSPI_PSRAM0/1 -> which ram_*_cs_n
+// byte_len     in   payload bytes this CE#; width QPI_BYTE_LEN_W; hold until ~busy
 // wdata        in   write nibble; must be valid on txn_valid; update after wdata_next
-// busy         out  1 while not IDLE; start qualifier; ABORT/OE wait for 0
+// busy         out  1 while not IDLE; start qualifier; OE reclaim / BUS_GNT wait for 0
 // rdata        out  last captured read nibble (held)
 // rdata_valid  out  1-clk pulse with new rdata (rising SCK in READ_DATA)
-// wdata_next   out  1-clk pulse on falling SCK in WRITE_DATA: present next wdata
+// wdata_next   out  1-clk pulse iff another write nibble is needed in this txn
 // sio_in       in   pad SIO sample
 // sclk         out  QSPI SCK
 // ram_a_cs_n   out  RAM A CE# (active low); never both RAMs low
@@ -33,8 +33,8 @@ module qspi_engine
    ,input  logic          txn_valid
    ,input  qspi_cmd_t     cmd
    ,input  qspi_addr_t    addr
-   ,input  qspi_die_sel_t die_sel
-   ,input  logic    [QSPI_BYTE_LEN_W-1:0] byte_len
+   ,input  qspi_device_sel_t device_sel
+   ,input  qpi_byte_len_t byte_len
    ,input  logic    [3:0] wdata
 
    ,output logic          busy
@@ -53,7 +53,7 @@ module qspi_engine
 qspi_state_t curr_state;
 qspi_state_t next_state;
 
-logic [QSPI_CYCLE_CNT_W-1:0] cycle_cnt; // 0-indexed count of # of sclk cycles in current state
+logic [QPI_CYCLE_CNT_W-1:0] cycle_cnt; // 0-indexed count of # of sclk cycles in current state
 logic sclk_d;
 logic sclk_rising_edge;
 logic sclk_falling_edge;
@@ -62,13 +62,13 @@ logic sclk_en;
 
 // Next state control
 always_comb begin
-   next_state = IDLE;
+   next_state = QSPI_IDLE;
    unique case (curr_state)
-      IDLE: begin
+      QSPI_IDLE: begin
          if (txn_valid)
             next_state = CS_ON;
          else
-            next_state = IDLE;
+            next_state = QSPI_IDLE;
       end
       CS_ON: begin
          next_state = SEND_CMD_1;
@@ -118,7 +118,7 @@ always_comb begin
          next_state = CS_OFF;
       end
       CS_OFF: begin
-         next_state = IDLE;
+         next_state = QSPI_IDLE;
       end
    endcase
 end
@@ -128,7 +128,7 @@ always_comb begin
    sio_oe = '0;
    sio_out = '0;
    unique case (curr_state)
-      IDLE, CS_ON, WAIT, READ_DATA, SCLK_OFF, CS_OFF: begin
+      QSPI_IDLE, CS_ON, WAIT, READ_DATA, SCLK_OFF, CS_OFF: begin
          sio_oe = '0;
          sio_out = '0;
       end
@@ -158,16 +158,19 @@ always_comb begin
    endcase
 end
 
-assign busy = (curr_state != IDLE);
-assign wdata_next = (curr_state == WRITE_DATA) && sclk_falling_edge;
+assign busy = (curr_state != QSPI_IDLE);
+// The first nibble is supplied with txn_valid. Request each later nibble after
+// the preceding rising SCK, but suppress the request after the final nibble.
+// Therefore a write emits exactly (2 * byte_len) - 1 wdata_next pulses.
+assign wdata_next = (curr_state == WRITE_DATA && next_state == WRITE_DATA) && sclk_falling_edge;
 
-assign sclk_en = !(curr_state == IDLE
+assign sclk_en = !(curr_state == QSPI_IDLE
                 || curr_state == CS_ON
                 || curr_state == SCLK_OFF
                 || curr_state == CS_OFF);
-assign cs_n = (curr_state == IDLE || curr_state == CS_OFF);
-assign ram_a_cs_n = (die_sel == QSPI_PSRAM0) ? cs_n : 1'b1;
-assign ram_b_cs_n = (die_sel == QSPI_PSRAM1) ? cs_n : 1'b1;
+assign cs_n = (curr_state == QSPI_IDLE || curr_state == CS_OFF);
+assign ram_a_cs_n = (device_sel == QSPI_PSRAM0) ? cs_n : 1'b1;
+assign ram_b_cs_n = (device_sel == QSPI_PSRAM1) ? cs_n : 1'b1;
 
 assign sclk_rising_edge  =  sclk & ~sclk_d;
 assign sclk_falling_edge = ~sclk &  sclk_d;
@@ -202,12 +205,12 @@ end
 // Cycle counter, next state
 always_ff @(posedge clk) begin
    if (~rst_n) begin
-      curr_state <= IDLE;
+      curr_state <= QSPI_IDLE;
       cycle_cnt  <= '0;
    end else begin
       curr_state <= next_state;
       unique case (curr_state)
-         IDLE, CS_ON, SCLK_OFF, CS_OFF:
+         QSPI_IDLE, CS_ON, SCLK_OFF, CS_OFF:
             cycle_cnt <= '0;
          SEND_CMD_1, SEND_CMD_2, SEND_ADDR, READ_DATA, WRITE_DATA, WAIT: begin
             if (next_state == curr_state) begin
@@ -222,3 +225,15 @@ always_ff @(posedge clk) begin
 end
 
 endmodule
+
+// TODO: Fix QPI launch timing at driven phase boundaries.
+// curr_state and sclk can currently advance on the same clk edge, causing
+// sio_out/sio_oe to change when the external SCLK rises at SEND_CMD_1 to
+// SEND_CMD_2, SEND_CMD_2 to SEND_ADDR, and SEND_ADDR to WRITE_DATA. The PSRAM
+// therefore receives no guaranteed data setup time on those first nibbles.
+// Architect the sequencer so every driven data and OE change occurs while SCLK
+// is low and is stable before the following rising edge, for example by
+// advancing driven phases after a falling edge or adding low-SCLK preparation
+// cycles. Also reconcile RX timing with the documented contract: the current
+// delayed rising-edge detector samples sio_in near the external falling edge,
+// not on the external rising edge.
