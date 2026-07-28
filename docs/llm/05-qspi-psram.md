@@ -55,7 +55,7 @@ From datasheet (APS6404L-3SQR Rev 2.3) and planning notes:
 - Exit Quad Mode (`0xF5`) is QPI-only and returns the device to SPI
 - Linear burst crosses a 1K page at most once per CE# pulse and caps at **84 MHz** when crossing (device max; ASIC SCK is lower); Wrap32 (`0xC0` toggle) is optional and not the power-up default
 - Clock policy (D16): design / demoboard **66 MHz `clk`**, **SCK=clk/2** (≈33 MHz); sample read data on **rising** SCK. Phase 3 must re-check `tACLK` / board / TT timing against this target before shuttle freeze
-- Mode ownership (D17): **MCU** Enter/Exit Quad via pass-through; ASIC expects dies already in QPI before START. Sole ASIC QPI read = **`0xEB`**
+- Mode ownership (D17): **MCU** Enter/Exit Quad via pass-through; ASIC expects devices already in QPI before START. Sole ASIC QPI read = **`0xEB`**
 
 ### Full device command set (datasheet truth table)
 
@@ -174,15 +174,15 @@ Phase 3 (demoboard + hardening) must **double-check** `tACLK`, board flight time
 
 ## Implications for this DMA
 
-1. **Address width:** V1 uses **24-bit** internal pointers. The QPI **address phase is always 24 bits** on the wire (`qspi_addr_t`); the device only consumes `A[22:0]` from `addr[22:0]` / `ptr[22:0]`. **`addr[23]` is unused** (drive 0) - it is not the die bit. Device select is **`die_sel`** from **`ptr[23]`** (D19), which steers `ram_*_cs_n`.
-2. **Dual die:** engine must mux RAM A vs RAM B CS from pointer MSBs (`SRC_PTR[23]` / `DEST_PTR[23]` / `NEXT_TCD[23]`); never assert both; flash CS OE stays off (D11). Cross-device = sequential read/write with CS switch.
+1. **Address width:** V1 uses **24-bit** internal pointers. The QPI **address phase is always 24 bits** on the wire (`qspi_addr_t`); the device only consumes `A[22:0]` from `addr[22:0]` / `ptr[22:0]`. **`addr[23]` is unused** (drive 0). Device select is **`device_sel`** from **`CTRL_FLAGS.SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`** (D24), which steers `ram_*_cs_n`.
+2. **Dual device:** engine must mux RAM A vs RAM B CS from pointer MSBs (`SRC_PTR[23]` / `DEST_PTR[23]` / `NEXT_TCD[23]`); never assert both; flash CS OE stays off (D11). Cross-device = sequential read/write with CS switch.
 3. **Init ownership (D17):** MCU waits 150 us, resets, and Enter Quad on **each** PSRAM used before START; ASIC assumes QPI already. Exit Quad is MCU-only after DONE.
-4. **Descriptor fetch efficiency:** hold CE# across the **11-byte** TCD read (first: addr 0 / PSRAM 0; later `NEXT_TCD` die from bit 23); read opcode `0xEB`.
+4. **Descriptor fetch efficiency:** hold CE# across the **11-byte** TCD read (first: addr 0 / PSRAM 0; later `NEXT_TCD` device from bit 23); read opcode `0xEB`.
 5. **Byte copy vs refresh / pages:** V1 scratch is **1 byte**, so each data phase is cmd+addr(+dummy)+1 byte then CE# high. Device limits only matter if `N` grows: **`N ≥ 60`** can exceed `tCEM` 4 us on `0xEB` @ 33 MHz SCK; **`N ≥ 1026`** can cross two 1K pages. Data beats are QPI-only (`0xEB`/`0x02`).
 6. **Pass-through / bus OE:** demoboard shares `uio` among RP2040, ASIC, and PSRAM/flash PMOD. Pass-through is `BUS_REQ`/`BUS_GNT` (D22): MCU drives only while granted; ASIC `uio_oe=0` when idle or yielding (after atomic QPI txn). DMA means MCU GPIOs high-Z (unless granted) and ASIC drives with phase-accurate SIO OE + RAM CS mux. Both masters enabled is contention - see host-interface bus-ownership doc.
-7. **Abort:** finish current QPI transaction, then idle (D14).
+7. **Kill:** assert `rst_n` to stop a runaway DMA (D23; no soft abort).
 8. **Flash:** not in V1 ASIC opcode set. NOR erase/BUSY/page semantics are why write is stretch-only; see W25Q128JV converted datasheet.
-9. **FSM ↔ engine (D21):** pulse-start when `~busy` (no `txn_ready`); fixed `byte_len` (`[QSPI_BYTE_LEN_W-1:0]`); FSM holds request (engine does not latch); write first nibble on `wdata` with `txn_valid`; `busy` / `rdata_valid` (rising-SCK capture pulse) / `wdata_next` (falling-SCK pulse); write ends on `2 * byte_len` SCK (no `wdone`); SCK = clk/2; no SPI stall for FSM; engine owns CE# pad + `tCPH`. See human `qspi-engine.md` and `03-architecture.md`.
+9. **FSM ↔ engine (D21):** pulse-start when `~busy` (no `txn_ready`); fixed `byte_len` (`[QPI_BYTE_LEN_W-1:0]`); FSM holds request (engine does not latch); write first nibble on `wdata` with `txn_valid`; `busy` / `rdata_valid` (rising-SCK capture pulse) / `wdata_next` (falling-SCK pulse); write ends on `2 * byte_len` SCK (no `wdone`); SCK = clk/2; no SPI stall for FSM; engine owns CE# pad + `tCPH`. See human `qspi-engine.md` and `03-architecture.md`.
 
 ## Hardware ecosystem links (see also references)
 

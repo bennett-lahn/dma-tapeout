@@ -10,6 +10,8 @@ These are hard or near-hard limits. Feature proposals must respect them.
 | Approx safe DFF budget | ~**500 DFFs** across 2 tiles before routing congestion becomes likely |
 | Per-tile DFF heuristics (from notes) | ~256 DFFs comfortable; absolute extreme ~440 DFFs/tile if optimized purely for DFF count and routing is pushed to the limit |
 | I/O | **10 in** (`clk`, `rst_n`, `ui_in[7:0]`), **8 bidir** (`uio`), **8 out** (`uo_out`) - severe bottleneck |
+| SkyWater 130 GPIO speed | Input I/O max **66 MHz**; output I/O max **33 MHz** |
+| Clock ceiling (D16) | System **`clk` max 66 MHz**, primarily set by the GPIO input limit; registered QSPI **SCK = clk/2**, max about **33 MHz**, matching the GPIO output limit |
 | Library | Digital standard cells only (no analog IP) |
 
 ### Design implication
@@ -43,8 +45,8 @@ Demoboard/PMOD ecosystem parts of interest: 128 M-bit QSPI Flash (**25Q128JVSM**
 | Topic | Constraint |
 |---|---|
 | Power-up | >= 150 us before commands (`tPU`; CE# high) |
-| Boot mode | Powers up SPI; **MCU** must Enter Quad (`0x35`) on each die before START (D17). ASIC expects QPI already |
-| Addressing | Device has large address space (`A[22:0]`); V1 uses **24-bit internal pointers** with `ptr[23]` die select (D19); fixed head at `0x000000` / PSRAM 0 (D18); `QUIT` ends chain |
+| Boot mode | Powers up SPI; **MCU** must Enter Quad (`0x35`) on each device before START (D17). ASIC expects QPI already |
+| Addressing | Device has large address space (`A[22:0]`); V1 uses **24-bit internal pointers** with device selects in `CTRL_FLAGS` (D24); fixed head at `0x000000` / PSRAM 0 (D18); `QUIT` ends chain |
 | CE# low time (`tCEM`) | Continuous CE# low cannot exceed max CE# low pulse width or **internal DRAM refresh is blocked and data can corrupt**. Max **4 us** (extended grade) / **8 us** (standard grade). V1 `N=1` / 11-byte fetch pulses stay well under this without a dedicated slicer. |
 | CE# high between bursts (`tCPH`) | Min **18 ns** |
 | Last-byte read terminate | Datasheet/notes recommend longer CE# hold: **`tCHD > tACLK + tCLK`** so the controller latches the final beat before raising CE# |

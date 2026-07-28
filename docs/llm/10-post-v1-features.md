@@ -28,7 +28,7 @@ Bulk A↔B memcpy does not need it. Costs TCD bits or an `IMM` byte, working-reg
 ### Implement later
 
 1. **Add module** `dma_byte_alu` (combinational 8-bit): ops pass / invert / XOR imm / ADD / SUB.
-2. **Extend existing `CTRL_FLAGS`** (V1 uses bit 0 for `QUIT`; reserves `[7:1]`) with ALU op select / ADD vs SUB, and prefer a dedicated **`IMM` byte** (12-byte TCD if flags+imm; or pack tiny imm into flags).
+2. **Extend existing `CTRL_FLAGS`** (V1 uses bits 0..3 for `QUIT` / `SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; reserves `[7:4]`) with ALU op select / ADD vs SUB, and prefer a dedicated **`IMM` byte** (12-byte TCD if flags+imm; or pack tiny imm into flags).
 3. **Working registers:** already latch `CTRL_FLAGS`; add `IMM` (+8 DFFs).
 4. **FSM:** restore `STATE_PROCESS` between `STATE_READ` and `STATE_WRITE` (or fold combo ALU into the READ→WRITE path with a registered hold). Descriptor **fetch bypasses** the ALU.
 5. **Datapath:** `byte = ALU(rx_hold, op, IMM)` then WRITE.
@@ -62,7 +62,7 @@ Predicates (minimal useful set):
 **`TRANSFER_LEN == 0` + `COND_STOP`:** run until predicate (infinite until).  
 **`TRANSFER_LEN == 0` without `COND_STOP`:** must remain illegal / no-op / error in whatever policy V1 already froze - do not redefine as until.
 
-**Abort:** V1 should already expose host abort; `COND_STOP` infinite waits rely on it (plus `rst_n`). On abort: raise CE#, release `uio_oe`, sticky ERROR vs DONE policy TBD.
+**Kill / reset:** V1 has **no soft abort** (D23); until-loops rely on **`rst_n`** (or a future soft-abort if reintroduced). On reset: raise CE#, release `uio_oe`, return IDLE / DONE. Sticky ERROR vs DONE policy TBD if a soft path returns.
 
 **Terminating byte is not written.** Firmware that needs the trigger sample must re-read it in a following TCD.
 
@@ -75,8 +75,8 @@ Needs live or changing data to be interesting. On a shared bus, the MCU cannot u
 1. Require **ALU/`IMM` path** (or at least an `IMM` byte + compare) from feature 1.
 2. **`CTRL_FLAGS`:** `COND_STOP` enable + 2-bit pred select (`LT` / `Z` / `NZ`).
 3. **FSM:** after READ, branch: if cond taken → terminate CE# → FETCH `NEXT_TCD` (or DONE); else existing PROCESS/WRITE/UPDATE.
-4. **Policy:** allow cyclic / self `NEXT_TCD` only with abort (and preferably only with `COND_STOP` for until-shaped loops).
-5. **Verify:** each pred; skip-write on taken; `LEN==0` until; abort mid-until; CE# high before next FETCH; self-`NEXT` livelock + abort.
+4. **Policy:** allow cyclic / self `NEXT_TCD` only with a kill path (`rst_n`, or a future soft-abort) and preferably only with `COND_STOP` for until-shaped loops.
+5. **Verify:** each pred; skip-write on taken; `LEN==0` until; `rst_n` mid-until; CE# high before next FETCH; self-`NEXT` livelock + reset.
 
 ### DFF / tile impact
 
@@ -163,8 +163,8 @@ Read: medium (opcodes + timing). Write: medium–high (program/erase/BUSY). Last
 
 ## Interaction with V1 baseline
 
-V1 TCD is an **11-byte** memmove record with device in **`ptr[23]`** and `CTRL_FLAGS` holding **`QUIT`** plus reserved bits `[7:1]`. Post-V1 features that need more flags/`IMM` **extend** that byte (and optionally grow the TCD); plan a single compatible extension rather than a parallel layout.
+V1 TCD is an **11-byte** memmove record with device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`) and `QUIT`, plus reserved bits `[7:4]`. Post-V1 features that need more flags/`IMM` **extend** that byte (and optionally grow the TCD); plan a single compatible extension rather than a parallel layout.
 
-Device select stays in pointer MSBs (D19); do not reintroduce per-field device flags unless flash or a third target forces it.
+Device select stays in `CTRL_FLAGS` device bits (D24); do not move device back into pointer MSBs unless a later encoding forces it.
 
-Host **abort** exists in V1 (behavior frozen D14); post-V1 `COND_STOP` depends on it for safe until-loops.
+V1 has **no host abort** (D23: use `rst_n`); post-V1 `COND_STOP` until-loops depend on reset (or a reintroduced soft-abort) for safe exit.

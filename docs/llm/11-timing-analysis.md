@@ -3,7 +3,7 @@
 Post-RTL checks before shuttle freeze (Phase 3). Protocol limits and opcode policy stay in `05-qspi-psram.md`; this file is the **what / where / pass** checklist.
 
 **When:** RTL feature-complete (Phase 2 done), before freezing for tapeout.  
-**Goal:** confirm APS6404L AC timing and on-chip paths at the frozen **66 MHz `clk` / SCK=clk/2 (≈33 MHz) / rising-edge RX** policy (D16). Fallback only if a check fails: lower `clk` and/or falling-edge RX.
+**Goal:** confirm APS6404L AC timing, SkyWater 130 GPIO limits, and on-chip paths at the frozen **66 MHz `clk` max / SCK=clk/2 (≈33 MHz) / rising-edge RX** policy (D16). The primary clock ceilings are **66 MHz input I/O** and **33 MHz output I/O**. Fallback only if a check fails: lower `clk` and/or falling-edge RX.
 
 ## Where to test
 
@@ -38,7 +38,7 @@ Encode in the QSPI engine; prove in Cocotb waveforms. Same-domain SCK is fine.
 | Q-CHD | `tCHD` ≥ 3.0 ns: CE# stays low **after** last rising SCK | sim | CE# rises only after last beat’s rise (+ hold); SCK idle | todo |
 | Q-TERM | Read terminate latch window (`tCHD > tACLK+tCLK` advice) | sim | After last read rise: SCK held low, sample committed, **then** CE# high - no extra SCK (no extra byte) | todo |
 | Q-MUX | Only one RAM CE# low; flash CS OE off | sim | A/B mux + flash OE rules on every beat | todo |
-| Q-ABORT | Abort finishes in-flight QPI txn | sim | No mid-command CE# tear; then idle | todo |
+| Q-RST | `rst_n` mid-run returns to idle | sim | CE# high / OE clear after reset; no soft abort | todo |
 
 **Sequencing note:** extra hold for Q-TERM is **CE# low + SCK frozen**, not another clocked data beat.
 
@@ -51,14 +51,16 @@ Nanosecond closure; not separate FSM timers.
 | T-ACLK | `tACLK` 2–5.5 ns vs rising-edge RX @ ≈33 MHz SCK | STA + demoboard | Stable reads (TCD + payload); margin OK with pad/board | todo |
 | T-SP-HD | `tSP`/`tHD` ≥ 2 ns (host drive vs SCK) | STA / board | Cmd/addr/write data meet setup/hold at device | todo |
 | T-CLKQ | `tCH`/`tCL` ~0.45–0.55 `tCLK`; `tKHKL` ≤ 1.5 ns | STA / scope if needed | Clock quality within table | todo |
-| T-HZ | `tHZ` ≤ 5.5 ns to High-Z after CE# high | sim OE + board | Safe turnaround before other die / pass-through | todo |
+| T-HZ | `tHZ` ≤ 5.5 ns to High-Z after CE# high | sim OE + board | Safe turnaround before other device / pass-through | todo |
 | T-66 | Linear Burst / page-cross freq cap | policy + demoboard | Stay at **66 MHz `clk` / SCK=clk/2** for V1 path | todo |
+| T-GPIO-IN | SkyWater 130 input I/O max **66 MHz** | policy + STA | System `clk` does not exceed 66 MHz | todo |
+| T-GPIO-OUT | SkyWater 130 output I/O max **33 MHz** | policy + STA / board | Registered SCK and other high-rate pad outputs do not exceed 33 MHz | todo |
 
 ### Bring-up (MCU; not ASIC datapath)
 
 | ID | Constraint | Where | Pass | Status |
 |---|---|---|---|---|
-| B-PU | `tPU` ≥ 150 µs, CE# high | firmware | Both dies after power-up | todo |
+| B-PU | `tPU` ≥ 150 µs, CE# high | firmware | Both devices after power-up | todo |
 | B-RST | `tRST` ≥ 50 ns after `0x99` | firmware | Delay before next cmd | todo |
 
 ### Future (placeholders)
@@ -67,7 +69,7 @@ Add rows when RTL exposes the path:
 
 | ID | Constraint | Where | Pass | Status |
 |---|---|---|---|---|
-| F-HOST | START/ABORT/DONE pin timing vs clk | sim / STA | TBD | todo |
+| F-HOST | START/DONE/`BUS_REQ` pin timing vs clk | sim / STA | TBD | todo |
 | F-INT | Critical on-chip paths (FSM ↔ QSPI ↔ regs) | STA | TBD | todo |
 
 ---

@@ -2,7 +2,7 @@
 
 ## What this is
 
-A 2-tile Tiny Tapeout ASIC that DMA-moves bytes through external QSPI **PSRAM** (both dies on the flash+PSRAM PMOD) using **descriptors stored in memory**, not a pile of on-chip channel registers.
+A 2-tile Tiny Tapeout ASIC that DMA-moves bytes through external QSPI **PSRAM** (both devices on the flash+PSRAM PMOD) using **descriptors stored in memory**, not a pile of on-chip channel registers.
 
 V1 target: **bulk mover** between PSRAM A and B (learning / resume demo). ADC telemetry is post-V1 territory if pursued later.
 
@@ -15,7 +15,7 @@ V1 target: **bulk mover** between PSRAM A and B (learning / resume demo). ADC te
 ## Main capabilities (V1)
 
 1. **Scatter-gather** via linked Transfer Control Descriptors (TCDs) in PSRAM
-2. **Dual PSRAM** (RAM A + RAM B): read/write either die, including cross-device copies
+2. **Dual PSRAM** (RAM A + RAM B): read/write either device, including cross-device copies
 3. **Host pass-through** (`BUS_REQ`/`BUS_GNT`, ASIC `uio_oe=0` while granted) so the MCU can program both PSRAMs **and** flash; START hands the bus to the ASIC
 4. **Abort** path (pin encoding TBD) so a bad/long run can release the bus
 

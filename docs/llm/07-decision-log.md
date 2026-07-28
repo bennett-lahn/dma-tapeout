@@ -72,7 +72,7 @@ Chronological distillation of the idea -> proposal -> selection process. Verbose
 
 **Implied V1 triage order (highest keep-priority first) - updated by D12:**
 
-1. Pass-through + START/DONE/**abort** bus ownership (MCU can still reach flash + both PSRAMs when idle)
+1. Pass-through + START/DONE bus ownership (MCU can still reach flash + both PSRAMs when idle; ~~abort~~ revoked by D23 → use `rst_n`)
 2. QSPI engine with **RAM A/B CS mux** (V1: short CE# pulses from `N=1` / 11-byte fetch; no dedicated `tCEM` slicer)
 3. Single TCD memmove (same-device)
 4. Cross-device PSRAM copy (A↔B)
@@ -119,7 +119,7 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 **Decision (superseded lean):** earlier lean was 16-bit pointers with upper byte zero.
 
-**Decision (current, updated by D18 / D19):** **24-bit** internal pointers in TCD / working regs (no head register). QSPI address phase uses device `A[22:0]` from `ptr[22:0]`. ~~Device select in `CTRL_FLAGS` (D13/D18).~~ **Superseded by D19:** `ptr[23]` selects die. ~~`0x000000` reserved null.~~ **Superseded by D18:** address 0 is valid (fixed head on PSRAM 0). ~~End-of-chain = both-devices stop.~~ **Superseded by D19:** `CTRL_FLAGS.QUIT`.
+**Decision (current, updated by D18 / D19 / D24):** **24-bit** internal pointers in TCD / working regs (no head register). QSPI address phase uses device `A[22:0]` from `ptr[22:0]`. ~~Device select in `CTRL_FLAGS` (D13/D18).~~ ~~**Superseded by D19:** `ptr[23]` selects device.~~ **Superseded by D24:** device selects back in `CTRL_FLAGS` (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`); `ptr[23]` unused. ~~`0x000000` reserved null.~~ **Superseded by D18:** address 0 is valid (fixed head on PSRAM 0). ~~End-of-chain = both-devices stop.~~ **Superseded by D19:** `CTRL_FLAGS.QUIT`.
 
 ## D11 - Dual PSRAM in scope; flash out of ASIC V1
 
@@ -133,24 +133,24 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 **Why:**
 
-- Dual PSRAM is already on the TT QSPI PMOD and costs little in gates (CS mux + a couple of TCD device-select bits) while unlocking a clear demoboard story (copy / ping-pong between dies).
+- Dual PSRAM is already on the TT QSPI PMOD and costs little in gates (CS mux + a couple of TCD device-select bits) while unlocking a clear demoboard story (copy / ping-pong between devices).
 - Flash read/write on-ASIC fights the 2-tile / schedule cut; MCU pass-through already covers flash without silicon risk.
 - Keeps the product framing as a **PSRAM memory orchestrator**, not a NOR programmer.
 
 **DFF / tile impact:** low for dual-PSRAM (CS select mux; ~2 flag bits or equivalent for src/dest device). Flash stretch is deferred precisely because write path is medium–high FSM/DFF cost.
 
-**Encoding:** ~~superseded by D13 (`CTRL_FLAGS` device bits).~~ **Superseded by D19:** device in `ptr[23]`.
+**Encoding:** ~~superseded by D13 (`CTRL_FLAGS` device bits).~~ ~~**Superseded by D19:** device in `ptr[23]`.~~ **Superseded by D24:** device selects in `CTRL_FLAGS`.
 
 ## D12 - V1 = dual-PSRAM bulk mover; telemetry extras post-V1
 
 **Decision:**
 
 1. **V1 product:** isolated descriptor DMA for **learning / resume** and **bulk moves between PSRAM A and B** (same-device and cross-device). ADC / live sensor ingress is not a V1 commitment.
-2. **V1 TCD:** **11-byte** memmove record (`SRC`, `DEST`, `LEN`, `NEXT`, `CTRL_FLAGS`). ~~Flags carry device select (D13).~~ **D19:** flags carry **`QUIT` only** in V1; device is `ptr[23]`. No ALU, ring, or conditional stop.
-3. **V1 host:** START / DONE / abort behavior in D14; pin indices and fixed head in **D18** (`ui_in[0]=START`, `ui_in[1]=ABORT`).
+2. **V1 TCD:** **11-byte** memmove record (`SRC`, `DEST`, `LEN`, `NEXT`, `CTRL_FLAGS`). ~~Flags carry device select (D13).~~ ~~**D19:** flags carry **`QUIT` only**; device is `ptr[23]`.~~ **D24:** flags carry **`QUIT` + `SRC_DEVICE` + `DEST_DEVICE` + `NEXT_DEVICE`**; pointers are addresses only. No ALU, ring, or conditional stop.
+3. **V1 host:** START / DONE behavior in D14; pin indices and fixed head in **D18**; **no ABORT pin** (**D23**: use `rst_n` to kill a run). ~~`ui_in[1]=ABORT`~~ superseded by D23 (`ui_in[1]` reserved).
 4. **Post-V1 add order** (documented in `10-post-v1-features.md`):
    1. In-flight byte ALU (extend reserved `CTRL_FLAGS` bits + `IMM`, `STATE_PROCESS`)
-   2. Conditional stop (LT/Z/NZ after READ; `LEN==0` until; needs abort)
+   2. Conditional stop (LT/Z/NZ after READ; `LEN==0` until; needs `rst_n` or a future soft-abort)
    3. Ring / modulo addressing
    4. ASIC flash read, then maybe flash write (extends D11 stretch)
 
@@ -160,7 +160,7 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 - Shrinks verification surface for the shuttle vs telemetry extras.
 - Keeps a clear implement-later path so telemetry-shaped ideas are not lost.
 
-**DFF / tile impact:** V1 pays **8 DFFs** for a reserved `CTRL_FLAGS` byte (**1 used** for `QUIT` per D19). Post-V1 ALU/IMM/ring reintroduce further cost in the order above.
+**DFF / tile impact:** V1 pays **8 DFFs** for a `CTRL_FLAGS` byte (**4 used** for `QUIT` + three device selects per D24; `[7:4]` reserved). Post-V1 ALU/IMM/ring reintroduce further cost in the order above.
 
 ## D13 - `CTRL_FLAGS` device select (reject pointer MSB)
 
@@ -172,9 +172,9 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 4. **`TRANSFER_LEN == 0`:** no-op descriptor - skip data moves; immediately follow `NEXT_TCD` (device from `NEXT_TCD[23]`) - **still binding**.
 5. ~~`NEXT_TCD == 0x000000` end-of-chain.~~ **Superseded by D18** (valid address); end-of-chain is **`QUIT`** per D19.
 
-~~**Rejected then:** `ptr[23]` device-select lean.~~ **Re-adopted by D19** (APS6404L already uses only `A[22:0]`; MSB is free for die select).
+~~**Rejected then:** `ptr[23]` device-select lean.~~ **Re-adopted by D19** (APS6404L already uses only `A[22:0]`; MSB is free for device select).
 
-~~**Still open:** head die at START.~~ **Superseded by D18** (fixed head at address 0 / PSRAM 0).
+~~**Still open:** head device at START.~~ **Superseded by D18** (fixed head at address 0 / PSRAM 0).
 
 ## D14 - Host protocol: idle / START / DONE / abort / pass-through
 
@@ -182,14 +182,14 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 | Rule | Behavior |
 |---|---|
-| Idle wait | From **IDLE**, wait for **START**; accept START only in IDLE |
-| START while busy | **Ignored** until the ASIC returns to IDLE |
-| End of chain | ~~`NEXT_TCD == 0`.~~ ~~Both-devices stop (D18).~~ **Superseded by D19:** `CTRL_FLAGS.QUIT=1` after fetch → **IDLE** (no execute) |
+| Idle wait | From **IDLE**, accept the post-sync, rising-edge-detected one-`clk` **START** pulse |
+| START while busy | Pulse is **ignored and not queued**; a later command requires a new rising edge after IDLE returns |
+| End of chain | ~~`NEXT_TCD == 0`.~~ ~~Both-devices stop (D18).~~ **Superseded by D19:** `CTRL_FLAGS.QUIT=1` after fetch → **IDLE** (no execute). **D23:** next START always refetches fixed head at `0x000000` / PSRAM 0 |
 | DONE | Asserted **whenever** the ASIC is IDLE (including after reset / before first START) |
 | Pass-through | ~~Enabled iff DONE (idle); disabled while not idle (DMA active).~~ **Superseded by D22:** MCU may drive `uio` only while `BUS_GNT` is high (request/grant). |
-| Abort | If **ABORT** asserted while active: finish the **current QPI transaction**, then transition to IDLE (DONE; pass-through via D22 grant if requested) |
+| Abort | ~~If **ABORT** asserted while active: finish the **current QPI transaction**, then transition to IDLE~~ **Superseded by D23:** no ABORT pin; use **`rst_n`** to stop a runaway DMA |
 
-~~Pin indices open for ABORT / head.~~ **Superseded by D18:** `ui_in[0]=START`, `ui_in[1]=ABORT`, `uo_out[0]=DONE`; no head-pointer pins. ~~`ui_in[7:2]` / `uo_out[7:1]` still open.~~ **D22:** `ui_in[2]=BUS_REQ`, `uo_out[1]=BUS_GNT`; `ui_in[7:3]` / `uo_out[7:2]` still open for status/DFT.
+~~Pin indices open for ABORT / head.~~ **Superseded by D18:** `ui_in[0]=START`, ~~`ui_in[1]=ABORT`~~, `uo_out[0]=DONE`; no head-pointer pins. **D23:** ABORT removed; `ui_in[1]` reserved. **D22:** `ui_in[2]=BUS_REQ`, `uo_out[1]=BUS_GNT`; `ui_in[7:3]` / `uo_out[7:2]` still open for status/DFT.
 
 **Supersedes Q4 (partial):** no host-ACK gate for IDLE restore. **Superseded for drive legality by D22:** MCU drives only under `BUS_GNT`, not merely when DONE.
 
@@ -211,15 +211,16 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 3. Sample PSRAM read data on the **rising** edge of SCK (captured into `clk`-domain `rdata`; pulse `rdata_valid`). No falling-edge RX path in V1.
 4. DLL / pattern-based eye training remains a V1 non-goal.
 5. Phase 3 must **re-check** `tACLK` / board / TT / RP2040 clocking against **66 MHz clk / 33 MHz SCK** rising-edge before shuttle freeze.
+6. Treat **66 MHz as the maximum system clock**, not merely a nominal target. The primary ceiling is the SkyWater 130 GPIO rating: **66 MHz max for input I/O** and **33 MHz max for output I/O**. Dividing `clk` by two keeps the registered SCK output within the 33 MHz output limit.
 
-**Why:** Avoids fragile clock-gate/mux of `clk` onto SCK while keeping a simple rising-edge RX path. Half-rate SCK eases `tACLK` margin vs a full-rate 66 MHz pad clock; still within APS6404L Linear Burst capability.
+**Why:** Respects the SkyWater 130 GPIO input/output speed ceilings, avoids fragile clock-gate/mux of `clk` onto SCK, and keeps a simple rising-edge RX path. Half-rate SCK also eases `tACLK` margin vs a full-rate 66 MHz pad clock while remaining within APS6404L Linear Burst capability.
 
 ## D17 - MCU owns QPI enter/exit; sole QPI read is `0xEB`
 
 **Decision:**
 
-1. **MCU** (via pass-through while DONE) owns PSRAM reset / Enter Quad (`0x35`) / Exit Quad (`0xF5`) for **each die** DMA will touch. ASIC does **not** emit `0x35`, `0xF5`, `0x66`, or `0x99`.
-2. Before START, ASIC **expects** both dies already in **QPI mode**. After DONE, MCU may Exit Quad (or reset) if firmware needs SPI again.
+1. **MCU** (via pass-through while DONE) owns PSRAM reset / Enter Quad (`0x35`) / Exit Quad (`0xF5`) for **each device** DMA will touch. ASIC does **not** emit `0x35`, `0xF5`, `0x66`, or `0x99`.
+2. Before START, ASIC **expects** both devices already in **QPI mode**. After DONE, MCU may Exit Quad (or reset) if firmware needs SPI again.
 3. ASIC QPI data opcodes only: Fast Read Quad **`0xEB`** (sole read; 6 wait cycles) and Write **`0x02`**. No `0x0B` path.
 4. Closes Q2 and Q8.
 
@@ -227,16 +228,16 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 ## D18 - Fixed head; ABORT pin; both-devices stop TCD
 
-**Decision (stop encoding superseded by D19; fixed head / ABORT / address-0 still binding):**
+**Decision (stop encoding superseded by D19; ABORT pin superseded by D23; fixed head / address-0 still binding):**
 
-1. **`ui_in[1] = ABORT`** (next free `ui_in` after START). Behavior unchanged from D14 (finish current QPI txn → IDLE).
+1. ~~**`ui_in[1] = ABORT`** (next free `ui_in` after START). Behavior unchanged from D14 (finish current QPI txn → IDLE).~~ **Superseded by D23:** no ABORT; `ui_in[1]` reserved; stop a run with `rst_n`.
 2. **No head-pointer / arm input vector.** Remove on-chip head register (~24 DFFs saved).
-3. On START, always fetch the first TCD from **address `0x000000` on PSRAM 0** (device 0; pointer encoding `0x000000` with `ptr[23]=0`).
-4. **Address `0x000000` is a valid TCD/buffer address** (null-at-zero revoked). `NEXT_TCD` with address bits 0 is a normal link (die from `NEXT_TCD[23]`), not end-of-chain.
+3. On START, always fetch the first TCD from **address `0x000000` on PSRAM 0** (device 0; pointer encoding `0x000000` with `ptr[23]=0`). Applies after reset **and** after a prior `QUIT` return to IDLE (D23).
+4. **Address `0x000000` is a valid TCD/buffer address** (null-at-zero revoked). `NEXT_TCD` with address bits 0 is a normal link (device from `NEXT_TCD[23]`), not end-of-chain.
 5. ~~**End-of-chain / DONE:** both-devices one-hot `2'b11`.~~ **Superseded by D19:** `CTRL_FLAGS.QUIT`.
 6. ~~**Device-select encoding** in `CTRL_FLAGS`.~~ **Superseded by D19:** `ptr[23]`.
 
-7. Closes Q3 pin packing for START/ABORT/head; closes Q5 null-head / null-next items; closes Q13 head-device open (device 0).
+7. Closes Q3 pin packing for START/~~ABORT~~/head; closes Q5 null-head / null-next items; closes Q13 head-device open (device 0). **ABORT pin revoked by D23.**
 
 **Why:** Eliminates host pin bandwidth for a 24-bit head; fixed entry point is enough for V1 demos. Address 0 remains usable for the head TCD on device 0. Empty run: place a `QUIT` TCD at `0x000000` on PSRAM 0 (D19).
 
@@ -248,7 +249,7 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 2. **Device select** is the **MSB of each pointer**:
    - `ptr[23] = 0` → PSRAM 0
    - `ptr[23] = 1` → PSRAM 1
-   - QSPI address phase drives **`ptr[22:0]`** as device `A[22:0]` (full 8 MB per die; MSB is not a byte address bit on APS6404L).
+   - QSPI address phase drives **`ptr[22:0]`** as device `A[22:0]` (full 8 MB per device; MSB is not a byte address bit on APS6404L).
 3. Pointer increments bump only the address field and **preserve `ptr[23]`** for the life of that TCD's SRC/DEST (device does not change mid-descriptor).
 4. **`CTRL_FLAGS` V1 map:**
 
@@ -257,11 +258,13 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 | 0 | `QUIT` | `1` = after FETCH, go IDLE / DONE **without** executing this TCD; `0` = run (or no-op if `LEN==0`) |
 | 7:1 | reserved | Write 0; post-V1 (ALU / cond-stop / ring) |
 
-5. **End-of-chain / DONE:** after `STATE_FETCH`, if `QUIT==1`, transition to IDLE / DONE (no copy). Never assert both CS lines for a quit TCD.
+~~5. Device select on all three pointers including `NEXT_TCD[23]`.~~ **Superseded by D24:** device selects are **`CTRL_FLAGS.SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`**; pointers are addresses only; reserved becomes `[7:4]`.
+
+5. **End of chain / DONE:** after `STATE_FETCH`, if `QUIT==1`, transition to IDLE / DONE (no copy). Never assert both CS lines for a quit TCD.
 6. **Fixed head unchanged (D18):** first TCD still at address **`0x000000` on PSRAM 0**. Address **0 remains allowed** for TCDs/buffers (`NEXT_TCD` address bits may be 0). Empty run: `QUIT=1` TCD at head.
 7. Re-closes Q1 / Q5 / Q13 for the new encoding. Supersedes D13 device-in-flags and D18 both-devices stop.
 
-**Why:** One flag bit is enough for chain end once address 0 is valid; packing die into `ptr[23]` removes six device bits from flags and matches the unused protocol/address MSB on this PSRAM class.
+**Why:** One flag bit is enough for chain end once address 0 is valid; packing device into `ptr[23]` removes six device bits from flags and matches the unused protocol/address MSB on this PSRAM class.
 
 **DFF / tile impact:** still **11-byte** TCD / **88 DFFs** working metadata; CS mux keys off pointer MSBs instead of flag fields.
 
@@ -282,14 +285,14 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 **Decision:**
 
-1. FSM issues a **transaction request** (not a TCD slice): `cmd`, `addr`, `die_sel`, exact `byte_len` (`qspi_pkg` types; `die_sel` ≠ pad CE#). `byte_len` width is `QSPI_BYTE_LEN_W = $clog2(QSPI_MAX_BYTES + 1)` with `QSPI_MAX_BYTES = max(DMA_BUF_DEPTH, QSPI_TCD_BYTES)`.
+1. FSM issues a **transaction request** (not a TCD slice): `cmd`, `addr`, `device_sel`, exact `byte_len` (`qspi_pkg` types; `device_sel` ≠ pad CE#). `byte_len` width is `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)` with `QPI_MAX_BYTES = max(DMA_BUF_DEPTH, QPI_TCD_BYTES)`.
 2. Start is a **1-cycle `txn_valid` pulse**, legal only when **`~busy`**. There is **no `txn_ready`** port (`busy` is the start qualifier; CE# pad + `tCPH` are folded into `busy` / idle sequencing).
-3. Engine does **not** latch the request; FSM must hold `{cmd, addr, die_sel, byte_len}` stable from `txn_valid` until `busy` low.
+3. Engine does **not** latch the request; FSM must hold `{cmd, addr, device_sel, byte_len}` stable from `txn_valid` until `busy` low.
 4. Data path is nibble-wide (`rdata`/`wdata` `[3:0]`); two SCK beats per payload byte.
 5. Read: on each rising SCK in the data phase, engine captures `sio_in` → `rdata` and pulses **`rdata_valid`** one `clk`. FSM always sinks; engine transfers exactly `2 * byte_len` nibbles.
-6. Write: first nibble on `wdata` with `txn_valid`. Engine pulses **`wdata_next`** on **falling SCK** when the next nibble is required; FSM updates `wdata` for the following rise. **No `wdone`:** engine ends the write after `2 * byte_len` SCK beats, then end-pad / raise CE#.
+6. Write: first nibble on `wdata` with `txn_valid`. Engine pulses **`wdata_next`** on **falling SCK** iff another nibble is required to finish the accepted transaction; FSM updates `wdata` for the following rise. This produces exactly `2 * byte_len - 1` pulses and no extraneous pulse after the final nibble or outside the active write. **No `wdone`:** engine ends the write after `2 * byte_len` SCK beats, then end-pad / raise CE#.
 7. Engine **never stalls** SCK/CE# for the FSM; owns CE# start (`CS_ON`) / end (`SCLK_OFF` then `CS_OFF`) pad and ≥2-`clk` `tCPH` (`CS_OFF` + `IDLE`).
-8. FSM grants `uio_oe` while `busy`; reclaims when `busy` clears. ABORT waits for current txn (`busy`→0).
+8. FSM grants `uio_oe` while `busy`; reclaims when `busy` clears.
 
 **Why:** Minimal FSM↔engine surface (`busy` / pulsed nibble beats / length-driven end). Dropping `txn_ready` and `wdone` avoids redundant handshake state; half-rate SCK + edge-timed `wdata_next` keeps TX setup clean without gating `clk` onto the pad.
 
@@ -311,12 +314,63 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
    4. MCU finishes, Hi-Zs its QSPI GPIOs, then deasserts `BUS_REQ`.
    5. ASIC deasserts `BUS_GNT`. If not IDLE, DMA may resume (next txn after grant falls).
 5. **Idle:** when IDLE/`DONE`, grant follows request promptly (`BUS_GNT` tracks `BUS_REQ` once OE is clear). Idle alone does **not** authorize MCU drive without grant.
-6. **START:** accepted only in IDLE with **`~BUS_REQ`** (hence `~BUS_GNT`). MCU must drop request and see grant low before START.
-7. **ABORT vs `BUS_REQ`:** ABORT still ends the DMA run (finish current QPI txn → IDLE). `BUS_REQ` **pauses** an active run between atomic txns and yields the bus; DMA resumes when request is released (unless ABORT / quit / reset also applies).
+6. **START:** the top level synchronizes the raw level and rising-edge detects it into a one-`clk` pulse. The pulse is accepted only in IDLE with **`~BUS_REQ`** (hence `~BUS_GNT`); otherwise it is ignored and not queued. MCU must drop request, see grant low, and issue a new START rising edge.
+7. **`BUS_REQ` vs kill:** `BUS_REQ` **pauses** an active run between atomic txns and yields the bus; DMA resumes when request is released (unless quit / `rst_n` also applies). ~~ABORT~~ removed by **D23**; use **`rst_n`** to stop a runaway chain.
 8. Supersedes D14 "pass-through iff DONE" for drive legality. Closes Q3/Q4 remainder for this handshake.
 
-**Why:** Explicit request/grant removes the race of MCU assuming DONE ≡ safe to drive, and lets firmware reclaim flash/PSRAM mid-DMA without aborting the whole chain, while keeping QPI CE# windows intact.
+**Why:** Explicit request/grant removes the race of MCU assuming DONE ≡ safe to drive, and lets firmware reclaim flash/PSRAM mid-DMA without ending the whole chain, while keeping QPI CE# windows intact.
 
 **DFF / tile impact:** ~1 registered `BUS_GNT` (plus FSM "yield / no new txn while REQ" gating). Negligible vs 2-tile budget.
 
-**Host CDC:** MCU `ui_in` levels (incl. `BUS_REQ`) are async to design `clk`. The **top-level** module two-flop-synchronizes `START` / `ABORT` / `BUS_REQ` before `sys_controller` / the descriptor FSM sample them (~2 DFFs per bit). See `03-architecture.md` § Top module / host-input synchronizers.
+**Host CDC:** MCU `ui_in` levels (incl. `BUS_REQ`) are async to design `clk`. The **top-level** module two-flop-synchronizes START and BUS_REQ, then rising-edge detects synchronized START into the one-`clk` pulse consumed by `sys_controller`; BUS_REQ remains a level (~5 DFFs total). See `03-architecture.md` § Top module / host-input synchronizers.
+
+## D23 - No ABORT pin; quit → IDLE; next START from fixed head
+
+**Decision:**
+
+1. **Remove host ABORT.** There is no `ui_in` ABORT strobe and no `dma_abort` / soft-abort path in V1. ~~D14/D18 abort behavior~~ revoked.
+2. **Kill a runaway DMA with `rst_n`.** Asserting active-low reset returns the ASIC to IDLE (`DONE` high, `uio_oe` clear) the same as any other reset. Firmware must re-establish PSRAM QPI mode after reset if needed (D17).
+3. **`ui_in[1]`** (formerly ABORT) is **reserved** / open with `ui_in[7:3]`. **BUS_REQ** stays at **`ui_in[2]`** (D22).
+4. **`QUIT` end-of-chain (clarifies D19):** when the FSM fetches a TCD with **`CTRL_FLAGS.QUIT=1`**, it returns to **IDLE** / asserts **DONE** without executing that TCD. The next accepted **START** always begins a new run by fetching from **address `0x000000` on PSRAM 0** again (fixed head; D18) - it does not resume from a saved `NEXT_TCD` or mid-chain pointer.
+5. Mid-run bus yield remains **BUS_REQ** / **BUS_GNT** only (D22).
+
+**Why:** Saves a host pin, ~2 sync DFFs, and abort FSM paths inside the 2-tile budget. Normal chain end is `QUIT`; emergency stop is reset. Fixed-head restart after quit keeps firmware and hardware simple.
+
+**DFF / tile impact:** removes ~2 sync DFFs and abort-path control; negligible but favorable vs prior D14/D18 abort plan.
+
+## D24 - Device selects in `CTRL_FLAGS` (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`)
+
+**Decision:**
+
+1. **Revoke pointer-MSB device select (D19) for V1.** `SRC_PTR` / `DEST_PTR` / `NEXT_TCD` are **byte addresses** only. QSPI address phase uses `ptr[22:0]`; `ptr[23]` is unused (drive 0).
+2. **Three device-select flags** live in **`CTRL_FLAGS`**, taking former reserved bits so the TCD stays **11 bytes / 88 bits**:
+
+| Bits | Name | Encoding |
+|---|---|---|
+| 0 | `QUIT` | unchanged (D19/D23) |
+| 1 | `SRC_DEVICE` | device for reads of `SRC_PTR` (`0`=PSRAM 0, `1`=PSRAM 1) |
+| 2 | `DEST_DEVICE` | device for writes of `DEST_PTR` |
+| 3 | `NEXT_DEVICE` | device for the next FETCH of `NEXT_TCD` |
+| 7:4 | reserved | Write 0; post-V1 (was `[7:1]`; three bits claimed for device selects) |
+
+3. Pointer increments bump only the address field (`[22:0]`); device flags are sticky for the life of that TCD (device does not change mid-descriptor).
+4. After a data (or no-op) TCD completes, the next FETCH uses `{NEXT_DEVICE, NEXT_TCD[22:0]}`.
+5. Working metadata remains **88 DFFs** / **11-byte** TCD (repack inside `CTRL_FLAGS`; no width growth).
+
+**Why:** One explicit device flag per pointer keeps SRC/DEST/NEXT independently selectable for cross-device chains without encoding device in address MSBs, while preserving the 88-bit working set.
+
+**DFF / tile impact:** none vs prior 11-byte TCD (flags repack only). Supersedes D19 pointer-MSB device select and the earlier D24 draft that only moved `NEXT_DEVICE`.
+
+## D25 - Big-endian TCD pointer fields
+
+**Decision:**
+
+1. The three 24-bit TCD pointer fields (`SRC_PTR`, `DEST_PTR`, and `NEXT_TCD`) use **big-endian byte order** in PSRAM: the most-significant byte is stored at the lowest address. Pointer `0x123456` is serialized as bytes `12 34 56`.
+2. The byte offsets and 11-byte TCD size do not change. `TRANSFER_LEN` remains at offset 6 and `CTRL_FLAGS` remains at offset 10.
+3. `CTRL_FLAGS` bit numbering does not change: `QUIT` is bit 0, followed by `SRC_DEVICE`, `DEST_DEVICE`, and `NEXT_DEVICE` in bits 1 through 3.
+4. Firmware must explicitly serialize pointer bytes into an 11-byte buffer. It must not copy native little-endian MCU integers or a padded C structure directly into PSRAM.
+5. This decision changes the firmware-visible memory format and documentation only. The existing RTL fetch ordering remains unchanged. Payload data remains byte-preserving and receives no endian conversion.
+
+**Why:** The existing QPI fetch and packed working-register order already decode most-significant bytes first. Keeping that order avoids pointer byte-reversal logic in the ASIC. Since C has no standard 24-bit integer type and the 11-byte TCD already requires explicit packing, big-endian pointer serialization adds little firmware complexity while favoring the two-tile implementation budget.
+
+**DFF / tile impact:** none. This freezes the existing RTL interpretation and places byte-order handling in firmware.

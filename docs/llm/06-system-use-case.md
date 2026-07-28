@@ -2,7 +2,7 @@
 
 ## Anchor scenario (V1)
 
-Firmware on the RP2 wants to move large or fragmented buffers between the two APS6404L dies (or within one die) without bit-banging every SPI/QSPI beat in software.
+Firmware on the RP2 wants to move large or fragmented buffers between the two APS6404L devices (or within one device) without bit-banging every SPI/QSPI beat in software.
 
 Without a DMA helper, the MCU repeatedly:
 
@@ -13,13 +13,13 @@ Without a DMA helper, the MCU repeatedly:
 
 ## How this ASIC changes the story
 
-The ASIC is an **autonomous descriptor DMA** between the RP2 and the two PSRAM dies.
+The ASIC is an **autonomous descriptor DMA** between the RP2 and the two PSRAM devices.
 
 Firmware builds a TCD linked list once (or occasionally), stages payloads during pass-through, then lets hardware:
 
 1. **Memcopy** bytes from SRC to DEST (same-device or cross-device)
 2. **Scatter-gather** across fragmented PSRAM regions as if they were contiguous
-3. **Return the bus** on DONE (or abort) so the MCU can inspect results
+3. **Return the bus** on DONE (or after `rst_n`) so the MCU can inspect results
 
 Flash on the PMOD stays MCU-managed via pass-through in V1.
 
@@ -36,21 +36,21 @@ V1 ingress: **pre-staged buffers in PSRAM** (MCU wrote them before START). Live 
 
 ### 1. Scatter-gather bulk copy
 
-Need: move N bytes across multiple extents / dies.
+Need: move N bytes across multiple extents / devices.
 
 Mechanism: when `TRANSFER_LEN` hits 0, fetch next TCD and continue until a `QUIT=1` TCD (`CTRL_FLAGS` bit 0).
 
 ### 2. Cross-device A↔B
 
-Need: ping-pong or evacuate one die to the other on the shared QSPI bus.
+Need: ping-pong or evacuate one device to the other on the shared QSPI bus.
 
-Mechanism: device select via `ptr[23]` on SRC/DEST/NEXT; read-then-write with one CE# low at a time.
+Mechanism: device select via `CTRL_FLAGS.SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; read-then-write with one CE# low at a time.
 
 ### 3. Long transfers with refresh
 
 Need: copies larger than a single CE# low window (`tCEM`).
 
-**V1 mechanism:** buffer depth `N=1` forces CE# high after every byte read and every byte write (plus between dies on cross-device). Long `TRANSFER_LEN` is many short pulses, so no dedicated `tCEM` / page slicer. First depth that can hit extended-grade `tCEM` (4 us) at 33 MHz SCK on a full-buffer `0xEB` hold: **`N ≥ 60`**. Two-page-cross only at **`N ≥ 1026`**. See `docs/human/architecture/blocks/descriptor-fsm.md`.
+**V1 mechanism:** buffer depth `N=1` forces CE# high after every byte read and every byte write (plus between devices on cross-device). Long `TRANSFER_LEN` is many short pulses, so no dedicated `tCEM` / page slicer. First depth that can hit extended-grade `tCEM` (4 us) at 33 MHz SCK on a full-buffer `0xEB` hold: **`N ≥ 60`**. Two-page-cross only at **`N ≥ 1026`**. See `docs/human/architecture/blocks/descriptor-fsm.md`.
 
 ## What V1 can demo
 
@@ -72,4 +72,4 @@ Telemetry-shaped behaviors (ring last-*N*, in-flight calibrate/mask, until-thres
 
 ## Interview framing (V1)
 
-> This is a descriptor-based dual-PSRAM DMA for Tiny Tapeout. Descriptors live in PSRAM so the on-chip budget goes to QSPI mastering and host bus arbitration. The demoboard story is bulk scatter-gather copies across both dies, including cross-device moves, without the MCU SPI-bitbanging every byte.
+> This is a descriptor-based dual-PSRAM DMA for Tiny Tapeout. Descriptors live in PSRAM so the on-chip budget goes to QSPI mastering and host bus arbitration. The demoboard story is bulk scatter-gather copies across both devices, including cross-device moves, without the MCU SPI-bitbanging every byte.

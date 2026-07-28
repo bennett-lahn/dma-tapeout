@@ -1,6 +1,6 @@
 # TCD Format, Datapath, and Control Details
 
-Status: **11-byte** TCD layout, 24-bit address model (`ptr[23]` = device), fixed head at `0x000000`/PSRAM0, `QUIT` end-of-chain, zero-length no-op, QPI data path, and **1-byte** depth-agnostic data buffer are V1 planning freezes (D14 / D15 / D18 / D19 / D20 / D22). No ALU / ring / conditional-stop in V1.
+Status: **11-byte** TCD layout, **big-endian 24-bit pointer fields** (D25), device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24), fixed head at `0x000000`/PSRAM0, `QUIT` end-of-chain, zero-length no-op, QPI data path, and **1-byte** depth-agnostic data buffer are V1 planning freezes (D14 / D15 / D18 / D19 / D20 / D22 / D24 / D25). No ALU / ring / conditional-stop in V1.
 
 Post-V1 (ALU, `COND_STOP`, ring, flash): [`10-post-v1-features.md`](10-post-v1-features.md).
 
@@ -8,93 +8,119 @@ Post-V1 (ALU, `COND_STOP`, ring, flash): [`10-post-v1-features.md`](10-post-v1-f
 
 | Rule | V1 |
 |---|---|
-| Pointer width on-chip / in TCD | **24-bit** |
+| Pointer width on-chip / in TCD | **24-bit** (byte address; `[23]` unused / 0) |
 | QSPI address phase | **`ptr[22:0]`** as device byte address (`A[22:0]`) |
-| Device select | **`ptr[23]`** (`0`=PSRAM 0, `1`=PSRAM 1) on `SRC_PTR` / `DEST_PTR` / `NEXT_TCD` |
+| Device select | **`CTRL_FLAGS.SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`** (D24); not pointer MSBs |
 | Fixed head | START always fetches **`0x000000` on PSRAM 0** (no head register / pins) |
-| End of chain | Fetched TCD with **`CTRL_FLAGS.QUIT=1`** → IDLE / DONE (no execute) |
+| End of chain | Fetched TCD with **`CTRL_FLAGS.QUIT=1`** → IDLE / DONE (no execute); next START fetches fixed head again (D23) |
 | Address 0 | **Valid** TCD/buffer address (not null) |
-| Reachable window | Full APS6404L range (`A[22:0]`, 8 MB) per die |
+| Reachable window | Full APS6404L range (`A[22:0]`, 8 MB) per device |
 | DFF cost | Working TCD **88 DFFs** (no head pointer) |
 
 ## Transfer Control Descriptor (TCD)
 
-A TCD is a packed record stored in PSRAM. The ASIC fetches it into working registers, checks `QUIT`, executes a pure byte copy (or no-op if length 0), then follows `NEXT_TCD` (die from `NEXT_TCD[23]`).
+A TCD is a packed record stored in PSRAM. The ASIC fetches it into working registers, checks `QUIT`, executes a pure byte copy (or no-op if length 0), then follows `NEXT_TCD` on device **`NEXT_DEVICE`**.
 
 ### Layout (11-byte TCD)
 
 | Offset | Field | Width | Notes |
 |---|---|---|---|
-| 0 | `SRC_PTR` | 24 | Little-endian working assumption; `[22:0]` byte addr, `[23]` src die |
-| 3 | `DEST_PTR` | 24 | `[22:0]` byte addr, `[23]` dest die |
+| 0 | `SRC_PTR` | 24 | Big-endian; byte addr; device from `SRC_DEVICE` |
+| 3 | `DEST_PTR` | 24 | Byte addr; device from `DEST_DEVICE` |
 | 6 | `TRANSFER_LEN` | 8 | Bytes to move; **`0` = no-op** (follow next immediately) |
-| 7 | `NEXT_TCD` | 24 | Next descriptor (`[22:0]` addr, `[23]` die); addr 0 is a normal link |
-| 10 | `CTRL_FLAGS` | 8 | `QUIT` + reserved |
+| 7 | `NEXT_TCD` | 24 | Next descriptor byte address; device from `NEXT_DEVICE`; addr 0 is a normal link |
+| 10 | `CTRL_FLAGS` | 8 | Memory byte: `QUIT` + `SRC_DEVICE` + `DEST_DEVICE` + `NEXT_DEVICE` + reserved. RTL flattens into `tcd_t` members (no nested ctrl struct). |
 
 `STATE_FETCH` burst-reads **11 bytes** into working registers (held-CE#).
 
-### `CTRL_FLAGS` (V1 / D19)
+The three 24-bit pointer fields use **big-endian byte order** (D25): the most-significant byte is stored at the lowest PSRAM address. For a pointer value `0x123456`, firmware writes bytes `12 34 56`. This matches the existing RTL fetch order and does not imply any payload conversion. `TRANSFER_LEN` and `CTRL_FLAGS` are single-byte fields.
+
+Exact firmware serialization:
+
+| Offset | Byte value |
+|---|---|
+| 0 | `SRC_PTR[23:16]` |
+| 1 | `SRC_PTR[15:8]` |
+| 2 | `SRC_PTR[7:0]` |
+| 3 | `DEST_PTR[23:16]` |
+| 4 | `DEST_PTR[15:8]` |
+| 5 | `DEST_PTR[7:0]` |
+| 6 | `TRANSFER_LEN[7:0]` |
+| 7 | `NEXT_TCD[23:16]` |
+| 8 | `NEXT_TCD[15:8]` |
+| 9 | `NEXT_TCD[7:0]` |
+| 10 | `CTRL_FLAGS[7:0]` |
+
+### `CTRL_FLAGS` (V1 / D19 / D24)
 
 | Bits | Name | Encoding |
 |---|---|---|
 | 0 | `QUIT` | `1` = go IDLE / DONE after fetch (do not execute); `0` = run |
-| 7:1 | reserved | Write 0; available for post-V1 (ALU / cond-stop / ring) |
+| 1 | `SRC_DEVICE` | `0` = SRC on PSRAM 0; `1` = SRC on PSRAM 1 |
+| 2 | `DEST_DEVICE` | `0` = DEST on PSRAM 0; `1` = DEST on PSRAM 1 |
+| 3 | `NEXT_DEVICE` | `0` = next TCD on PSRAM 0; `1` = next TCD on PSRAM 1 |
+| 7:4 | reserved | Write 0; available for post-V1 (ALU / cond-stop / ring) |
 
-**Quit / DONE:** after fetch, if `QUIT==1`, go IDLE / DONE without executing that TCD's copy. Never assert both CS lines for a quit TCD.
+**Quit / DONE (D19/D23):** after fetch, if `QUIT==1`, go IDLE / DONE without executing that TCD's copy. Never assert both CS lines for a quit TCD. The next accepted **START** begins a new run from **`0x000000` on PSRAM 0** (fixed head); the engine does not resume mid-chain.
 
-Device bits live in the pointer MSBs and are **preserved** on SRC/DEST increments for that descriptor (`ptr[23]` sticky; only `[22:0]` advances).
+Device flags are **sticky** for the life of that TCD. Pointer increments advance only `[22:0]`.
 
 No in-flight ALU, ring wrap, or conditional stop in V1.
 
 ### Pointer updates (V1)
 
-Every completed copy step of `k` bytes (`k = min(N, TRANSFER_LEN)`; V1 `N=1`): **`SRC_PTR[22:0] += k`**, **`DEST_PTR[22:0] += k`** (linear only); keep `ptr[23]`. No fixed-src/fixed-dest, no ring. (Fill/gather return with post-V1 flag extensions.)
+Every completed copy step of `k` bytes (`k = min(N, TRANSFER_LEN)`; V1 `N=1`): **`SRC_PTR[22:0] += k`**, **`DEST_PTR[22:0] += k`** (linear only); device flags unchanged. No fixed-src/fixed-dest, no ring. (Fill/gather return with post-V1 flag extensions.)
 
-Wrap within the 8 MB window is a firmware concern.
+Wrap within the 8 MB device is a firmware concern.
 
 ## Execution algorithm (conceptual)
 
 ```
 # START: fixed head
-fetch_ptr = 0x000000   # addr 0, PSRAM 0 (bit23=0)
+fetch_ptr = 0x000000   # addr 0, PSRAM 0
+fetch_device = 0
 loop:
-    FETCH 11-byte TCD at fetch_ptr[22:0] from die fetch_ptr[23] into working regs
+    FETCH 11-byte TCD at fetch_ptr[22:0] from device fetch_device into working regs
     if QUIT:
-        return IDLE; DONE=1; pass-through on   # quit TCD (D19)
+        return IDLE; DONE=1   # quit TCD (D19); next START → fixed head again (D23)
     while TRANSFER_LEN > 0:       # LEN==0 skips this loop (no-op TCD)
         # Buffer depth N is a parameter (V1: N=1). Correctness must not assume N (D20).
         k = min(N, TRANSFER_LEN)
-        buf[0..k) = READ(SRC_PTR, k)   # CS from SRC_PTR[23]; addr SRC_PTR[22:0]
-        WRITE(DEST_PTR, buf[0..k))     # CS from DEST_PTR[23]; may be other die
+        buf[0..k) = READ(SRC_PTR, k)   # CS from SRC_DEVICE; addr SRC_PTR[22:0]
+        WRITE(DEST_PTR, buf[0..k))     # CS from DEST_DEVICE; may be other device
         SRC_PTR[22:0] += k
         DEST_PTR[22:0] += k
         TRANSFER_LEN -= k
         # V1 N=1: CE# rises every short txn; tCEM / page slicer not required
     fetch_ptr = NEXT_TCD
+    fetch_device = NEXT_DEVICE
 ```
 
-Host **ABORT** (`ui_in[1]`): finish the current QPI transaction, then IDLE / DONE (D14/D18). Mid-run bus yield uses **BUS_REQ** / **BUS_GNT** (D22), not abort.
+No host **ABORT** pin (D23): stop a runaway DMA with **`rst_n`**. Mid-run bus yield uses **BUS_REQ** / **BUS_GNT** (D22).
 
 **Data buffer (D20):** V1 implements `N=1` (8 DFFs). FSM / QSPI path must remain correct for any `N >= 1`; deepening the scratch is optional performance work, not a protocol or TCD change. Short held CE# pulses also make APS6404L `tCEM` and Linear Burst one-page-cross rules non-binding for V1 (see human [`descriptor-fsm.md`](../human/architecture/blocks/descriptor-fsm.md)).
 
-**FSM ↔ QSPI (D21):** start with `txn_valid` only when `~busy` (no `txn_ready` / no `wdone`). Engine does not latch the request; FSM holds `{cmd, addr, die_sel, byte_len}`. `byte_len` width is `QSPI_BYTE_LEN_W` from `qspi_pkg`. Writes: first nibble on `wdata` with `txn_valid`; follow `wdata_next` pulses; engine ends after `2 * byte_len` SCK. SCK = clk/2. Detail: [`03-architecture.md`](03-architecture.md) / human [`qspi-engine.md`](../human/architecture/blocks/qspi-engine.md).
+**FSM ↔ QSPI (D21):** start with `txn_valid` only when `~busy` (no `txn_ready` / no `wdone`). Engine does not latch the request; FSM holds `{cmd, addr, device_sel, byte_len}`. `byte_len` width is `QPI_BYTE_LEN_W` from `qspi_pkg`. Writes: first nibble on `wdata` with `txn_valid`; `wdata_next` then asserts iff another nibble is needed to finish that transaction, for exactly `2 * byte_len - 1` pulses. It never asserts after the final nibble or outside the active write. The engine ends after `2 * byte_len` SCK. SCK = clk/2. Detail: [`03-architecture.md`](03-architecture.md) / human [`qspi-engine.md`](../human/architecture/blocks/qspi-engine.md).
 
 ## Host programming model (firmware view)
 
 At boot / setup:
 
-1. Ensure both PSRAM dies are in QPI (MCU via `BUS_REQ`/`BUS_GNT`; D17/D22).
-2. **Creating TCDs:** pack **11-byte** TCDs into PSRAM under grant (`BUS_GNT`, `uio_oe=0`). First TCD (or a `QUIT` TCD for empty run) at **`0x000000` on PSRAM 0**. Chain with `NEXT_TCD` (die in bit 23). Terminate with a TCD whose `QUIT=1`.
-3. Place source and destination regions in the usable device range; set pointer MSBs for die.
-4. High-Z MCU QSPI; drop **BUS_REQ**; wait for **BUS_GNT** low; assert **START** (`ui_in[0]`) while DONE is high.
-5. Wait for **DONE** again (`uo_out[0]`), assert **ABORT** (`ui_in[1]`), or pause with **BUS_REQ**.
+1. Ensure both PSRAM devices are in QPI (MCU via `BUS_REQ`/`BUS_GNT`; D17/D22).
+2. **Creating TCDs:** explicitly serialize each 24-bit pointer **most-significant byte first** into the 11-byte TCD; do not copy a native little-endian MCU integer or padded C structure directly. Write TCDs into PSRAM under grant (`BUS_GNT`, `uio_oe=0`). Place the first TCD (or a `QUIT` TCD for an empty run) at **`0x000000` on PSRAM 0**. Chain with `NEXT_TCD` + `NEXT_DEVICE`, set `SRC_DEVICE` / `DEST_DEVICE` per copy, and terminate with a TCD whose `QUIT=1`.
+3. Validate every complete memory range against the per-device address window `0x000000..0x7FFFFF` (`A[22:0]`), using widened arithmetic: each 11-byte TCD fetch must satisfy `tcd_ptr + 10 <= 0x7FFFFF`; when `TRANSFER_LEN > 0`, both `SRC_PTR + TRANSFER_LEN - 1` and `DEST_PTR + TRANSFER_LEN - 1` must be `<= 0x7FFFFF`. Pointer bit 23 must be zero. Any start address outside the window, or any operation only partly inside it, is undefined behavior in V1.
+4. High-Z MCU QSPI; drop **BUS_REQ**; wait for **BUS_GNT** low; assert **START** (`ui_in[0]`) while DONE is high and hold it long enough for top-level synchronization. The top level converts the captured rising edge into the one-`clk` pulse consumed by `sys_controller`; deassert START before issuing another command.
+5. Wait for **DONE** again (`uo_out[0]`), pause mid-run with **BUS_REQ**, or assert **`rst_n`** to kill the run (D23).
 6. **Reading memory:** assert `BUS_REQ`, wait for `BUS_GNT`; firmware re-enables MCU QSPI and checks destinations.
+7. After a `QUIT` return to IDLE, a later **START** always re-fetches the head at **`0x000000` / PSRAM 0**.
+
+Condensed firmware contract: [`../human/architecture/firmware.md`](../human/architecture/firmware.md).
 
 ### Example chain (bulk mover)
 
-1. **TCD at 0 / PSRAM0:** copy 256 B from RAM A → RAM B (`SRC_PTR[23]=0`, `DEST_PTR[23]=1`); `NEXT_TCD` points at TCD B (die in `NEXT_TCD[23]`).
+1. **TCD at 0 / PSRAM0:** copy 256 B from RAM A → RAM B (`SRC_DEVICE=0`, `DEST_DEVICE=1`); `NEXT_TCD` + `NEXT_DEVICE` point at TCD B.
 2. **TCD B:** next extent.
-3. **Quit TCD:** `QUIT=1` → IDLE / DONE.
+3. **Quit TCD:** `QUIT=1` → IDLE / DONE; next START from address 0 / PSRAM 0.
 
 ## Comparison to static multi-channel DMA
 
@@ -108,7 +134,7 @@ Descriptor DMA:
 
 That is the central architectural bet of this project.
 
-Per TinyDMA-2C prior art, that design used 16-bit internal addresses with the SPI address upper byte tied to zero as an area tactic. This project **does not** adopt that cut; pointers are full 24-bit with device in `ptr[23]` and `QUIT` in `CTRL_FLAGS`.
+Per TinyDMA-2C prior art, that design used 16-bit internal addresses with the SPI address upper byte tied to zero as an area tactic. This project **does not** adopt that cut; pointers are full 24-bit addresses with device selects in `CTRL_FLAGS` (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`) and `QUIT` in `CTRL_FLAGS`.
 
 ## Verification implications (datapath)
 
@@ -116,14 +142,15 @@ Minimum interesting checks:
 
 - Single TCD copy (same-device A, same-device B)
 - Cross-device A→B and B→A
-- Dual-TCD chain (scatter-gather), including next TCD on the other die
+- Dual-TCD chain (scatter-gather), including next TCD on the other device
 - Zero-length no-op then follow next
-- Quit TCD (`QUIT=1`) returns IDLE / DONE
+- Quit TCD (`QUIT=1`) returns IDLE / DONE; subsequent START refetches fixed head
 - Empty run: quit TCD at `0x000000` / PSRAM0 → immediate DONE after one fetch
 - `NEXT_TCD` address bits `== 0` as a valid link (not end-of-chain)
-- Abort mid-run: current QPI txn completes, then IDLE
+- `rst_n` mid-run returns to IDLE (no soft abort)
 - START ignored while not idle
 - Short CE# pulses from `N=1` / 11-byte fetch (no dedicated `tCEM` slicer required in V1)
-- Pass-through only while DONE
+- Pass-through only under `BUS_GNT` (D22)
 - Addresses above 64 KB (e.g. `0x010000`) work end-to-end
-- Full `A[22:0]` window with die select in `ptr[23]`
+- Full `A[22:0]` window with device selects in `CTRL_FLAGS`
+- Known TCD byte vector proving big-endian pointer decoding, including a pointer such as `0x123456` serialized as `12 34 56`

@@ -22,7 +22,7 @@ Hard CE# / clock limits are summarized in `[../limitations.md](../limitations.md
 
 ### Cross-device transfers
 
-Shared SIO bus ⇒ only one CE# low at a time. A→B (or B→A) is: read byte from src die, raise CE#, then write byte to dest die. Same APS6404L QPI opcodes on both dies. Device select comes from pointer MSBs (`ptr[23]`).
+Shared SIO bus ⇒ only one CE# low at a time. A→B (or B→A) is: read byte from src device, raise CE#, then write byte to dest device. Same APS6404L QPI opcodes on both devices. Device select comes from pointer MSBs (`ptr[23]`).
 
 ## SPI vs QPI (D15 / D17)
 
@@ -34,12 +34,12 @@ Shared SIO bus ⇒ only one CE# low at a time. A→B (or B→A) is: read byte fr
 | SPI data opcodes                                               | **Not used by ASIC**      |
 
 
-ASIC expects both dies already in **QPI mode** before START.
+ASIC expects both devices already in **QPI mode** before START.
 
 ## Transaction phases (QPI)
 
 1. **Command** - 8-bit opcode (2 SCK at 4 bits/SCK)
-2. **Address** - **24-bit** phase on the wire (6 SCK). APS6404L consumes `A[22:0]` only; the MSB of this phase is unused (`addr[23]=0`). Die/CS comes from `die_sel`, not that MSB.
+2. **Address** - **24-bit** phase on the wire (6 SCK). APS6404L consumes `A[22:0]` only; the MSB of this phase is unused (`addr[23]=0`). Device/CS comes from `device_sel`, not that MSB.
 3. **Wait / dummy** - 6 SCK for `0xEB`; float host data pins. No wait for write.
 4. **Data** - sample read data on rising SCK; 2 SCK per byte in quad mode
 
@@ -47,9 +47,9 @@ Phase lengths are counted in **SCK beats**. Pad states (`CS_ON`, `SCLK_OFF`, `CS
 
 ## Descriptor FSM interface (D21)
 
-Engine is a **transaction slave** of the descriptor FSM. Request is **not** a TCD; TCD fields stay in the FSM. Types: `qspi_pkg` in [`../../../../src/rtl/qspi.svh`](../../../../src/rtl/qspi.svh). RTL: [`../../../../src/rtl/qspi_engine.sv`](../../../../src/rtl/qspi_engine.sv).
+Engine is a **transaction slave** of the descriptor FSM. Request is **not** a TCD; TCD fields stay in the FSM. Types: `qspi_pkg` in [`../../../../src/rtl/types.svh`](../../../../src/rtl/types.svh). RTL: [`../../../../src/rtl/qspi_engine.sv`](../../../../src/rtl/qspi_engine.sv).
 
-Start legality is `~busy`. Write/read length is entirely from `byte_len` (engine counts `2 * byte_len` SCK beats, then `SCLK_OFF` → `CS_OFF` → `IDLE`). Engine does **not** latch the request: FSM holds `{cmd, addr, die_sel, byte_len}` from `txn_valid` until `busy` falls. Engine never stalls SCK/CE# for the FSM.
+Start legality is `~busy`. Write/read length is entirely from `byte_len` (engine counts `2 * byte_len` SCK beats, then `SCLK_OFF` → `CS_OFF` → `IDLE`). Engine does **not** latch the request: FSM holds `{cmd, addr, device_sel, byte_len}` from `txn_valid` until `busy` falls. Engine never stalls SCK/CE# for the FSM.
 
 ### Port contract
 
@@ -60,13 +60,13 @@ Start legality is `~busy`. Write/read length is entirely from `byte_len` (engine
 | `txn_valid` | in | 1 | **1-`clk` pulse** to start; legal **only when `~busy`**. |
 | `cmd` | in | `qspi_cmd_t` | V1: `QSPI_CMD_FAST_READ` (`0xEB`) or `QSPI_CMD_WRITE` (`0x02`). Hold until `!busy`. |
 | `addr` | in | `qspi_addr_t` `[23:0]` | Full 24-bit QPI address phase. Device uses `addr[22:0]` as `A[22:0]`; **`addr[23]=0`**. Do not put `ptr[23]` here. Hold until `!busy`. |
-| `die_sel` | in | `qspi_die_sel_t` | `QSPI_PSRAM0` / `QSPI_PSRAM1` from `ptr[23]`; steers `ram_*_cs_n`. Hold until `!busy`. |
-| `byte_len` | in | `[QSPI_BYTE_LEN_W-1:0]` | Payload bytes this CE# (FETCH=`QSPI_TCD_BYTES`, data=`k` ≤ `N`). `QSPI_BYTE_LEN_W = $clog2(QSPI_MAX_BYTES + 1)`, `QSPI_MAX_BYTES = max(DMA_BUF_DEPTH, QSPI_TCD_BYTES)`. Hold until `!busy`. |
+| `device_sel` | in | `qspi_device_sel_t` | `QSPI_PSRAM0` / `QSPI_PSRAM1` from `ptr[23]`; steers `ram_*_cs_n`. Hold until `!busy`. |
+| `byte_len` | in | `qpi_byte_len_t` | Payload bytes this CE# (FETCH=`QPI_TCD_BYTES`, data=`k` ≤ `N`). `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)`, `QPI_MAX_BYTES = max(DMA_BUF_DEPTH, QPI_TCD_BYTES)`. Hold until `!busy`. |
 | `wdata` | in | `[3:0]` | Write nibble. **Must be valid on the `txn_valid` cycle**; update after each `wdata_next` for the next rising SCK. |
-| `busy` | out | 1 | High while not `IDLE` (in flight through CE# complete). Start qualifier; ABORT and OE reclaim wait for 0. |
+| `busy` | out | 1 | High while not `IDLE` (in flight through CE# complete). Start qualifier; OE reclaim / BUS_GNT wait for 0. |
 | `rdata` | out | `[3:0]` | Last captured read nibble (held between captures). |
 | `rdata_valid` | out | 1 | **1-`clk` pulse** with new `rdata` on each rising SCK in `READ_DATA`. FSM always sinks. Exactly `2 * byte_len` pulses per read. |
-| `wdata_next` | out | 1 | **1-`clk` pulse** on **falling SCK** in `WRITE_DATA`: present next `wdata` for the following rise. Length-driven end. |
+| `wdata_next` | out | 1 | **1-`clk` pulse** on **falling SCK** iff another nibble is needed to finish the active write. Exactly `2 * byte_len - 1` pulses per write; never asserts after the final nibble or outside that transaction. |
 | `sio_in` | in | `[3:0]` | Pad SIO sample. |
 | `sclk` | out | 1 | QSPI SCK: **clk/2** toggle while enabled; **0** in `IDLE` / `CS_ON` / `SCLK_OFF` / `CS_OFF`. |
 | `ram_a_cs_n` | out | 1 | RAM A CE# (active low). Never both RAM CE#s low. |
@@ -87,18 +87,20 @@ Start legality is `~busy`. Write/read length is entirely from `byte_len` (engine
 
 1. When `~busy`, FSM presents request with the **first write nibble already on `wdata`**, and pulses `txn_valid` (same cycle).
 2. Engine does not stage that nibble; FSM keeps it on `wdata` until `wdata_next`, then updates for the next beat.
-3. On falling SCK in the write data phase, engine pulses `wdata_next`; FSM places the next nibble in time for the next rising SCK.
+3. On falling SCK in the write data phase, the engine pulses `wdata_next` iff another nibble remains in the accepted transaction; the FSM places that nibble in time for the next rising SCK.
 4. Engine ends after exactly `2 * byte_len` SCK beats, then `SCLK_OFF` → `CS_OFF` → `IDLE`.
-5. Engine never waits on the FSM after accept; never writes past `byte_len`.
+5. Because the first nibble accompanies `txn_valid`, the engine emits exactly `2 * byte_len - 1` `wdata_next` pulses. It never emits an extra pulse after the final nibble.
+6. Engine never waits on the FSM after accept; never writes past `byte_len`.
 
 ### Rules
 
-1. Engine does **not** latch the request; FSM must keep `{cmd, addr, die_sel, byte_len}` stable from `txn_valid` until `busy` is low.
+1. Engine does **not** latch the request; FSM must keep `{cmd, addr, device_sel, byte_len}` stable from `txn_valid` until `busy` is low.
 2. On writes, the first nibble must be on `wdata` in the same cycle as `txn_valid`.
 3. Engine **never stalls** SCK/CE# waiting on the FSM (deterministic QPI).
 4. FSM pulses `txn_valid` only while `~busy`.
 5. Engine owns start/end CE# pad and ≥2-`clk` `tCPH` (via `CS_OFF` + `IDLE` before the next CE# fall). Never both `ram_a_cs_n` and `ram_b_cs_n` low; flash CS off at top level.
 6. FSM grants `uio_oe` for the live txn; reclaim when `busy` clears (idle / between txns / `BUS_GNT` yield → OE off). Do not start a new txn while `BUS_REQ` (D22).
+7. `wdata_next` asserts iff the controller must provide another nibble for the current write. It must remain low after the final nibble and during every non-write phase.
 
 ## Engine behavior notes
 
@@ -139,7 +141,7 @@ Then apply the two-`clk` CE# high `tCPH` wait (`CS_OFF` + `IDLE`) before the nex
 
 ## Initialization sequence (MCU-owned, D17)
 
-ASIC does not run this sequence. Firmware (pass-through while DONE) on each die:
+ASIC does not run this sequence. Firmware (pass-through while DONE) on each device:
 
 1. Wait **>= 150 us** after power-up before issuing commands (`tPU`; CE# high)
 2. Issue **Reset Enable** (`0x66`) then **Reset** (`0x99`) over standard SPI. After Reset, wait `**tRST` min 50 ns**
@@ -162,7 +164,7 @@ ASIC does not run this sequence. Firmware (pass-through while DONE) on each die:
 
 **V1 implication:** raise CE# after every short txn (1-byte data or 11-byte TCD fetch). That naturally satisfies `tCEM` and Linear Burst page rules without a dedicated slicer. With **SCK = clk/2**, wall-clock CE# low time for a given beat count is longer than a full-rate-SCK design; at V1 `N=1` this is still far under `tCEM`. Recompute failing-`N` thresholds if the buffer deepens. Detail: `[descriptor-fsm.md](descriptor-fsm.md)`.
 
-On **abort** (D14): complete the in-flight QPI transaction (do not tear mid-command), then raise CE# and return control to idle.
+On **`rst_n`** (D23 kill path): engine returns to idle with CE# high and pads released (same as any reset). There is no soft-abort mid-txn path in V1.
 
 ## Practical clocks (D16)
 

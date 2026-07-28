@@ -7,13 +7,15 @@
 - [x] Dual-PSRAM in scope; ASIC flash out of V1 (MCU pass-through only) - D11
 - [x] V1 cut: bulk mover only; ALU / cond-stop / ring / flash → post-V1 - D12
 - [x] Freeze TCD layout + zero-length rules (`CTRL_FLAGS` byte; later encoding revised by D19) - D13
-- [x] Freeze pin/host protocol behavior (idle / START / DONE / abort / pass-through) - D14
+- [x] Freeze pin/host protocol behavior (idle / START / DONE / pass-through) - D14
 - [x] Freeze SPI vs QPI for V1 data path (QPI data) - D15
-- [x] Freeze ABORT = `ui_in[1]`; fixed head at `0x000000`/PSRAM0; address 0 valid - D18
-- [x] Freeze `ptr[23]` device select + `QUIT` end-of-chain (replaces flag device bits / both-devices stop) - D19
+- [x] Freeze fixed head at `0x000000`/PSRAM0; address 0 valid (ABORT pin later revoked by D23) - D18
+- [x] Freeze `ptr[23]` device select + `QUIT` end-of-chain (later revised by D24 for flag device selects) - D19
 - [x] Freeze clock / RX sample policy - **66 MHz `clk`**, **SCK=clk/2**, rising-edge RX (D16)
 - [x] Freeze MCU-owned enter/exit QPI; ASIC QPI opcodes `0xEB` / `0x02` only - D17
 - [x] Freeze pass-through request/grant: `ui_in[2]=BUS_REQ`, `uo_out[1]=BUS_GNT` (MCU priority; atomic QPI) - D22
+- [x] Revoke ABORT; kill via `rst_n`; quit → IDLE then next START from addr 0 - D23
+- [x] Device selects in `CTRL_FLAGS` (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`); 88-bit TCD unchanged - D24
 
 ## Phase 1 - Skeleton RTL
 
@@ -26,8 +28,8 @@
 
 - [ ] Fetch + single-TCD copy (same-device PSRAM)
 - [ ] Cross-device PSRAM copy (A↔B)
-- [ ] Chained TCDs (incl. next TCD on other die; zero-length no-op)
-- [ ] DONE / abort / error status
+- [ ] Chained TCDs (incl. next TCD on other device; zero-length no-op)
+- [ ] DONE / error status
 - [ ] Cocotb BFM for dual PSRAM + host protocol (flash model optional / MCU-side only)
 
 ## Phase 3 - Demoboard + hardening

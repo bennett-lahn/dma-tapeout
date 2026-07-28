@@ -1,28 +1,29 @@
 # Host / Mode Control
 
-Status: bus-ownership OE model + idle/START/DONE/abort frozen (D14/D18). Pass-through is **request/grant** (`BUS_REQ` / `BUS_GNT`, D22). Pins: **START** = `ui_in[0]`, **ABORT** = `ui_in[1]`, **BUS_REQ** = `ui_in[2]`, **DONE** = `uo_out[0]`, **BUS_GNT** = `uo_out[1]`. No head-pointer pins. QSPI on `uio` per system I/O map.
+Status: bus-ownership OE model + idle/START/DONE frozen (D14/D18); **no ABORT** (D23: use `rst_n`). Pass-through is **request/grant** (`BUS_REQ` / `BUS_GNT`, D22). Pins: **START** = `ui_in[0]`, **BUS_REQ** = `ui_in[2]`, **DONE** = `uo_out[0]`, **BUS_GNT** = `uo_out[1]`; `ui_in[1]` reserved. No head-pointer pins. QSPI on `uio` per system I/O map.
 
 ## Role
 
-Own the boundary between MCU programming and ASIC DMA mastership:
+Describe the host-facing behavior of the integrated `sys_controller` module. Host control and descriptor sequencing are not separate RTL blocks. Together they own the boundary between MCU programming and ASIC DMA mastership:
 
 - Mode switch: pass-through vs DMA master (via pad OE + `BUS_REQ`/`BUS_GNT`, not a second QSPI cable)
-- Accept START / ABORT under TT pin limits (fixed head; no head vector)
+- Accept START under TT pin limits (fixed head; no head vector)
 - Drive status: done (= idle), bus grant, error, debug mux
 
 ## Top-level host sync
 
-MCU host pins (`ui_in`) are **asynchronous** to the design `clk`. The **top-level** TT module synchronizes them into `clk` before host control or the descriptor FSM uses them.
+MCU host pins (`ui_in`) are **asynchronous** to the design `clk`. The **top-level** TT module synchronizes them into `clk` before `sys_controller` uses them. After synchronizing START as a level, the top level detects its rising edge and supplies `sys_controller.start` as a **one-`clk` pulse**. `BUS_REQ` remains a synchronized level.
 
 | Raw pad | Synced use |
 |---|---|
-| `ui_in[0]` START | Accept / qualify after sync |
-| `ui_in[1]` ABORT | Level to FSM after sync |
-| `ui_in[2]` BUS_REQ | Yield / grant path after sync (`bus_yield`, `BUS_GNT`) |
+| `ui_in[0]` START | Synchronize, then rising-edge detect into a one-`clk` pulse |
+| `ui_in[2]` BUS_REQ | Synchronized level into `sys_controller`; drives yield / grant behavior |
 
-- Prefer a **two-flop** synchronizer per bit (level signals).
-- `sys_controller` and the FSM see only synced levels; do not sample raw `ui_in` for control.
-- **DFF cost:** ~2 per bit (START/ABORT/BUS_REQ ≈ 6 DFFs).
+- Prefer a **two-flop** synchronizer per bit before qualification.
+- `sys_controller` sees a one-cycle START pulse and a synchronized BUS_REQ level; it never samples raw `ui_in`.
+- A START edge presented while busy or while `BUS_REQ` is high is ignored and is not queued. Firmware must deassert and reassert START to issue another command.
+- Firmware must hold raw START long enough for the level synchronizer to capture it, then deassert it before issuing a later START.
+- **DFF cost:** ~2 per synchronized bit plus one delayed-START flop for edge detection (START/BUS_REQ ≈ 5 DFFs total).
 
 ## How Tiny Tapeout pins work
 
@@ -81,7 +82,7 @@ Control plane:
 | Pin                         | Assignment                           |
 | --------------------------- | ------------------------------------ |
 | `ui_in[0]`                  | **START**                            |
-| `ui_in[1]`                  | **ABORT**                            |
+| `ui_in[1]`                  | Reserved (ABORT removed; D23)        |
 | `ui_in[2]`                  | **BUS_REQ** (MCU wants `uio`)        |
 | `uo_out[0]`                 | **DONE** (= ASIC idle)               |
 | `uo_out[1]`                 | **BUS_GNT** (MCU may drive `uio`)    |
@@ -90,20 +91,20 @@ Control plane:
 
 
 
-## Host protocol (V1 freeze / D14 / D18 / D19 / D22)
+## Host protocol (V1 freeze / D14 / D18 / D19 / D22 / D23)
 
 
 | Rule             | Behavior                                                                                                      |
 | ---------------- | ------------------------------------------------------------------------------------------------------------- |
 | Idle             | Wait for START; **DONE** asserted; `uio_oe=0`                                                                 |
-| START from idle  | Accepted only if **`~BUS_REQ`** (and thus `~BUS_GNT`); leave idle; deassert DONE; seize bus; fetch head TCD  |
-| START while busy | **Ignored** until back in idle                                                                                |
-| Quit TCD         | `CTRL_FLAGS.QUIT=1` after fetch → return to idle (no execute)                                                 |
+| START from idle  | One-`clk` post-sync rising-edge pulse accepted only if **`~BUS_REQ`** (and thus `~BUS_GNT`); leave idle; deassert DONE; seize bus; fetch head TCD |
+| START while busy | Pulse is **ignored and not queued**; a later command requires a new rising edge after IDLE returns             |
+| Quit TCD         | `CTRL_FLAGS.QUIT=1` after fetch → return to idle (no execute); next START fetches `0x000000` / PSRAM 0 again |
 | DONE             | High whenever idle (including after reset, before first run)                                                  |
 | Pass-through     | MCU may drive `uio` **iff `BUS_GNT`**; idle alone is not a drive permit (D22)                                  |
 | BUS_REQ          | MCU priority: finish current QPI txn (atomic), then `uio_oe=0` + assert `BUS_GNT`; no new DMA txn while REQ   |
 | BUS_GNT release  | After MCU Hi-Z and drops `BUS_REQ`, ASIC drops `BUS_GNT`; if not idle, DMA may resume                         |
-| Abort            | Finish **current QPI transaction**, then idle (DONE); grant still follows `BUS_REQ`                           |
+| Kill             | No soft abort; assert **`rst_n`** to stop a runaway DMA (D23)                                                 |
 
 
 
@@ -112,28 +113,28 @@ Control plane:
 
 | Signal                  | Status                           |
 | ----------------------- | -------------------------------- |
-| `clk` / `rst_n` / `ena` | TT standard                      |
+| `clk` / `rst_n` / `ena` | TT standard; `rst_n` kills DMA   |
 | START (`ui_in[0]`)      | Frozen index + behavior          |
-| ABORT (`ui_in[1]`)      | Frozen index + behavior          |
 | BUS_REQ (`ui_in[2]`)    | Frozen index + behavior (D22)    |
 | DONE (`uo_out[0]`)      | Frozen index + behavior (= idle) |
 | BUS_GNT (`uo_out[1]`)   | Frozen index + behavior (D22)    |
 | ERROR / ACTIVE / DFT    | Optional; `uo_out[7:2]` open     |
+| `ui_in[1]`              | Reserved (was ABORT)             |
 
 
-### Descriptor FSM interface
+### `sys_controller` RTL interface
 
-RTL: [`../../../../src/rtl/sys_controller.sv`](../../../../src/rtl/sys_controller.sv). Inputs below are **post-sync** from the top module. Host pin decode + START qualify; FSM owns DMA states / `uio_oe`.
+RTL: [`../../../../src/rtl/sys_controller.sv`](../../../../src/rtl/sys_controller.sv). The module integrates host/mode control and the descriptor FSM. START is post-sync and rising-edge detected by the top module; BUS_REQ is a post-sync level. The QPI engine remains a separate submodule.
 
 
-| Signal | Dir | Contract |
+| Signal group | Direction | Contract |
 |---|---|---|
-| `fsm_idle` | FSM → ctrl | High in IDLE; drives **DONE**. |
-| `qspi_busy` | eng/FSM → ctrl | In-flight QPI txn; **BUS_GNT** waits for 0 (atomic). |
-| `dma_start` | ctrl → FSM | Qualified START: `start && fsm_idle && ~bus_req` (synced). |
-| `dma_abort` | ctrl → FSM | ABORT level (synced); finish current QPI txn → IDLE. |
-| `bus_yield` | ctrl → FSM | `= bus_req` (synced); no new `txn_valid` while high. |
-| `bus_gnt` | ctrl → FSM / pin | Registered `bus_req && ~qspi_busy`; FSM keeps `uio_oe` off while high. |
+| `start` | top → controller | One-`clk` command pulse; accepted only in IDLE with `~bus_req`. |
+| `bus_req` | top → controller | Synchronized level; prevents a new QPI transaction and requests an atomic yield. |
+| `done` | controller → pin | High while the integrated controller is idle, including an idle-origin BUS_REQ stall. |
+| `bus_gnt` | controller → pin/control | High after the controller reaches STALL; the ASIC must keep shared-bus OE off. |
+| `qspi_busy`, `qspi_rdata_valid`, `qspi_rdata`, `qspi_wdata_next` | engine → controller | Transaction status and nibble-stream handshake. |
+| `qspi_txn_valid`, `qspi_cmd`, `qspi_addr`, `qspi_device_sel`, `qspi_byte_len`, `qspi_wdata` | controller → engine | Complete QPI transaction request and write-data stream. |
 
 
 
@@ -152,13 +153,13 @@ Rule for every handoff: **release before seize**.
 | PSRAM | CE# should idle high once power-up wait is done                     |
 
 
-After `rst_n` deasserts, ASIC must come up idle with all QSPI-related `uio_oe` bits clear and `BUS_GNT` low.
+After `rst_n` deasserts, ASIC must come up idle with all QSPI-related `uio_oe` bits clear and `BUS_GNT` low. Asserting `rst_n` mid-run is the V1 kill path (D23).
 
 ### Phase 1 - MCU pass-through (programming)
 
 
 | Actor | Configuration                                                                                       |
-| ----- | --------------------------------------------------------------------------------------------------- |
+| ----- | -------------------------------------------------------------------                                 |
 | ASIC  | `uio_oe = 8'h00`; `BUS_GNT` high while `BUS_REQ` (idle: immediate; mid-DMA: after current QPI txn) |
 | MCU   | Asserts `BUS_REQ`, waits for `BUS_GNT`, then owns the bus: drive CS/SCK; drive or float SIO per phase |
 | PSRAM | Sees MCU as sole master                                                                             |
@@ -173,7 +174,7 @@ Ordered sequence:
 1. MCU finishes any in-flight QSPI transaction and drives CE# high.
 2. MCU sets its QSPI GPIOs to input / high-Z (firmware OE off).
 3. MCU deasserts **BUS_REQ**; waits for **BUS_GNT** low.
-4. MCU asserts **START** on `ui_in[0]` while DONE is high and `~BUS_REQ`.
+4. MCU asserts **START** on `ui_in[0]` long enough to cross the synchronizer while DONE is high and `~BUS_REQ`; the top level converts its rising edge to one `clk` pulse.
 5. ASIC samples START, leaves idle (DONE low), then raises `uio_oe` only on pins it will drive.
 
 
@@ -183,12 +184,12 @@ Ordered sequence:
 
 | Actor | Configuration                                                                                                                                                    |
 | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| MCU   | QSPI GPIOs remain high-Z unless / until `BUS_GNT`. Host may still drive `ui_in` strobes (abort, bus req) and read `uo_out`                                       |
+| MCU   | QSPI GPIOs remain high-Z unless / until `BUS_GNT`. Host may still drive `ui_in` (START ignored while busy; `BUS_REQ`) and read `uo_out`; kill via `rst_n`       |
 | ASIC  | Masters QSPI when not yielding: `uio_oe` high for SCK and the **active RAM CS** (A or B) while that txn is live; **flash CS OE stays 0**; SIO OE follows phase |
-| PSRAM | Sees ASIC as sole master on the selected die (when not granted to MCU)                                                                                           |
+| PSRAM | Sees ASIC as sole master on the selected device (when not granted to MCU)                                                                                           |
 
 
-START is ignored in this phase. ABORT requests a clean exit after the current QPI transaction. **BUS_REQ** pauses after the current QPI transaction (atomic), grants the bus, then resumes DMA when REQ drops (unless ABORT / quit also applies).
+START is ignored in this phase. **BUS_REQ** pauses after the current QPI transaction (atomic), grants the bus, then resumes DMA when REQ drops (unless quit / `rst_n` also applies).
 
 #### Sub-phases: SIO `uio_oe` while ASIC is master
 
@@ -202,7 +203,7 @@ CS (selected RAM) and SCK stay driven (`uio_oe = 1`) for the active CE# low wind
 | Read data                      | `0` (listen) | sample `uio_in`                |
 
 
-Data path is **QPI** (`0xEB` / `0x02`; D15/D17). ASIC emits no SPI and no Enter/Exit Quad; MCU must leave both dies in QPI before START.
+Data path is **QPI** (`0xEB` / `0x02`; D15/D17). ASIC emits no SPI and no Enter/Exit Quad; MCU must leave both devices in QPI before START.
 
 RTL shape (conceptual):
 
@@ -213,7 +214,7 @@ assign uio_out = qspi_out;
 assign uio_oe  = (fsm_grant_oe_to_qspi && ~bus_gnt) ? qspi_oe : 8'h00;
 assign bus_gnt = bus_req && ~qspi_busy; // after atomic txn; registered in RTL
 // qspi_oe[flash_cs] = 0 always (V1)
-// qspi_oe[ram_a_cs] / qspi_oe[ram_b_cs] = 1 only for the selected die, never both
+// qspi_oe[ram_a_cs] / qspi_oe[ram_b_cs] = 1 only for the selected device, never both
 // qspi_oe[SCK] = 1 while master;
 // qspi_oe[SIO*] = 1 only in cmd/addr/write phases
 ```
@@ -224,10 +225,11 @@ assign bus_gnt = bus_req && ~qspi_busy; // after atomic txn; registered in RTL
 
 Ordered sequence (idle path):
 
-1. ASIC hits quit TCD or completes abort path; finishes any in-flight QPI txn; raises CE# high.
+1. ASIC hits quit TCD; raises CE# high (no in-flight copy for that TCD).
 2. ASIC enters idle: clears QSPI `uio_oe` to `8'h00`.
 3. ASIC asserts **DONE** on `uo_out[0]`.
 4. MCU asserts **BUS_REQ**, waits for **BUS_GNT**, then re-enables its QSPI GPIOs.
+5. A later **START** always begins again at **`0x000000` / PSRAM 0** (D23).
 
 Yield path (mid-DMA, D22): same OE release + `BUS_GNT`, but DONE stays low; after MCU drops `BUS_REQ`, ASIC drops `BUS_GNT` and may continue the descriptor chain.
 
@@ -254,8 +256,9 @@ Mitigations:
 - Idle: DONE high; ASIC `uio_oe=0`; MCU uses `BUS_REQ`/`BUS_GNT` before driving **both PSRAMs and flash**
 - On START (only from idle, `~BUS_REQ`): DONE low; ASIC seizes bus (RAM A/B CS mux; never flash) and runs descriptor engine
 - Mid-run `BUS_REQ`: finish current QPI txn, grant bus, pause DMA; resume when REQ cleared
-- On quit TCD or abort completion: idle again (DONE); grant still follows REQ
-- Fixed head: first fetch always `0x000000` / PSRAM 0
+- On quit TCD: idle again (DONE); next START refetches fixed head; grant still follows REQ
+- Kill mid-run: `rst_n` (no soft abort)
+- Fixed head: every START fetch is `0x000000` / PSRAM 0
 
 
 
@@ -273,4 +276,4 @@ Mitigations:
 - QSPI engine (phase OE when granted): `[qspi-engine.md](qspi-engine.md)`
 - Agent detail: `[../../../llm/03-architecture.md](../../../llm/03-architecture.md)`
 - Open questions: `[../../../llm/08-open-questions.md](../../../llm/08-open-questions.md)` (Q3 remainder, Q12)
-- Decisions: D14 / D15 / D18 / D19 / D22 in `[../../../llm/07-decision-log.md](../../../llm/07-decision-log.md)`
+- Decisions: D14 / D15 / D18 / D19 / D22 / D23 in `[../../../llm/07-decision-log.md](../../../llm/07-decision-log.md)`

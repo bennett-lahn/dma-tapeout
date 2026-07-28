@@ -4,7 +4,8 @@ Post-RTL / Phase 3 checklist (after feature-complete RTL, before shuttle freeze)
 
 ## Scope
 
-- Confirm APS6404L QSPI AC timing at **66 MHz `clk` / ≈33 MHz SCK** (SCK = clk/2), **rising-edge RX** (D16)
+- Confirm APS6404L QSPI AC timing at **66 MHz `clk` max / ≈33 MHz SCK** (SCK = clk/2), **rising-edge RX** (D16)
+- Confirm the SkyWater 130 GPIO ceilings: **66 MHz input I/O** for `clk` and **33 MHz output I/O** for SCK and other high-rate pad outputs
 - Prove CE#↔SCK sequencing in sim; close ns paths in STA + demoboard
 - Extensible: add rows/sections in the LLM doc for host pins, internal STA, etc.
 

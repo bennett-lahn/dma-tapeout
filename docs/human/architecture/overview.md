@@ -4,16 +4,16 @@
 
 **Zero-Overhead Scatter-Gather DMA Engine** for Tiny Tapeout.
 
-V1 is an **isolated descriptor DMA / bulk mover** across the two QSPI PSRAM dies on the demoboard PMOD - a learning and resume vehicle. Live ADC telemetry is not a V1 commitment.
+V1 is an **isolated descriptor DMA / bulk mover** across the two QSPI PSRAM devices on the demoboard PMOD - a learning and resume vehicle. Live ADC telemetry is not a V1 commitment.
 
 Framing:
 
 - Memory-management coprocessor for bulk byte moves
 - **Zero overhead:** transfer instructions (TCDs) live in external RAM, not a fat on-chip channel register file
 - **Scatter-gather:** each TCD can point to the next TCD, so arbitrary fragmentation is OK
-- **Dual-die:** same-device and cross-device (A↔B) copies
+- **Dual-device:** same-device and cross-device (A↔B) copies
 
-The ASIC owns storage moves through **both** QSPI PSRAM dies. Flash on the same PMOD is MCU pass-through only for V1.
+The ASIC owns storage moves through **both** QSPI PSRAM devices. Flash on the same PMOD is MCU pass-through only for V1.
 
 ## System topology
 
@@ -24,7 +24,7 @@ The ASIC owns storage moves through **both** QSPI PSRAM dies. Flash on the same 
 
 | Actor | Job |
 |---|---|
-| MCU | Build TCD lists, program either PSRAM (and flash) while ASIC is idle/pass-through, stage buffers, pulse START, handle DONE/abort, read results |
+| MCU | Build TCD lists, program either PSRAM (and flash) while ASIC is idle/pass-through, stage buffers, pulse START, handle DONE / `rst_n` kill, read results |
 | DMA ASIC | After START, master QSPI, fetch descriptors, **byte-copy** on RAM A and/or B, chain TCDs, return bus / assert DONE. No flash CS; no ALU in V1 |
 | PSRAM A/B | TCDs, source buffers, destinations |
 | Flash | MCU-only via pass-through; ASIC flash is post-V1 |
@@ -34,7 +34,7 @@ The ASIC owns storage moves through **both** QSPI PSRAM dies. Flash on the same 
 1. Descriptors in memory - programmable chains, not static channel regs
 2. Scatter-gather via `NEXT_TCD`
 3. Host/ASIC bus multiplex under pin constraints
-4. Dual-die PSRAM orchestration (incl. A↔B)
+4. Dual-device PSRAM orchestration (incl. A↔B)
 5. QSPI + refresh-aware mastering
 
 ## Deliberate non-goals for V1
