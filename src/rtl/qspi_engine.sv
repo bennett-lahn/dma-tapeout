@@ -12,11 +12,14 @@
 // addr         in   24-bit QPI address phase; addr[23]=0); A[22:0] in addr[22:0]
 // device_sel      in   QSPI_PSRAM0/1 -> which ram_*_cs_n
 // byte_len     in   payload bytes this CE#; width QPI_BYTE_LEN_W; hold until ~busy
-// wdata        in   write nibble; must be valid on txn_valid; update after wdata_next
+// wdata        in   write nibble; must be valid on txn_valid; when wdata_next
+//                   asserts, next nibble must be on wdata before the next clk
+//                   (same-cycle) to preserve setup into the SPI/SIO path
 // busy         out  1 while not IDLE; start qualifier; OE reclaim / BUS_GNT wait for 0
 // rdata        out  last captured read nibble (held)
 // rdata_valid  out  1-clk pulse with new rdata (rising SCK in READ_DATA)
-// wdata_next   out  1-clk pulse iff another write nibble is needed in this txn
+// wdata_next   out  1-clk pulse iff another write nibble is needed in this txn;
+//                   consumer must present next wdata before the following clk
 // sio_in       in   pad SIO sample
 // sclk         out  QSPI SCK
 // ram_a_cs_n   out  registered RAM A CE# (active low); never both RAMs low
@@ -55,9 +58,8 @@ qspi_state_t curr_state;
 qspi_state_t next_state;
 
 logic [QPI_CYCLE_CNT_W-1:0] cycle_cnt; // 0-indexed count of # of sclk cycles in current state
-logic sclk_d;
-logic sclk_rising_edge;
-logic sclk_falling_edge;
+logic sclk_will_rise;
+logic sclk_will_fall;
 logic cs_n_next;
 logic sclk_en;
 
@@ -125,53 +127,61 @@ always_comb begin
 end
 
 // QPI output control
-// SIO floats only while another device may be sourcing the bus (dummy/wait
-// and read-data); every other phase, including idle and the CE# pad states
-// around a transaction, drives a don't-care so the shared pins are never
-// left undriven while the ASIC is bus keeper (D26).
-always_comb begin
-   sio_oe = '0;
-   sio_out = '0;
-   unique case (curr_state)
-      QSPI_IDLE, CS_ON, SCLK_OFF, CS_OFF: begin
-         sio_oe = {4{1'b1}};
-         sio_out = '0;
-      end
-      WAIT, READ_DATA: begin
-         sio_oe = '0;
-         sio_out = '0;
-      end
-      SEND_CMD_1: begin
-         sio_oe = {4{1'b1}};
-         sio_out = cmd[7:4];
-      end
-      SEND_CMD_2: begin
-         sio_oe = {4{1'b1}};
-         sio_out = cmd[3:0];
-      end
-      SEND_ADDR: begin
-         sio_oe = {4{1'b1}};
-         unique case (cycle_cnt)
-            'd0: sio_out = addr[23:20];
-            'd1: sio_out = addr[19:16];
-            'd2: sio_out = addr[15:12];
-            'd3: sio_out = addr[11:8];
-            'd4: sio_out = addr[7:4];
-            'd5: sio_out = addr[3:0];
-         endcase
-      end
-      WRITE_DATA: begin
-         sio_oe = {4{1'b1}};
-         sio_out = wdata;
-      end
-   endcase
+
+// Update on next_state, but if sclk is enabled,
+// only update when sclk is low
+always_ff @(posedge clk) begin
+   if (~rst_n)
+      sio_out <= '0;
+   else
+      unique case (next_state)
+         QSPI_IDLE, CS_ON, SCLK_OFF, CS_OFF:
+            sio_out <= '0;
+         WAIT, READ_DATA:
+            if (sclk_will_fall)
+               sio_out <= '0;
+         SEND_CMD_1:
+            sio_out <= cmd[7:4];
+         SEND_CMD_2:
+            if (sclk_will_fall)
+               sio_out <= cmd[3:0];
+         SEND_ADDR:
+            if (curr_state == SEND_CMD_2)
+               sio_out <= addr[23:20];
+            else if (sclk_will_fall)
+               unique case (cycle_cnt)
+                  'd0: sio_out <= addr[23:20];
+                  'd1: sio_out <= addr[19:16];
+                  'd2: sio_out <= addr[15:12];
+                  'd3: sio_out <= addr[11:8];
+                  'd4: sio_out <= addr[7:4];
+                  'd5: sio_out <= addr[3:0];
+               endcase
+         WRITE_DATA:
+            if (sclk_will_fall)
+               sio_out <= wdata;
+      endcase
+end
+
+always_ff @(posedge clk) begin
+   if (~rst_n) begin
+      sio_oe <= '0;
+   end else begin
+      if (next_state == WAIT || next_state == READ_DATA || 
+          cmd == QSPI_CMD_FAST_READ && (next_state == SCLK_OFF || next_state == CS_OFF))
+         sio_oe <= {4{1'b0}};
+      else
+         sio_oe <= {4{1'b1}};
+   end
 end
 
 assign busy = (curr_state != QSPI_IDLE);
 // The first nibble is supplied with txn_valid. Request each later nibble after
 // the preceding rising SCK, but suppress the request after the final nibble.
 // Therefore a write emits exactly (2 * byte_len) - 1 wdata_next pulses.
-assign wdata_next = (curr_state == WRITE_DATA && next_state == WRITE_DATA) && sclk_falling_edge;
+// Consumer must put the next nibble on wdata before the next clk (same-cycle)
+// so setup into the SPI/SIO path is preserved for the following rising SCK.
+assign wdata_next = (curr_state == WRITE_DATA && next_state == WRITE_DATA) && sclk_will_fall;
 
 assign sclk_en = !(curr_state == QSPI_IDLE
                 || curr_state == CS_ON
@@ -179,22 +189,17 @@ assign sclk_en = !(curr_state == QSPI_IDLE
                 || curr_state == CS_OFF);
 assign cs_n_next = (next_state == QSPI_IDLE || next_state == CS_OFF);
 
-// Bad
-assign sclk_rising_edge  =  sclk & ~sclk_d;
-assign sclk_falling_edge = ~sclk &  sclk_d;
+assign sclk_will_rise  =  sclk_en & ~sclk;
+assign sclk_will_fall = sclk_en & sclk;
 
 // SCLK = clk/2 while enabled; held low otherwise
 always_ff @(posedge clk) begin
-   if (~rst_n) begin
-      sclk   <= 1'b0;
-      sclk_d <= 1'b0;
-   end else begin
-      if (sclk_en)
-         sclk <= ~sclk;
-      else
-         sclk <= 1'b0;
-      sclk_d <= sclk;
-   end
+   if (~rst_n)
+      sclk <= 1'b0;
+   else if (sclk_en)
+      sclk <= ~sclk;
+   else
+      sclk <= 1'b0;
 end
 
 // Registered CE# pads. The state encoding is binary, so a curr_state decode can
@@ -216,7 +221,7 @@ always_ff @(posedge clk) begin
    if (~rst_n) begin
       rdata       <= '0;
       rdata_valid <= 1'b0;
-   end else if (curr_state == READ_DATA && sclk_rising_edge) begin
+   end else if (curr_state == READ_DATA && sclk_will_rise) begin
       rdata       <= sio_in;
       rdata_valid <= 1'b1;
    end else begin
@@ -230,13 +235,18 @@ always_ff @(posedge clk) begin
       curr_state <= QSPI_IDLE;
       cycle_cnt  <= '0;
    end else begin
-      curr_state <= next_state;
+      if (sclk_en)
+         curr_state <= (sclk_will_fall) ? next_state : curr_state;
+      else
+         curr_state <= next_state;
       unique case (curr_state)
          QSPI_IDLE, CS_ON, SCLK_OFF, CS_OFF:
             cycle_cnt <= '0;
          SEND_CMD_1, SEND_CMD_2, SEND_ADDR, READ_DATA, WRITE_DATA, WAIT: begin
             if (next_state == curr_state) begin
-               if (sclk_rising_edge)
+               if (sclk_will_rise)
+                  // Updating on rising edge ensures data is available for 
+                  // state transition on falling edge
                   cycle_cnt <= cycle_cnt + 'd1;
             end else begin
                cycle_cnt <= '0;
@@ -259,3 +269,23 @@ endmodule
 // cycles. Also reconcile RX timing with the documented contract: the current
 // delayed rising-edge detector samples sio_in near the external falling edge,
 // not on the external rising edge.
+
+// Register sio_out, sio_oe
+
+// On falling edge:
+
+// - Advance state machine
+// - Update sio_out, sio_oe
+// - Request next write nibble
+// - Mark beat complete / increment data count (note 1 sclk delay here)
+
+// On rising edge:
+
+// - Capture sio_in
+
+// Special handling
+
+// - Special handling needed when sclk_en is rising
+// - Treat sclk_en rise as sclk fall cycle
+
+// if sclk_en, follow sclk_en protocol

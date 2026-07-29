@@ -23,7 +23,8 @@
 // 3. START accepted only in IDLE with ~BUS_REQ.
 // 4. No soft abort; assert rst_n to kill a runaway DMA.
 // 5. QUIT TCD → IDLE; next START fetches 0x000000 / PSRAM0 again.
-// 6. qspi_wdata_next asserts iff another nibble is required by the active write.
+// 6. qspi_wdata_next asserts iff another nibble is required by the active write;
+//    next nibble must be on qspi_wdata before the next clk (same-cycle comb).
 
 module sys_controller
    import sys_control_pkg::*;
