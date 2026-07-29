@@ -1,6 +1,12 @@
 # Nested TinyDMA-2C reference clone (prior art RTL; not this project's code)
 ttsky-tinyDMA/
 
+# Reference TT repo
+tinytapeout-sky-26c/
+
+# TT Repo template
+ttihp-verilog-template/
+
 # Prior-art dump (keep locally; do not publish)
 docs/llm/prior-art/
 
@@ -19,8 +25,10 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+dma-venv/
 
-# Sim / build artifacts (future)
+
+# Sim / build artifacts
 *.vcd
 *.fst
 *.log

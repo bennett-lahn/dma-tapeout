@@ -14,8 +14,8 @@
 // bus_req         in   synchronized host request; pauses before the next QPI txn
 // qspi_busy       in   QPI txn in flight; BUS_GNT waits for clear (atomic)
 // qspi_txn_valid  out  one-clk QPI request pulse; suppressed while bus_req is high
-// done            out  controller is idle, including an idle BUS_REQ stall
-// bus_gnt         out  controller has yielded the shared bus to the MCU
+// done            out  registered; controller is idle, including an idle BUS_REQ stall
+// bus_gnt         out  registered; controller has yielded the shared bus to the MCU
 //
 // Rules (D22/D23):
 // 1. MCU drives uio only while BUS_GNT.
@@ -63,6 +63,7 @@ module sys_controller
 sys_control_state_t curr_state;
 sys_control_state_t next_state;
 sys_control_state_t stalled_state;
+sys_control_state_t stall_origin;
 tcd_t task_ctrl_desc;
 qspi_addr_t active_fetch_addr;
 qspi_device_sel_t active_fetch_device;
@@ -74,8 +75,6 @@ qpi_payload_nibble_cnt_t data_cnt;
 
 localparam logic [7:0] DMA_BUF_DEPTH_VALUE = 8'(DMA_BUF_DEPTH);
 
-assign done = (curr_state == SYS_CTRL_IDLE) || (curr_state == STALL && stalled_state == SYS_CTRL_IDLE);
-assign bus_gnt = curr_state == STALL;
 assign qspi_txn_valid = (curr_state == NEW_OP || curr_state == NEW_FETCH) && (next_state == READ || next_state == WRITE || next_state == FETCH);
 
 // Drive SPI device select
@@ -140,7 +139,11 @@ end
 
 // qspi_wdata logic
 always_comb begin
-   if (curr_state == WRITE || next_state == WRITE) begin
+   if (curr_state != WRITE && next_state == WRITE) begin
+      // Preset wdata to first nibble in previous read. For reads less than DMA_BUF_DEPTH_VALUE,
+      // the MSB of buffer are unused first
+      qspi_wdata = data_buffer[(8 * qspi_byte_len) - 1 -: 4];
+   end else if (curr_state == WRITE) begin
       if (qspi_wdata_next)
          // Fetch wdata a cycle before data_cnt updates
          qspi_wdata = data_buffer[(4 * (data_cnt - 1)) - 1 -: 4];
@@ -251,13 +254,13 @@ always_ff @(posedge clk) begin
          NEW_FETCH: begin 
             data_cnt <= qpi_payload_nibble_cnt_t'(TCD_LEN);
             active_fetch_addr <= task_ctrl_desc.next_tcd;
-            active_fetch_device <= task_ctrl_desc.src_device;
+            active_fetch_device <= task_ctrl_desc.next_tcd_device;
          end
          NEW_OP: begin
             if (task_ctrl_desc.quit) begin
                // Reset TCD register so it points to address 0 of PSRAM 0
                task_ctrl_desc.next_tcd <= '0;
-               task_ctrl_desc.src_device <= QSPI_PSRAM0;
+               task_ctrl_desc.next_tcd_device <= QSPI_PSRAM0;
             end else if (task_ctrl_desc.transfer_len < DMA_BUF_DEPTH_VALUE) begin
                data_cnt <= qpi_payload_nibble_cnt_t'(2 * task_ctrl_desc.transfer_len);
             end else begin
@@ -302,6 +305,21 @@ always_ff @(posedge clk) begin
    end
 end
 
+// State a stall resumes into: the state being left, or the retained origin while stalled.
+assign stall_origin = (curr_state == STALL) ? stalled_state : curr_state;
+
+// Register done/bus_gnt to prevent signal glitches propagating to output I/O.
+always_ff @(posedge clk) begin
+   if (~rst_n) begin
+      done <= 1'b1;
+      bus_gnt <= 1'b0;
+   end else begin
+      bus_gnt <= (next_state == STALL);
+      done <= (next_state == SYS_CTRL_IDLE)
+              || (next_state == STALL && stall_origin == SYS_CTRL_IDLE);
+   end
+end
+
 // State control
 always_ff @(posedge clk) begin
    if (~rst_n) begin
@@ -318,28 +336,6 @@ end
 
 endmodule
 
-// TODO:
-//
-//
-// UPDATE pointer accounting:
-//
-// uio_oe arbitration:
-// The descriptor FSM specification makes this controller the OE arbiter, but the
-// module has no engine-OE grant or final uio_oe interface. The ASIC must force all
-// OEs off in IDLE and STALL and while BUS_GNT is asserted, and must not grant the
-// engine for a new transaction while BUS_REQ is asserted. Define whether CS/SCK
-// are actively driven high/low or floated between transactions; floating CE#
-// requires a known board-level pull-up. BUS_GNT must only rise after the active
-// transaction has completed and the ASIC has released the bus.
-//
-// === Open questions ===
-//
-// Inter-transaction OE policy:
-// Decide whether the ASIC actively drives inactive CS high and SCK low between
-// DMA transactions, or releases those outputs and relies on pull-ups. Whichever
-// policy is selected must preserve CE# high time, avoid floating selects, and
-// release every shared output before BUS_GNT is asserted.
-//
 // === Testing ===
 //
 // Assertions:
@@ -356,8 +352,8 @@ endmodule
 // Directed tests:
 // - Decode a known 11-byte descriptor to prove byte/nibble ordering and flags.
 // - Exercise lengths 0, 1, N-1, N, N+1, and 255 where those values are distinct;
-//   check the final partial chunk, exact nibble sequence, pointer increments, and
-//   TRANSFER_LEN decrement after every completed write.
+//   check the final partial chunk, exact nibble sequence, pointer increments when
+//   data remains, final-pointer don't-care behavior, and TRANSFER_LEN decrement.
 // - Check same-device and both cross-device copy directions, plus NEXT_DEVICE chaining.
 // - Assert BUS_REQ in IDLE and during FETCH, READ, WRITE, NEW_OP, NEW_FETCH, and
 //   UPDATE; finish an active transaction atomically, grant only after release,

@@ -19,10 +19,11 @@
 // wdata_next   out  1-clk pulse iff another write nibble is needed in this txn
 // sio_in       in   pad SIO sample
 // sclk         out  QSPI SCK
-// ram_a_cs_n   out  RAM A CE# (active low); never both RAMs low
-// ram_b_cs_n   out  RAM B CE#
+// ram_a_cs_n   out  registered RAM A CE# (active low); never both RAMs low
+// ram_b_cs_n   out  registered RAM B CE#
 // sio_out      out  pad SIO drive data
-// sio_oe       out  pad SIO output enable (FSM grants uio_oe at top)
+// sio_oe       out  pad SIO output enable; driven except while listening
+//              (dummy/wait, read-data); FSM grants uio_oe at top
 
 module qspi_engine
    import qspi_pkg::*;
@@ -57,7 +58,7 @@ logic [QPI_CYCLE_CNT_W-1:0] cycle_cnt; // 0-indexed count of # of sclk cycles in
 logic sclk_d;
 logic sclk_rising_edge;
 logic sclk_falling_edge;
-logic cs_n;
+logic cs_n_next;
 logic sclk_en;
 
 // Next state control
@@ -124,11 +125,19 @@ always_comb begin
 end
 
 // QPI output control
+// SIO floats only while another device may be sourcing the bus (dummy/wait
+// and read-data); every other phase, including idle and the CE# pad states
+// around a transaction, drives a don't-care so the shared pins are never
+// left undriven while the ASIC is bus keeper (D26).
 always_comb begin
    sio_oe = '0;
    sio_out = '0;
    unique case (curr_state)
-      QSPI_IDLE, CS_ON, WAIT, READ_DATA, SCLK_OFF, CS_OFF: begin
+      QSPI_IDLE, CS_ON, SCLK_OFF, CS_OFF: begin
+         sio_oe = {4{1'b1}};
+         sio_out = '0;
+      end
+      WAIT, READ_DATA: begin
          sio_oe = '0;
          sio_out = '0;
       end
@@ -168,10 +177,9 @@ assign sclk_en = !(curr_state == QSPI_IDLE
                 || curr_state == CS_ON
                 || curr_state == SCLK_OFF
                 || curr_state == CS_OFF);
-assign cs_n = (curr_state == QSPI_IDLE || curr_state == CS_OFF);
-assign ram_a_cs_n = (device_sel == QSPI_PSRAM0) ? cs_n : 1'b1;
-assign ram_b_cs_n = (device_sel == QSPI_PSRAM1) ? cs_n : 1'b1;
+assign cs_n_next = (next_state == QSPI_IDLE || next_state == CS_OFF);
 
+// Bad
 assign sclk_rising_edge  =  sclk & ~sclk_d;
 assign sclk_falling_edge = ~sclk &  sclk_d;
 
@@ -186,6 +194,20 @@ always_ff @(posedge clk) begin
       else
          sclk <= 1'b0;
       sclk_d <= sclk;
+   end
+end
+
+// Registered CE# pads. The state encoding is binary, so a curr_state decode can
+// glitch mid-transition. Decoding next_state reproduces the same
+// waveform from a flop. device_sel is held stable by the controller for the whole
+// transaction (D21), so sampling it is safe.
+always_ff @(posedge clk) begin
+   if (~rst_n) begin
+      ram_a_cs_n <= 1'b1;
+      ram_b_cs_n <= 1'b1;
+   end else begin
+      ram_a_cs_n <= (device_sel == QSPI_PSRAM0) ? cs_n_next : 1'b1;
+      ram_b_cs_n <= (device_sel == QSPI_PSRAM1) ? cs_n_next : 1'b1;
    end
 end
 
