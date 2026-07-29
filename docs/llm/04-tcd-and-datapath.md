@@ -69,7 +69,9 @@ No in-flight ALU, ring wrap, or conditional stop in V1.
 
 ### Pointer updates (V1)
 
-Every completed copy step of `k` bytes (`k = min(N, TRANSFER_LEN)`; V1 `N=1`): **`SRC_PTR[22:0] += k`**, **`DEST_PTR[22:0] += k`** (linear only); device flags unchanged. No fixed-src/fixed-dest, no ring. (Fill/gather return with post-V1 flag extensions.)
+After a completed copy step of `k` bytes (`k = min(N, TRANSFER_LEN)`; V1 `N=1`), decrement `TRANSFER_LEN` by `k`. If bytes remain, advance **`SRC_PTR[22:0] += k`** and **`DEST_PTR[22:0] += k`** before the next step (linear only); device flags remain unchanged. When the completed step is the final step and the remaining length becomes zero, the working pointers may retain the addresses used by that final transaction because the descriptor is complete and those values are no longer consumed.
+
+No fixed-src/fixed-dest, no ring. (Fill/gather return with post-V1 flag extensions.)
 
 Wrap within the 8 MB device is a firmware concern.
 
@@ -88,15 +90,17 @@ loop:
         k = min(N, TRANSFER_LEN)
         buf[0..k) = READ(SRC_PTR, k)   # CS from SRC_DEVICE; addr SRC_PTR[22:0]
         WRITE(DEST_PTR, buf[0..k))     # CS from DEST_DEVICE; may be other device
-        SRC_PTR[22:0] += k
-        DEST_PTR[22:0] += k
         TRANSFER_LEN -= k
+        if TRANSFER_LEN > 0:
+            SRC_PTR[22:0] += k
+            DEST_PTR[22:0] += k
+        # Final-step pointer values are don't-care once TRANSFER_LEN reaches 0.
         # V1 N=1: CE# rises every short txn; tCEM / page slicer not required
     fetch_ptr = NEXT_TCD
     fetch_device = NEXT_DEVICE
 ```
 
-No host **ABORT** pin (D23): stop a runaway DMA with **`rst_n`**. Mid-run bus yield uses **BUS_REQ** / **BUS_GNT** (D22).
+No host **ABORT** pin (D23): stop a runaway DMA with **`rst_n`**. Mid-run bus yield uses **BUS_REQ** / **BUS_GNT** (D22). While `~BUS_GNT`, ASIC parks the shared bus (D26); board has **10 kΩ** CS pull-ups. Firmware contract: `docs/human/architecture/firmware.md`.
 
 **Data buffer (D20):** V1 implements `N=1` (8 DFFs). FSM / QSPI path must remain correct for any `N >= 1`; deepening the scratch is optional performance work, not a protocol or TCD change. Short held CE# pulses also make APS6404L `tCEM` and Linear Burst one-page-cross rules non-binding for V1 (see human [`descriptor-fsm.md`](../human/architecture/blocks/descriptor-fsm.md)).
 

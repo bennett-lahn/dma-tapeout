@@ -16,18 +16,18 @@ Tiny Tapeout exposes **10 inputs**, **8 bidirectional**, and **8 outputs** to ea
 
 Aligned with the TT community QSPI flash+PSRAM PMOD map. V1 DMA uses **both RAM A and RAM B**; flash is MCU pass-through only.
 
-| `uio` | Signal | ASIC role when DMA master |
+| `uio` | Signal | ASIC role when DMA master / bus keeper (`~BUS_GNT`) |
 |---|---|---|
-| 0 | Flash CS | **OE always off** - never selected by ASIC; MCU may use flash in pass-through |
+| 0 | Flash CS | **Park high** - never selected (never driven low); MCU may use flash under `BUS_GNT` |
 | 1 | SD0 / MOSI | SIO0 - drive or listen per QSPI phase |
 | 2 | SD1 / MISO | SIO1 - drive or listen per QSPI phase |
-| 3 | SCK | Drive while master |
+| 3 | SCK | Drive low when parked; toggle while txn live |
 | 4 | SD2 | SIO2 - drive or listen per QSPI phase |
 | 5 | SD3 | SIO3 - drive or listen per QSPI phase |
-| 6 | RAM A CS | Drive while master when txn targets PSRAM A |
-| 7 | RAM B CS | Drive while master when txn targets PSRAM B |
+| 6 | RAM A CS | Park high when idle/other die; drive low only for PSRAM A txns |
+| 7 | RAM B CS | Park high when idle/other die; drive low only for PSRAM B txns |
 
-Only one PSRAM CE# low per transaction (shared SIO). Cross-device = read then write with CS switch. Pass-through / OE rules: [`blocks/host-interface.md`](blocks/host-interface.md).
+Only one PSRAM CE# low per transaction (shared SIO). Cross-device = read then write with CS switch. While `~BUS_GNT`, ASIC is the bus keeper (D26): CS high / SCK low between txns and in IDLE; SIO drives a don't-care everywhere except floating for dummy/read (never left floating in IDLE or between txns). Board has **10 kΩ** pull-ups on each CS. Pass-through / OE rules: [`blocks/host-interface.md`](blocks/host-interface.md), [`firmware.md`](firmware.md).
 
 ### Inputs: host control (partial freeze)
 
@@ -56,7 +56,7 @@ Pass-through is **shared-bus OE arbitration** on `uio` with an explicit **reques
 
 ### Mode A - MCU pass-through (programming)
 
-- MCU asserts `BUS_REQ`, waits for `BUS_GNT`; ASIC holds QSPI `uio_oe = 0`
+- MCU asserts `BUS_REQ`, waits for `BUS_GNT`; ASIC **releases** QSPI `uio_oe = 0`
 - MCU drives the shared `uio` QSPI nets to **PSRAM A, PSRAM B, and/or flash**
 - MCU writes TCD chains and payload data into PSRAM
 - Mid-DMA: same handshake pauses between atomic QPI txns (MCU priority); DMA resumes when REQ drops
@@ -64,10 +64,10 @@ Pass-through is **shared-bus OE arbitration** on `uio` with an explicit **reques
 ### Mode B - DMA master (execution)
 
 - MCU Hi-Zs QSPI GPIOs, drops `BUS_REQ`, waits for `BUS_GNT` low, then asserts **START** while DONE is high
-- ASIC leaves idle (DONE low); seizes bus (`uio_oe` for SCK + active RAM CS; flash CS OE-off; SIO OE follows QPI phase)
+- ASIC leaves idle (DONE low); remains bus keeper / DMA master (`uio_oe` parks CS high / SCK low; flash CS never low; SIO OE follows QPI phase)
 - Descriptor engine runs across RAM A and/or B (QPI data path)
-- Quit TCD → idle again (DONE); next START fetches fixed head at `0x000000` / PSRAM 0
-- Kill mid-run with `rst_n` (no soft abort; D23)
+- Quit TCD → idle again (DONE) with parking; next START fetches fixed head at `0x000000` / PSRAM 0
+- Kill mid-run with `rst_n` (no soft abort; D23); board 10 kΩ CS pull-ups hold CE# during reset
 
 ## Memory layout and interfacing
 
@@ -151,7 +151,7 @@ Tracked in detail at [`../../llm/08-open-questions.md`](../../llm/08-open-questi
 - Status / DFT packing on `uo_out[7:2]` (and optional `ui_in[7:3]` / `ui_in[1]`)
 - Self-pointing descriptor policy vs `rst_n`
 
-Settled for V1: **24-bit** address pointers; device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24); **11-byte** TCD with **`QUIT`** flag; fixed head at 0/PSRAM0; zero-length no-op; idle/START/DONE (D14/D18/D19); **no ABORT** (D23: `rst_n`); **BUS_REQ/BUS_GNT** pass-through (D22); QPI data `0xEB`/`0x02` (D15/D17); **MCU** enter/exit QPI (D17); **66 MHz `clk`**, **SCK = clk/2**, rising-edge RX (D16); D21 handshake; **1-byte** data buffer (D20); `ui_in[0]=START`, `ui_in[2]=BUS_REQ`, `uo_out[0]=DONE`, `uo_out[1]=BUS_GNT`; QSPI on `uio`; **dual PSRAM** DMA; **ASIC flash unsupported**. Post-V1 ladder: [`post-v1.md`](post-v1.md).
+Settled for V1: **24-bit** address pointers; device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24); **11-byte** TCD with **`QUIT`** flag; fixed head at 0/PSRAM0; zero-length no-op; idle/START/DONE (D14/D18/D19); **no ABORT** (D23: `rst_n`); **BUS_REQ/BUS_GNT** pass-through (D22); **ASIC bus keeper** while `~BUS_GNT` (D26; board 10 kΩ CS pull-ups); QPI data `0xEB`/`0x02` (D15/D17); **MCU** enter/exit QPI (D17); **66 MHz `clk`**, **SCK = clk/2**, rising-edge RX (D16); D21 handshake; **1-byte** data buffer (D20); `ui_in[0]=START`, `ui_in[2]=BUS_REQ`, `uo_out[0]=DONE`, `uo_out[1]=BUS_GNT`; QSPI on `uio`; **dual PSRAM** DMA; **ASIC flash unsupported**. Post-V1 ladder: [`post-v1.md`](post-v1.md).
 
 ## See also
 

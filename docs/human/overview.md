@@ -2,7 +2,7 @@
 
 ## What this is
 
-A 2-tile Tiny Tapeout ASIC that DMA-moves bytes through external QSPI **PSRAM** (both devices on the flash+PSRAM PMOD) using **descriptors stored in memory**, not a pile of on-chip channel registers.
+A 2-tile Tiny Tapeout ASIC (**TTIHP26b / IHP SG13G2**) that DMA-moves bytes through external QSPI **PSRAM** (both devices on the flash+PSRAM PMOD) using **descriptors stored in memory**, not a pile of on-chip channel registers.
 
 V1 target: **bulk mover** between PSRAM A and B (learning / resume demo). ADC telemetry is post-V1 territory if pursued later.
 
@@ -16,7 +16,7 @@ V1 target: **bulk mover** between PSRAM A and B (learning / resume demo). ADC te
 
 1. **Scatter-gather** via linked Transfer Control Descriptors (TCDs) in PSRAM
 2. **Dual PSRAM** (RAM A + RAM B): read/write either device, including cross-device copies
-3. **Host pass-through** (`BUS_REQ`/`BUS_GNT`, ASIC `uio_oe=0` while granted) so the MCU can program both PSRAMs **and** flash; START hands the bus to the ASIC
+3. **Host pass-through** (`BUS_REQ`/`BUS_GNT`; ASIC releases `uio_oe` while granted, parks CS/SCK while not) so the MCU can program both PSRAMs **and** flash; START hands execution to the ASIC
 4. **Abort** path (pin encoding TBD) so a bad/long run can release the bus
 
 ## Explicit non-goals / post-V1
@@ -26,10 +26,10 @@ V1 target: **bulk mover** between PSRAM A and B (learning / resume demo). ADC te
 
 ## Hard limits
 
-- Max **2 Tiny Tapeout tiles**
+- Max **2 Tiny Tapeout tiles** (IHP tile geometry; see [`architecture/limitations.md`](architecture/limitations.md))
 - DFF-hungry features are suspicious by default
 - PSRAM `CE#` must rise often enough to allow refresh
-- Digital-only ASIC
+- Digital-only ASIC on **ihp-sg13g2** (1.2 V core / 3.3 V I/O)
 
 ## Status
 

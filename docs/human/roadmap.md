@@ -20,7 +20,7 @@
 ## Phase 1 - Skeleton RTL
 
 - [ ] Tiny Tapeout wrapper + pin map
-- [ ] Pass-through mux + mode control (flash CS always OE-off from ASIC; `BUS_REQ`/`BUS_GNT`)
+- [ ] Pass-through mux + mode control (ASIC bus keeper while `~BUS_GNT`; flash CS parked high / never low; `BUS_REQ`/`BUS_GNT`)
 - [ ] QSPI engine (QPI `0xEB` read / `0x02` write, CE# time limit, **RAM A/B CS mux**; no ASIC enter/exit quad)
 - [ ] Working register file (11-byte TCD fields)
 
@@ -30,13 +30,19 @@
 - [ ] Cross-device PSRAM copy (A↔B)
 - [ ] Chained TCDs (incl. next TCD on other device; zero-length no-op)
 - [ ] DONE / error status
-- [ ] Cocotb BFM for dual PSRAM + host protocol (flash model optional / MCU-side only)
+- [ ] M0 - toolchain and L1 same-device smoke
+- [ ] M1 - dual-PSRAM model, protocol policing, and behavioral QSPI checks
+- [ ] M2 - reference model, dual-axis scoreboard, directed tests, and always-on checkers
+- [ ] M3 - delay layer, setup/hold sweeps, and launch/RX edge checks
+- [ ] M4 - formal safety proofs and cover reachability
+- [ ] M5 - randomized regression and coverage closure; buffer-depth sweep blocked pending RTL parameterization
 
 ## Phase 3 - Demoboard + hardening
 
 - [ ] RP2 demoboard scripts (bulk A↔B / scatter-gather patterns)
 - [ ] Area/DFF audit vs 2-tile budget
-- [ ] Re-check hardware constraints against **66 MHz `clk` / 33 MHz SCK** / rising-edge RX (D16) per [`architecture/timing.md`](architecture/timing.md) / [`../llm/11-timing-analysis.md`](../llm/11-timing-analysis.md); drop clock or revisit sample edge only if that review fails
+- [ ] M6 - gate-level and X checks, then hand remaining physical `T-*` rows to STA and demoboard closure
+- [ ] Close **66 MHz `clk` / 33 MHz SCK** / rising-edge RX (D16 / D27): use delay-annotated simulation for `Q-*` pre-checks, STA for IHP pad + TT mux margin, and the demoboard for final number validity; see [`verification/strategy.md`](verification/strategy.md), [`architecture/timing.md`](architecture/timing.md), and [`../llm/verification/04-timing-in-sim.md`](../llm/verification/04-timing-in-sim.md)
 - [ ] CI + GDS flow green
 - [ ] Freeze RTL for shuttle
 

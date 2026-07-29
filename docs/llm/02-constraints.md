@@ -2,17 +2,24 @@
 
 These are hard or near-hard limits. Feature proposals must respect them.
 
-## Silicon / Tiny Tapeout
+## Silicon / Tiny Tapeout (TTIHP26b / ihp-sg13g2)
 
 | Constraint | Value / guidance |
 |---|---|
+| Shuttle / PDK | **TTIHP26b**; LibreLane with **`ihp-sg13g2`** (IHP Open PDK). Digital stdcells `sg13g2_*`; I/O library `sg13g2_io` |
 | Tile budget | **2 tiles maximum** |
-| Approx safe DFF budget | ~**500 DFFs** across 2 tiles before routing congestion becomes likely |
-| Per-tile DFF heuristics (from notes) | ~256 DFFs comfortable; absolute extreme ~440 DFFs/tile if optimized purely for DFF count and routing is pushed to the limit |
-| I/O | **10 in** (`clk`, `rst_n`, `ui_in[7:0]`), **8 bidir** (`uio`), **8 out** (`uo_out`) - severe bottleneck |
-| SkyWater 130 GPIO speed | Input I/O max **66 MHz**; output I/O max **33 MHz** |
-| Clock ceiling (D16) | System **`clk` max 66 MHz**, primarily set by the GPIO input limit; registered QSPI **SCK = clk/2**, max about **33 MHz**, matching the GPIO output limit |
-| Library | Digital standard cells only (no analog IP) |
+| Tile geometry (IHP) | **1x1** die box **202.08 × 154.98 µm**; **1x2** **202.08 × 313.74 µm** (`tt-support-tools` `tech/ihp-sg13g2/tile_sizes.yaml`). ~1.7× the sky130 1x2 area; site is **0.48 × 3.78 µm** (vs 0.46 × 2.72 µm on sky130), so usable cell capacity is only modestly higher - keep the soft DFF ceiling until a real synth count |
+| Approx safe DFF budget | ~**500 DFFs** across 2 tiles before routing congestion becomes likely (unchanged soft warning line; re-audit after first IHP harden) |
+| Per-tile DFF heuristics (from notes) | ~256 DFFs comfortable; absolute extreme ~440 DFFs/tile if optimized purely for DFF count and routing is pushed to the limit (sky130-era heuristics; treat as conservative on IHP) |
+| I/O | **10 in** (`clk`, `rst_n`, `ui_in[7:0]`), **8 bidir** (`uio`), **8 out** (`uo_out`) - severe bottleneck; port list identical to sky130 TT digital projects |
+| Core / pad voltages | **1.2 V** digital core; **3.3 V** I/O (`sg13g2_IOPad*` level-shift 3.3 V ↔ 1.2 V). Demoboard 3.3 V PMOD / PSRAM remains electrically valid |
+| TT pad cells (ttiHP mux) | Inputs (`clk`, `rst_n`, `ui_in`): **`sg13g2_IOPadIn`**. Outputs (`uo_out`): **`sg13g2_IOPadOut30mA`**. Bidirectional (`uio`): **`sg13g2_IOPadInOut30mA`**. (From `tt-multiplexer` `ttihp26b` `tt_ihp_wrapper.v` / `tt_ihp_gpio.v`.) |
+| Published I/O speed rating | **None** in IHP Open PDK IO docs or liberty - no MHz toggle ceiling analogous to sky130's 66/33 MHz pad ratings. Use delay / load / transition limits + TT mux STA instead (D27) |
+| Liberty limits (typ 1.2 V / 3.3 V / 25 °C) | `sg13g2_IOPadInOut30mA`: pad `max_capacitance` ≈ **4.83 pF**; core-side `max_transition` **2.5 ns**. `sg13g2_IOPadIn`: pad `max_transition` **3.5 ns**. Characterization stops at those loads; board + PMOD C may exceed `max_cap` - Phase 3 board check required |
+| Pad delay (same corner, datasheet tables) | Input `pad→p2c` rise ~**0.08 ns** / fall ~**0.45 ns** at light load. Output `c2p→pad` ~**1.7 ns** rise / ~**1.6 ns** fall at **1 pF** for InOut30mA (mid-table ~2 ns at 4 pF). 30 mA drive is far stronger than sky130's 4 mA pad - the old **33 MHz output** slew argument does **not** carry over |
+| TT I/O mux budgets (`signoff.sdc`) | Pad → user-module inward max delay **5.0 ns**; user-module outward → pad **12.5 ns** (plus separate control-path budgets). `clk`/`rst_n` are in the inward group |
+| Clock ceiling (D16, amended D27) | System **`clk` max 66 MHz** (demoboard generator ~66.5 MHz class); registered QSPI **SCK = clk/2** (≈ **33 MHz**). Justification is demoboard / tACLK / simplicity - **not** a published IHP pad MHz rating |
+| Library | Digital standard cells only (no analog IP); harden via LibreLane, not OpenLane |
 
 ### Design implication
 
@@ -57,7 +64,7 @@ Demoboard/PMOD ecosystem parts of interest: 128 M-bit QSPI Flash (**25Q128JVSM**
 
 ## Schedule constraint
 
-- Planning assumed ~**50 days** to next shuttle.
+- Planning assumed ~**50 days** to next shuttle (historical; re-anchor to the active **TTIHP26b** deadline).
 - Missing a shuttle is acceptable but should be treated as a failure mode, not a planning assumption.
 - Prefer cutting scope (see D12 / `10-post-v1-features.md`) over missing verification freeze.
 

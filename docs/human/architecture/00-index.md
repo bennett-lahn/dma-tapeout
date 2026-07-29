@@ -1,6 +1,6 @@
 # Architecture (Human)
 
-Planning-level human docs for the Zero-Overhead Scatter-Gather DMA. V1 freezes START/DONE pins (D14/D18), idle/pass-through, **no ABORT** (D23: `rst_n`), QSPI `uio` map (dual PSRAM; flash OE-off from ASIC), fixed head at `0x000000`/PSRAM0 (D18), **11-byte TCD** with device selects in `CTRL_FLAGS` (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24) + `QUIT` flag (D19/D23: quit → IDLE; next START from fixed head), QPI data `0xEB`/`0x02` (D15/D17), MCU-owned enter/exit QPI (D17), **66 MHz `clk` / SCK=clk/2** / rising-edge RX (D16), FSM↔QSPI handshake (D21: `~busy`, `wdata_next`, no `txn_ready`/`wdone`). Remaining open: `uo_out[7:2]` status pack; `ui_in[1]` reserved. Post-V1: ALU → cond-stop → ring → flash.
+Planning-level human docs for the Zero-Overhead Scatter-Gather DMA. Shuttle / PDK: **TTIHP26b / ihp-sg13g2** (D27). V1 freezes START/DONE pins (D14/D18), idle/pass-through, **no ABORT** (D23: `rst_n`), QSPI `uio` map (dual PSRAM; flash CS parked high / never selected; D26 bus keeper), fixed head at `0x000000`/PSRAM0 (D18), **11-byte TCD** with device selects in `CTRL_FLAGS` (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24) + `QUIT` flag (D19/D23: quit → IDLE; next START from fixed head), QPI data `0xEB`/`0x02` (D15/D17), MCU-owned enter/exit QPI (D17), **66 MHz `clk` / SCK=clk/2** / rising-edge RX (D16 amended D27), FSM↔QSPI handshake (D21: `~busy`, `wdata_next`, no `txn_ready`/`wdone`). Remaining open: `uo_out[7:2]` status pack; `ui_in[1]` reserved. Post-V1: ALU → cond-stop → ring → flash.
 
 Verbose agent context: `../../llm/03-architecture.md`, `../../llm/04-tcd-and-datapath.md`, `../../llm/05-qspi-psram.md`, `../../llm/10-post-v1-features.md`.
 
@@ -31,7 +31,8 @@ Verbose agent context: `../../llm/03-architecture.md`, `../../llm/04-tcd-and-dat
 - Keep **overview / limitations / system** stable as the short map of the chip.
 - Put new depth under **`blocks/`** (or add a new block file and a row in the table above).
 - When a decision freezes, update the relevant block file and the matching `docs/llm/` note; do not grow overview into a second full design dump.
-- Optional later siblings (only when needed): `pins.md`, `clocking.md`, `errors.md`, `verification.md`.
+- Verification is a sibling documentation set under [`../verification/`](../verification/00-index.md), not an architecture block.
+- Optional later siblings (only when needed): `pins.md`, `clocking.md`, `errors.md`.
 - Post-RTL timing checks live in [`timing.md`](timing.md) / [`../../llm/11-timing-analysis.md`](../../llm/11-timing-analysis.md); extend those tables rather than growing block docs.
 
 ## Related
@@ -41,6 +42,7 @@ Verbose agent context: `../../llm/03-architecture.md`, `../../llm/04-tcd-and-dat
 | Project one-pager | [`../overview.md`](../overview.md) |
 | Roadmap | [`../roadmap.md`](../roadmap.md) |
 | Firmware rules | [`firmware.md`](firmware.md) |
+| Verification strategy and sign-off | [`../verification/`](../verification/00-index.md) |
 | Timing analysis (post-RTL) | [`timing.md`](timing.md) |
 | Post-V1 features | [`post-v1.md`](post-v1.md) |
 | Open questions (detailed) | [`../../llm/08-open-questions.md`](../../llm/08-open-questions.md) |

@@ -5,7 +5,7 @@ alwaysApply: true
 
 # DMA Tapeout Project Context
 
-This repo is a Tiny Tapeout scatter-gather DMA project in the **planning / architecture** phase (early RTL under `src/rtl/`).
+This repo is a Tiny Tapeout scatter-gather DMA project in the **planning / architecture** phase (early RTL under `src/rtl/`), targeting **IHP SG13G2 / TTIHP26b** (D27).
 
 ## Before nontrivial work
 
@@ -16,6 +16,7 @@ Human summaries live in `docs/human/` (condensed). Do not duplicate long design 
 ## Hard constraints
 
 - Budget: **2 Tiny Tapeout tiles max**; treat ~500 DFFs as a soft ceiling
+- PDK / shuttle: **ihp-sg13g2** / **TTIHP26b** (not sky130); do not cite sky130 GPIO MHz ratings as binding
 - Start from scratch; TinyDMA-2C is prior art only, not a code source
 - Obsidian notes under `C:\Users\lahnb\Documents\Obsidian Vault\Projects\Tiny Tapeout\` are **read-only**
 - Prefer shipping a smaller verified V1 over late feature creep

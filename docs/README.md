@@ -8,12 +8,16 @@ Split into two audiences:
 | `llm/` | AI agents / future sessions | Verbose, organized context |
 | `datasheets/` | Both | Manufacturer PDFs plus converted markdown (`pdfs/`, `md/`) |
 
+Architecture and verification are parallel documentation sets under both `human/` and `llm/`.
+
 ## Start here
 
 - Human: [`human/overview.md`](human/overview.md)
 - Human architecture: [`human/architecture/00-index.md`](human/architecture/00-index.md)
+- Human verification: [`human/verification/00-index.md`](human/verification/00-index.md)
 - Post-V1 features: [`human/architecture/post-v1.md`](human/architecture/post-v1.md) / [`llm/10-post-v1-features.md`](llm/10-post-v1-features.md)
 - Agent: [`llm/00-index.md`](llm/00-index.md)
+- Agent verification: [`llm/verification/00-index.md`](llm/verification/00-index.md)
 
 ## Prior art (separate)
 

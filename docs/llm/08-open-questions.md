@@ -22,7 +22,7 @@ Per TinyDMA-2C prior art, command/payload strobes are one known reference patter
 
 ## Q4 - Bus release / re-entrancy rules after DONE
 
-**Decided (D14 / D22):** ASIC clears `uio_oe` when IDLE or when yielding for `BUS_REQ` (after the current QPI txn). No host ACK for OE release. **Illegal: MCU drives `uio` while `BUS_GNT` is low.** Idle/`DONE` alone is not a drive permit; MCU must assert `BUS_REQ` and wait for `BUS_GNT`.
+**Decided (D14 / D22 / D26):** ASIC **releases** `uio_oe` when yielding for `BUS_REQ` / asserting `BUS_GNT` (after the current QPI txn). While `~BUS_GNT`, ASIC is the **bus keeper** (park CS high / SCK low; SIO floats only for dummy/read). Board **10 kΩ** CS pull-ups cover reset / pre-enable. No host ACK for OE release. **Illegal: MCU drives `uio` while `BUS_GNT` is low.** Idle/`DONE` alone is not a drive permit; MCU must assert `BUS_REQ` and wait for `BUS_GNT`.
 
 ## Q5 - Null / zero-length / chain-end semantics
 
@@ -51,7 +51,7 @@ Per TinyDMA-2C prior art, command/payload strobes are one known reference patter
 
 ## Q9 - Clock frequency target
 
-**Decided (D16):** demoboard / design **`clk` 66 MHz**; engine **SCK = clk/2**; sample read data on the **rising** edge of SCK. Phase 3 must re-validate `tACLK` / board / TT timing against this target before shuttle freeze.
+**Decided (D16, amended D27):** demoboard / design **`clk` 66 MHz**; engine **SCK = clk/2**; sample read data on the **rising** edge of SCK. Numbers unchanged after the IHP switch; justification is demoboard / `tACLK` / SCK generation, **not** a sky130 or IHP published pad MHz rating (IHP Open PDK has none). Phase 3 must re-validate `tACLK` / board / TT mux / IHP pad liberty against this target before shuttle freeze.
 
 ## Q10 - Sensor data ingress path
 
@@ -61,7 +61,7 @@ Optional later: streamed host-pin ingress and/or telemetry features in `10-post-
 
 ## Q11 - Feature freeze for first shuttle
 
-**Decided (D12 / D14 / D15 / D16 / D17 / D18 / D19 / D20 / D21 / D22 / D23 / D24 / D25):** V1 = `BUS_REQ`/`BUS_GNT` pass-through + QPI (`0xEB`/`0x02`) + MCU enter/exit QPI + dual CS + 11-byte TCD with big-endian 24-bit pointer fields + device selects in `CTRL_FLAGS` (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`) + `QUIT` end-of-chain (next START from fixed head) + fixed head at 0/PSRAM0 + cross-device + chaining + START/DONE/BUS_REQ/BUS_GNT pins (**no ABORT**; kill via `rst_n`) + 66 MHz `clk` / SCK=clk/2 / rising-edge RX + D21 (`~busy` / `wdata_next` / length-driven write) + **1-byte** data buffer with depth-agnostic correctness. **Out of V1:** ALU, conditional stop, ring, ASIC flash (post-V1 ladder in `10-post-v1-features.md`).
+**Decided (D12 / D14 / D15 / D16 / D17 / D18 / D19 / D20 / D21 / D22 / D23 / D24 / D25 / D26 / D27):** V1 = IHP SG13G2 / TTIHP26b + `BUS_REQ`/`BUS_GNT` pass-through + ASIC bus keeper while `~BUS_GNT` (board 10 kΩ CS pull-ups) + QPI (`0xEB`/`0x02`) + MCU enter/exit QPI + dual CS + 11-byte TCD with big-endian 24-bit pointer fields + device selects in `CTRL_FLAGS` (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`) + `QUIT` end-of-chain (next START from fixed head) + fixed head at 0/PSRAM0 + cross-device + chaining + START/DONE/BUS_REQ/BUS_GNT pins (**no ABORT**; kill via `rst_n`) + 66 MHz `clk` / SCK=clk/2 / rising-edge RX + D21 (`~busy` / `wdata_next` / length-driven write) + **1-byte** data buffer with depth-agnostic correctness. **Out of V1:** ALU, conditional stop, ring, ASIC flash (post-V1 ladder in `10-post-v1-features.md`).
 
 Still open inside V1: multi-outstanding (lean: no), `uo_out[7:2]` status packing (Q3 remainder).
 

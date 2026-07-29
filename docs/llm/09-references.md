@@ -28,6 +28,14 @@ Do not modify these files from the repo agent workflow. If notes and repo docs d
 - Demo PCB repo: https://github.com/TinyTapeout/tt-demo-pcb
 - Demoboard MicroPython firmware: https://github.com/TinyTapeout/tt-micropython-firmware
 - QSPI Flash/PSRAM PMOD reference: https://github.com/mole99/qspi-pmod
+- **Shuttle / PDK (D27):** Tiny Tapeout **TTIHP26b**, PDK **`ihp-sg13g2`**
+  - Project template: https://github.com/TinyTapeout/ttihp-verilog-template (local clone: `ttihp-verilog-template/`)
+  - IHP Open PDK: https://github.com/IHP-GmbH/IHP-Open-PDK (local clone: `IHP-Open-PDK/`)
+  - IO library docs: `IHP-Open-PDK/ihp-sg13g2/libs.ref/sg13g2_io/doc/` (typ/fast/slow PDFs; **no MHz toggle rating**)
+  - IO liberty (typ): `.../libs.ref/sg13g2_io/lib/sg13g2_io_typ_1p2V_3p3V_25C.lib`
+  - Process overview: `IHP-Open-PDK/ihp-sg13g2/libs.doc/doc/SG13G2_os_process_spec.pdf`
+  - Mux / pad config (TTIHP26b): https://github.com/TinyTapeout/tt-multiplexer/tree/ttihp26b (`rtl/tt_ihp_gpio.v`, `ol2/tt_top/tt_ihp_wrapper.v`, `ol2/tt_top/signoff.sdc`)
+  - Clock / GPIO pages on tinytapeout.com still describe **sky130** pad ratings; do not apply those MHz figures to IHP without re-deriving
 
 ## Prior art (separate context; do not copy)
 
@@ -75,4 +83,4 @@ Opcode / init requirements for the ASIC PSRAM path are summarized in `05-qspi-ps
 Also:
 
 - JEDEC JESD84-B50 only if sample-eye training is seriously considered (unlikely for V1)
-- Tiny Tapeout hardened wrapper / pin constraints for the chosen shuttle
+- Tiny Tapeout hardened wrapper / pin constraints for the chosen shuttle (**TTIHP26b** / `tt_ihp_wrapper`; see D27)

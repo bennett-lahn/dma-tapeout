@@ -8,7 +8,7 @@ Bit-level QSPI master used by the descriptor FSM:
 
 - QPI command, address, dummy (6 wait for `0xEB`), data phases for all DMA reads/writes
 - Bidirectional SIO direction control (`uio_oe` per phase while ASIC is bus master)
-- **RAM A / RAM B chip-select mux** (never both low; flash CS never asserted by ASIC in V1)
+- **RAM A / RAM B chip-select mux** (never both low; flash CS parked high / never asserted low by ASIC in V1)
 - **SCK generation:** registered toggle when enabled → **SCK = clk/2**; idle low when disabled (no combo mux/gate of `clk` onto the pad)
 - Read sampling: capture `sio_in` into `rdata` on detected **rising SCK** (clk-domain); pulse `rdata_valid` one `clk`
 
@@ -16,7 +16,7 @@ Bit-level QSPI master used by the descriptor FSM:
 
 QSPI has four bidirectional data lines reused for I/O, giving up to about **4x** throughput vs 1-bit SPI (half-duplex data phases, tighter timing).
 
-`uio_oe` is **arbitrated by the descriptor FSM**: FSM owns OE by default (idle / between txns → typically `uio_oe=0`); the engine drives the per-pin mask only while the FSM has granted a live transaction (SCK + selected RAM CS driven; flash CS OE forced off; SIO drive on cmd/addr/write, float on dummy/read). When not granted, the engine's OE contribution is ignored / forced off. Bus ownership phases: [`host-interface.md`](host-interface.md); arbiter: [`descriptor-fsm.md`](descriptor-fsm.md).
+`uio_oe` is **arbitrated by the descriptor FSM** as a **bus keeper** (D26): while `rst_n && ~BUS_GNT`, ASIC drives CS high and SCK low (including IDLE and between transactions); the engine's own SIO mask drives a don't-care in every phase except **dummy/read**, where it floats to listen for the PSRAM - SIO is never left floating during IDLE or between transactions outside reset. On `BUS_GNT` or asserted active-low reset (`rst_n=0`), all shared OE is forced off. Board **10 kΩ** CS pull-ups cover reset / pre-enable. Bus ownership phases: [`host-interface.md`](host-interface.md); arbiter: [`descriptor-fsm.md`](descriptor-fsm.md).
 
 Hard CE# / clock limits are summarized in `[../limitations.md](../limitations.md)`. Full opcode tables: `[../../../llm/05-qspi-psram.md](../../../llm/05-qspi-psram.md)`. With V1 buffer depth `N=1` (and 11-byte TCD fetch), each CE# pulse is short enough that `**tCEM` and Linear Burst one-page-cross limits are not binding** - no CE# refresh timer or page slicer required (see `[descriptor-fsm.md](descriptor-fsm.md)`). Revisit if `N` grows (D20).
 
@@ -72,7 +72,7 @@ Start legality is `~busy`. Write/read length is entirely from `byte_len` (engine
 | `ram_a_cs_n` | out | 1 | RAM A CE# (active low). Never both RAM CE#s low. |
 | `ram_b_cs_n` | out | 1 | RAM B CE# (active low). |
 | `sio_out` | out | `[3:0]` | Pad SIO drive data (cmd/addr/write). |
-| `sio_oe` | out | `[3:0]` | Per-pin OE for this engine; FSM grants `uio_oe` at top level (flash CS OE forced off). |
+| `sio_oe` | out | `[3:0]` | Per-pin OE for this engine; driven (don't-care `sio_out`) in every state except `WAIT` / `READ_DATA`, where it floats to listen for the PSRAM. Top / FSM parks CS+SCK while `~BUS_GNT` (flash CS never driven low). |
 
 ### Flows
 
@@ -98,8 +98,8 @@ Start legality is `~busy`. Write/read length is entirely from `byte_len` (engine
 2. On writes, the first nibble must be on `wdata` in the same cycle as `txn_valid`.
 3. Engine **never stalls** SCK/CE# waiting on the FSM (deterministic QPI).
 4. FSM pulses `txn_valid` only while `~busy`.
-5. Engine owns start/end CE# pad and ≥2-`clk` `tCPH` (via `CS_OFF` + `IDLE` before the next CE# fall). Never both `ram_a_cs_n` and `ram_b_cs_n` low; flash CS off at top level.
-6. FSM grants `uio_oe` for the live txn; reclaim when `busy` clears (idle / between txns / `BUS_GNT` yield → OE off). Do not start a new txn while `BUS_REQ` (D22).
+5. Engine owns start/end CE# pad and ≥2-`clk` `tCPH` (via `CS_OFF` + `IDLE` before the next CE# fall). Never both `ram_a_cs_n` and `ram_b_cs_n` low; flash CS never driven low (parked high by top/FSM while `~BUS_GNT`).
+6. FSM parks CS/SCK while `~BUS_GNT` (D26); grants SIO OE only for live cmd/addr/write; reclaim / release all OE when `BUS_GNT` (idle park resumes when grant falls). Do not start a new txn while `BUS_REQ` (D22).
 7. `wdata_next` asserts iff the controller must provide another nibble for the current write. It must remain low after the final nibble and during every non-write phase.
 
 ## Engine behavior notes
@@ -164,7 +164,7 @@ ASIC does not run this sequence. Firmware (pass-through while DONE) on each devi
 
 **V1 implication:** raise CE# after every short txn (1-byte data or 11-byte TCD fetch). That naturally satisfies `tCEM` and Linear Burst page rules without a dedicated slicer. With **SCK = clk/2**, wall-clock CE# low time for a given beat count is longer than a full-rate-SCK design; at V1 `N=1` this is still far under `tCEM`. Recompute failing-`N` thresholds if the buffer deepens. Detail: `[descriptor-fsm.md](descriptor-fsm.md)`.
 
-On **`rst_n`** (D23 kill path): engine returns to idle with CE# high and pads released (same as any reset). There is no soft-abort mid-txn path in V1.
+While active-low reset is asserted (`rst_n=0`, D23 kill path), the engine returns to idle with CE# high and the top level forces every shared `uio_oe` low. Board CS pull-ups keep the devices deselected until reset is deasserted and ASIC parking resumes. There is no soft-abort mid-txn path in V1.
 
 ## Practical clocks (D16)
 

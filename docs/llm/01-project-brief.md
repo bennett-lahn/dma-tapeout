@@ -32,12 +32,13 @@ Secondary goals:
 
 ## Platform
 
-- **Tapeout vehicle**: Tiny Tapeout
-- **Process**: Sky130 open PDK (standard cells)
-- **Budget**: **2 tiles max**
+- **Tapeout vehicle**: Tiny Tapeout **TTIHP26b** (IHP shuttle)
+- **Process**: **IHP SG13G2** open PDK (`ihp-sg13g2`; 1.2 V digital core, 3.3 V I/O pads with on-pad level shifters)
+- **Budget**: **2 tiles max** (IHP 1x1 ≈ 202.08 × 154.98 µm; 1x2 ≈ 202.08 × 313.74 µm - larger than sky130 tiles; see `02-constraints.md`)
 - **Host**: RP2040 / RP2350-class MCU on TT demoboard
 - **External memory target**: **2x** AP Memory APS6404L-3SQR (64 Mbit QSPI PSRAM each) on QSPI PMOD; both devices are DMA endpoints. Flash on the same PMOD is MCU pass-through only for V1.
-- **Shuttle pressure**: next shuttle ~50 days from planning discussions; slipping to the following shuttle is acceptable but should not be the default plan. Treat the deadline as a real constraint and scope ruthlessly.
+- **Shuttle pressure**: treat the active IHP shuttle deadline as a real constraint and scope ruthlessly; slipping a run is acceptable but should not be the default plan.
+- **Local PDK / template clones** (workspace, not sources of truth for architecture): `IHP-Open-PDK/`, `ttihp-verilog-template/`
 
 ## Core product idea
 
@@ -56,8 +57,8 @@ A successful project can claim all of the following:
 2. Host can start DMA; ASIC masters QSPI and executes the chain without further host SPI traffic.
 3. End-to-end demoboard demo: bulk copy in PSRAM (same-device and cross-device A↔B).
 4. Cocotb suite covers happy path + key fault/edge cases (`QUIT` TCD, zero length, invalid/incomplete host sequences, dual-CS selection, `rst_n` kill).
-5. Design closes in OpenLane / TT flow within 2 tiles with known DFF budget.
-6. Idle pass-through still lets MCU access flash on the PMOD; ASIC never asserts flash CS in V1.
+5. Design closes in LibreLane / TT IHP flow within 2 tiles with known DFF budget.
+6. Idle pass-through still lets MCU access flash on the PMOD; ASIC parks flash CS high and never asserts it low in V1 (D26).
 
 ## Interview narrative (target)
 

@@ -1,0 +1,259 @@
+# Verification Strategy
+
+## Purpose
+
+The V1 verification plan must show that the descriptor DMA:
+
+1. emits legal QPI transactions to exactly one of two PSRAM devices,
+2. obeys host bus ownership and reset rules,
+3. interprets 11-byte TCD chains correctly,
+4. copies every requested byte to the correct device and address, and
+5. remains physically usable at the target 66 MHz system clock and approximately 33 MHz SCK.
+
+No single tool can establish all five. Sign-off is split across simulation, formal, and physical closure, with explicit handoffs between them.
+
+## Three verification venues
+
+### 1. Simulation
+
+Cocotb simulation owns behavior observable in RTL or at modeled pins:
+
+- QPI opcode, address, nibble order, dummy cycles, byte count, CE# selection, and transaction ordering
+- TCD decode, fixed head, `QUIT`, zero-length no-op, chaining, device flags, and pointer updates
+- same-device and cross-device copy correctness
+- `START`, `DONE`, `BUS_REQ`, `BUS_GNT`, reset, and shared-bus output-enable behavior
+- modeled PSRAM timing windows using explicit Python delays and timestamped monitors
+- deterministic directed and constrained-random regressions
+
+Simulation can prove that a nominal timing equation is impossible or non-positive under its stated delay parameters. It can also find sensitivity as parameters are swept. It cannot certify routed pad and net delays, actual board loading, signal integrity, or silicon process variation.
+
+### 2. Formal
+
+SymbiYosys owns control-plane invariants and reachability that are difficult to exhaust in simulation:
+
+- mutual exclusion, legal state transitions, bounded counters, and handshake safety
+- no QPI request while busy or granted away
+- atomic response to `BUS_REQ`
+- stability of unlatched QSPI request fields for the complete transaction
+- reset convergence and absence of forbidden control combinations
+- cover traces for important states and arcs
+- deadlock checks at bounded depths, supported by helper invariants and k-induction
+
+`sys_controller` is verified with the real `qspi_engine`. Formal does not replace the engine with an abstract responder for integration proofs. Formal is not used to establish analog timing, PSRAM storage fidelity, or full-chain payload equivalence over arbitrary memory sizes.
+
+### 3. Physical closure
+
+STA and demoboard work own values that depend on implementation and hardware:
+
+- IHP pad, TT mux, routed internal, package, PMOD, and board delays
+- `tSP`, `tHD`, `tACLK`, clock quality, load, transition, and turnaround margin
+- real PSRAM operation at the target clock across representative boards and devices
+- electrical behavior that a four-state digital model cannot establish
+
+These checks retain `T-*` IDs in `../11-timing-analysis.md`. The demoboard is the authority for final number validity, while STA explains and bounds margin erosion.
+
+## Timing interpretation rule
+
+Keep these conclusions distinct:
+
+- **Simulation finding:** the modeled launch, flight, device, and sample delays leave zero or negative nominal margin, or violate a digital protocol prerequisite.
+- **STA finding:** synthesized or routed internal, pad, and net delays consume more margin than budgeted.
+- **Board finding:** measured flight time, loading, waveform quality, or device response invalidates the assumed numbers.
+
+A delayed simulation is an early warning and regression mechanism. It is not timing sign-off. Conversely, STA cannot show descriptor semantics or transaction-level functional correctness.
+
+## DUT levels
+
+### L0 - QSPI engine
+
+**DUT:** `qspi_engine` with direct request/response driving and a timed model for the selected APS6404L.
+
+**Use for:**
+
+- `0xEB` read and `0x02` write framing
+- 24-bit address phase with `addr[23] == 0`
+- six read dummy cycles
+- SIO direction and nibble order
+- SCK/CE# sequencing and one-device selection
+- `busy`, `rdata_valid`, and `wdata_next` counts
+- `Q-LAUNCH`, `Q-RXEDGE`, and timing-parameter sweeps
+
+L0 may inspect `qspi_engine` internals for diagnosis, but pass criteria should be expressed at ports whenever possible.
+
+### L1 - Integrated Tiny Tapeout top
+
+**DUT:** `tt_um_lahnb_sgdma` with both PSRAM models attached to the shared `uio` bus and a host-side driver for `ui_in`, `uo_out`, and bus ownership.
+
+**Use for:**
+
+- fixed first fetch at `0x000000` on PSRAM0
+- TCD chaining, `QUIT`, zero length, and device-select flags
+- same-device A-to-A and B-to-B copies
+- cross-device A-to-B and B-to-A copies
+- dual-axis scoreboard checks against memory image and ordered QPI transaction log
+- top-level START synchronization and edge detection
+- `BUS_REQ` arbitration, parking, release, and atomic transaction completion
+- reset during every meaningful controller and engine phase
+
+L1 is the primary functional sign-off level. Internal handles may support checkers while RTL hierarchy is stable, but the memory image and pin transaction log are the durable end-to-end oracles.
+
+### L2 - Gate-level top
+
+**DUT:** gate-level `tt_um_lahnb_sgdma`, IHP simulation libraries, and the L1 external environment.
+
+**Use for:**
+
+- a selected high-value subset of L1 directed tests
+- reset and initialization behavior
+- post-synthesis connectivity, polarity, and bus-enable checks
+- X-propagation investigations
+- SDF back-annotation when the flow produces a compatible artifact
+
+L2 is not the main randomized level. Tests must avoid relying on RTL hierarchy or source-level state encodings.
+
+## Configuration dimensions
+
+Every regression result records:
+
+- DUT level: L0, L1, or L2
+- simulator and version
+- RTL or netlist revision
+- random seed
+- `DMA_BUF_DEPTH`
+- timing profile and overridden delay values
+- gate and SDF mode where applicable
+
+The intended buffer-depth sweep is `1, 2, 4, 8`, while the V1 implementation and tapeout configuration remain `DMA_BUF_DEPTH=1`. The current RTL declares `DMA_BUF_DEPTH` as a package `localparam`, so values 2, 4, and 8 cannot be selected at compile time. The sweep is blocked until RTL parameterization is implemented; after that prerequisite, larger values test depth-agnostic correctness without changing the V1 tapeout configuration.
+
+## Milestone ladder
+
+Milestones are cumulative. A milestone exits only when its listed evidence is reproducible from a clean test build.
+
+### M0 - Toolchain and smoke
+
+**Entry:** current RTL compiles and the platform layout in `02-platform.md` is implemented.
+
+**Exit:**
+
+- pinned Python dependencies import in the project virtual environment
+- Icarus runs one L1 directed copy from PSRAM0 to PSRAM0
+- destination bytes match expected bytes
+- the seed and exact reproduction command are printed
+
+M0 deliberately uses L1 so the first smoke validates the TT wrapper path, not only the engine.
+
+### M1 - PSRAM model and QPI protocol
+
+**Entry:** M0.
+
+**Exit:**
+
+- dual APS6404L models implement required V1 QPI reads and writes
+- model protocol policing rejects unsupported opcode, malformed phase count, bad address bit, invalid CE# overlap, and flash-CS assertion
+- behavioral `Q-*` rows assigned to M1 pass at L0 and applicable L1 cases
+- Icarus and Verilator agree on the directed protocol set
+
+Timing-delay sweeps and sample-edge closure remain M3.
+
+### M2 - Reference model and directed behavior
+
+**Entry:** M1.
+
+**Exit:**
+
+- golden chain interpreter matches frozen TCD semantics
+- final-memory and ordered-transaction scoreboards agree
+- all M2 `TC-*` cases pass at L1
+- all applicable `CHK-*` monitors run in every test and remain clean
+- same-device, cross-device, chaining, `QUIT`, zero length, bus yield, and reset cases pass
+
+### M3 - Delay-annotated timing in simulation
+
+**Entry:** M2 and documented delay defaults.
+
+**Exit:**
+
+- model-side input delay and return delay are runtime configurable
+- setup/hold and turnaround monitors report timestamped margins
+- nominal and boundary sweeps are reproducible
+- `Q-LAUNCH` passes: driven SIO and OE change only while SCK is low and settle before the sampling rise
+- `Q-RXEDGE` passes: RTL sampling behavior matches the documented external rising-edge contract
+- any zero or negative modeled nominal margin is resolved or explicitly blocks progression
+
+M3 supplies pre-STA evidence. It does not close a `T-*` row.
+
+### M4 - Formal control-plane safety
+
+**Entry:** M2. M3 may proceed independently once shared RTL assumptions are stable.
+
+**Exit:**
+
+- required `FP-*` safety properties prove with their assigned engines and depths
+- induction obligations use documented helper invariants
+- required state and arc covers are reachable
+- bounded deadlock checks complete at documented depths
+- assumptions constrain only legal environment behavior and do not assume the property being proved
+
+### M5 - Randomized regression and coverage
+
+**Entry:** M2 through M4.
+
+**Exit:**
+
+- constrained-random descriptor chains and host request injection pass on Icarus
+- the designated high-volume suite passes on Verilator
+- failures reproduce from one printed seed and command
+- depth 1 passes its applicable suite
+- after RTL parameterization, `DMA_BUF_DEPTH` values 2, 4, and 8 pass their applicable suite; until then this M5 item is `blocked`
+- required `COV-*` points and crosses meet closure criteria or have reviewed exclusions
+
+### M6 - Gate-level and X checks
+
+**Entry:** M5 and an available synthesized netlist.
+
+**Exit:**
+
+- selected L1 sign-off tests pass at L2 with Icarus and IHP cell models
+- reset and bus ownership remain clean at gate level
+- randomized X-initialization and X-assignment runs have no unexplained divergence
+- SDF status is recorded as pass, blocked, or not applicable with reason
+- unresolved physical `T-*` rows are handed to STA and demoboard closure
+
+## Sign-off gates
+
+### RTL verification freeze
+
+Before declaring RTL verification complete:
+
+- M0 through M5 are complete
+- every required `Q-*`, `CHK-*`, `TC-*`, `FP-*`, and `COV-*` row is `pass`
+- no unresolved reproducible seed remains
+- Icarus is green on the full required suite
+- Verilator is green on its assigned regression subset
+- all waivers name an owner, rationale, affected configuration, and expiration condition
+
+### Shuttle freeze
+
+Before shuttle freeze:
+
+- RTL verification freeze is complete
+- M6 is complete for the final netlist
+- all required `T-*` rows are closed by STA and/or demoboard evidence
+- the final configuration is 66 MHz maximum `clk`, SCK=`clk/2`, rising-edge RX unless a documented architecture decision changes it
+- the demoboard passes same-device, both cross-device directions, chaining, bus handoff, and reset recovery
+
+## Failure handling
+
+- Minimize a failure while preserving its seed and timing profile.
+- Classify it as DUT, model, checker, reference model, tool divergence, or physical-assumption failure.
+- A checker or model defect does not waive the behavior it was intended to verify.
+- When a simulator divergence appears, retain a reduced reproducer and assign one expected behavior from the language and cocotb contracts before suppressing a configuration.
+- Do not mark a parent milestone complete while a required child ID is `fail`, `wip`, or `blocked`.
+
+## Related
+
+- Index and stable IDs: `00-index.md`
+- Platform and commands: `02-platform.md`
+- Architecture: `../03-architecture.md`
+- Protocol and timing source: `../05-qspi-psram.md`
+- Physical timing checklist: `../11-timing-analysis.md`

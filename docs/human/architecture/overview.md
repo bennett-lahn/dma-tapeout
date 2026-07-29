@@ -25,7 +25,7 @@ The ASIC owns storage moves through **both** QSPI PSRAM devices. Flash on the sa
 | Actor | Job |
 |---|---|
 | MCU | Build TCD lists, program either PSRAM (and flash) while ASIC is idle/pass-through, stage buffers, pulse START, handle DONE / `rst_n` kill, read results |
-| DMA ASIC | After START, master QSPI, fetch descriptors, **byte-copy** on RAM A and/or B, chain TCDs, return bus / assert DONE. No flash CS; no ALU in V1 |
+| DMA ASIC | After START, master QSPI, fetch descriptors, **byte-copy** on RAM A and/or B, chain TCDs, return bus / assert DONE. Flash CS parked high (never selected); no ALU in V1 |
 | PSRAM A/B | TCDs, source buffers, destinations |
 | Flash | MCU-only via pass-through; ASIC flash is post-V1 |
 

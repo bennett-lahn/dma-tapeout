@@ -12,7 +12,21 @@ This is the short firmware contract for programming the DMA. Detailed TCD behavi
 6. `DONE=1` means the ASIC is idle. It does not grant MCU ownership of `uio`; firmware must still request and receive `BUS_GNT`.
 7. A mid-run `BUS_REQ` pauses the DMA only after its current QPI transaction. To stop a runaway chain, assert `rst_n`; V1 has no soft abort.
 
-The handoff rule is always release before seize. Driving the MCU and ASIC outputs at the same time causes bus contention and may damage pads.
+### ASIC bus keeper (D26)
+
+While `rst_n=1` and `BUS_GNT=0`, the ASIC owns the shared QSPI nets as a **bus keeper**, including idle and the gaps between DMA transactions:
+
+- Drives **flash CS**, **RAM A CS**, and **RAM B CS** high (deselected). Flash is never selected by the ASIC; parking its CS high is not flash DMA.
+- Drives **SCK** low.
+- Drives **SIO** with a don't-care in every phase except dummy/wait and read-data, where it floats to listen for the PSRAM. SIO is never left floating between transactions or in idle.
+
+When `BUS_GNT=1`, the ASIC releases every shared `uio` output so the MCU can master the bus. While active-low reset is asserted (`rst_n=0`), it also disables every shared output enable, but reset does not grant MCU ownership. After grant falls or reset deasserts with `BUS_GNT=0`, the ASIC resumes parking immediately.
+
+### Board CS pull-ups
+
+The QSPI PMOD / demoboard path has a **10 kΩ pull-up on each CS** (flash, RAM A, RAM B). Those resistors keep CE# high during `rst_n`, power-up, and any window before the Tiny Tapeout mux enables this design. They are a backup; firmware must not rely on them alone while the ASIC is live and `BUS_GNT=0`.
+
+The handoff rule is always release before seize. Driving the MCU and ASIC outputs at the same time on SIO (or driving opposite CS/SCK levels) causes contention. Brief overlap on the idle levels (CS high / SCK low) is benign if it occurs, but firmware must still Hi-Z before dropping `BUS_REQ` and before `START`.
 
 ## Writing TCDs
 

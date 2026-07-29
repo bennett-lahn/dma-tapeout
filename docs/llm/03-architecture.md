@@ -37,16 +37,16 @@ TT provides **10 inputs** (`clk`, `rst_n`, `ui_in[7:0]`), **8 bidirectional** (`
 
 | `uio` | Signal | V1 use |
 |---|---|---|
-| 0 | Flash CS | **ASIC OE always off** - MCU may master flash in pass-through; ASIC never selects flash in V1 |
+| 0 | Flash CS | **Park high** while `~BUS_GNT` (D26); never driven low by ASIC; MCU may master flash under grant |
 | 1 | SD0 / MOSI | SIO0 |
 | 2 | SD1 / MISO | SIO1 |
-| 3 | SCK | Clock |
+| 3 | SCK | Clock (park low while `~BUS_GNT` between txns) |
 | 4 | SD2 | SIO2 |
 | 5 | SD3 | SIO3 |
-| 6 | RAM A CS | PSRAM A CE# (DMA endpoint) |
-| 7 | RAM B CS | PSRAM B CE# (DMA endpoint) |
+| 6 | RAM A CS | PSRAM A CE# (DMA endpoint; park high when not active) |
+| 7 | RAM B CS | PSRAM B CE# (DMA endpoint; park high when not active) |
 
-Shared SIO/SCK: only **one** PSRAM CE# may be low per transaction. Cross-device copies are read-then-write with CS switched between beats.
+Shared SIO/SCK: only **one** PSRAM CE# may be low per transaction. Cross-device copies are read-then-write with CS switched between beats. Board **10 kΩ** pull-ups on each CS cover reset / pre-enable; live `~BUS_GNT` parking is ASIC (D26).
 
 ### Dedicated host strobes (V1 freeze)
 
@@ -103,15 +103,15 @@ Human-facing phase tables and conceptual RTL: `docs/human/architecture/blocks/ho
 
 ### Mode A - MCU pass-through (programming)
 
-- MCU asserts **BUS_REQ**, waits for **BUS_GNT**; ASIC holds `uio_oe = 0` on all QSPI pins.
+- MCU asserts **BUS_REQ**, waits for **BUS_GNT**; ASIC **releases** `uio_oe = 0` on all QSPI pins.
 - MCU firmware drives the shared `uio` nets as QSPI master to **PSRAM A, PSRAM B, and/or flash**.
 - Works in IDLE or as a mid-DMA yield after the current QPI txn completes atomically. Idle/`DONE` alone is not a drive permit (D22).
 
 ### Mode B - DMA master (execution)
 
 - MCU finishes any QSPI txn, high-Zs its QSPI GPIOs, drops **BUS_REQ**, waits for **BUS_GNT** low, then asserts START (`ui_in[0]`) while DONE is high.
-- ASIC leaves idle (DONE low): raises `uio_oe` for SCK and the **active RAM CS** (A and/or B over the run; never flash); SIO OE follows QSPI phase (drive for cmd/addr/write; float for dummy/read while sampling `uio_in`).
-- START ignored until idle returns. On quit TCD, return to idle: clear `uio_oe`, assert DONE; next START fetches fixed head again (D14/D18/D19/D23). Kill mid-run with `rst_n` (D23). Mid-run `BUS_REQ` pauses between atomic txns without forcing IDLE (D22).
+- ASIC leaves idle (DONE low): remains **bus keeper** while `~BUS_GNT` (D26) - parks all CS high and SCK low between txns; during a live txn drives SCK + CS mux (one RAM CE# low; flash CS stays high); SIO OE follows QSPI phase (drives a don't-care except float for dummy/read while sampling `uio_in`).
+- START ignored until idle returns. On quit TCD, return to idle: keep parking, assert DONE; next START fetches fixed head again (D14/D18/D19/D23). Kill mid-run with `rst_n` (D23; board CS pull-ups hold CE# during reset). Mid-run `BUS_REQ` pauses between atomic txns without forcing IDLE (D22).
 
 This boundary is as important as the internal FSM. Without a clean programming path, descriptor DMA is undemoable.
 
@@ -139,7 +139,7 @@ Responsibilities:
 - Consume the post-sync one-`clk` START pulse and synchronized BUS_REQ level (not raw pad levels)
 - Drive status: DONE, BUS_GNT, error, debug mux on remaining `uo_out`
 - Fetch and execute descriptor chains through the QSPI engine
-- Own the mode switch between pass-through and DMA master via internal FSM `uio_oe` arbitration + D22 request/grant (idle/yield: clear OE; active txn: grant OE to QSPI engine only when `~BUS_GNT`)
+- Own the mode switch between pass-through and DMA master via internal FSM `uio_oe` arbitration + D22 request/grant + D26 bus keeper (park CS/SCK while `~BUS_GNT`; release OE only on grant; SIO phase-accurate during live txns)
 
 `sys_controller.sv` intentionally combines host/mode control and descriptor sequencing. "Host interface" and "descriptor FSM" name two behavioral views of this module, not an RTL port boundary. The QSPI engine remains separate.
 
@@ -150,7 +150,7 @@ I/O principles (still binding):
 1. Serialize host interfaces; do not assume wide parallel buses
 2. Reserve at least one muxed DFT/debug output for FSM observation after tapeout
 3. Verification must cover edge cases that cannot be probed on silicon (including double-drive / host drives without `BUS_GNT`)
-4. Default and idle: `uio_oe = 0`; never enable ASIC QSPI drivers until MCU has released the bus (`~BUS_GNT`)
+4. While `~BUS_GNT`, ASIC parks the bus (D26); release all shared OE only under `BUS_GNT` / reset; never enable MCU and ASIC drivers with disagreeing levels
 5. Sample host control only after top-level sync into `clk`
 
 ### 3. Working-state register file (explicit, DFF-critical)
@@ -178,11 +178,11 @@ Approximate working metadata: **88 DFFs**, plus at least:
 
 The integrated controller currently uses these states:
 
-1. `IDLE` - DONE high; `uio_oe=0`; wait for START with `~BUS_REQ` (ignored elsewhere).
+1. `IDLE` - DONE high; park bus while `~BUS_GNT` (D26); wait for START with `~BUS_REQ` (ignored elsewhere).
 2. `STATE_FETCH` - burst-read **11 bytes** into working registers. First fetch: `0x000000` / PSRAM 0; later: `NEXT_TCD` on `NEXT_DEVICE`. If `QUIT=1` → `IDLE`.
 3. `STATE_READ` - read up to buffer depth `N` bytes from `SRC_PTR` into the data buffer (V1: `N=1`; skip if length 0).
 4. `STATE_WRITE` - write the buffered bytes to `DEST_PTR`.
-5. `STATE_UPDATE` - decrement `TRANSFER_LEN` by bytes moved; increment SRC/DEST address bits by the same count (device flags sticky); if `TRANSFER_LEN > 0`, loop to `STATE_READ`; if length is 0, loop to `STATE_FETCH` for `NEXT_TCD` on `NEXT_DEVICE`.
+5. `STATE_UPDATE` - decrement `TRANSFER_LEN` by bytes moved. If bytes remain, increment SRC/DEST address bits by the same count (device flags sticky) and loop to `STATE_READ`. If length reaches 0, the working pointers need not be incremented because the completed descriptor no longer consumes them; loop to `STATE_FETCH` for `NEXT_TCD` on `NEXT_DEVICE`.
 
 Notes from planning:
 
@@ -193,7 +193,7 @@ Notes from planning:
 - Abort: finish current QPI txn, then IDLE.
 - **BUS_REQ (D22):** MCU priority; do not start a new QPI txn while REQ; finish in-flight txn atomically, assert `BUS_GNT`, resume when REQ drops (unless IDLE).
 - No `STATE_PROCESS` in V1 (ALU / cond-stop are post-V1).
-- **`uio_oe` arbitration:** descriptor FSM owns OE by default (idle / between txns / yield → clear); grants the QSPI engine the per-pin OE mask only while a transaction is in flight and `~BUS_GNT`.
+- **`uio_oe` arbitration (D26):** ASIC is bus keeper while `rst_n && ~BUS_GNT` (park all CS high / SCK low; SIO drives a don't-care except float only on dummy/read during a live txn). Force every shared output enable low while active-low reset is asserted (`rst_n=0`) or under `BUS_GNT`. Do not float CS/SCK, or SIO between transactions / in idle outside reset. Board 10 kΩ CS pull-ups cover reset / pre-enable.
 
 ### 5. Post-V1 blocks (not in V1 silicon plan)
 
@@ -229,7 +229,7 @@ ASIC expects the MCU to put each PSRAM device into **QPI mode** before START (an
 
 Full opcode / timing truth lives in `05-qspi-psram.md`.
 
-The DMA FSM issues transaction requests and arbitrates `uio_oe` (FSM default; QSPI engine while a txn is granted); the QSPI engine owns bit-level timing and the granted per-pin OE mask.
+The DMA FSM issues transaction requests and arbitrates `uio_oe` (bus keeper while `~BUS_GNT`; release on grant; QSPI engine phase mask during a live txn); the QSPI engine owns bit-level timing and the live-txn SIO OE mask.
 
 #### FSM ↔ QSPI engine handshake (D21)
 

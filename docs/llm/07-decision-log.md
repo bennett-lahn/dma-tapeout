@@ -101,6 +101,7 @@ Obsidian vault notes remain handwritten and external; agents may read, must not 
 - Contends if both enable; protocol must release-before-seize.
 
 **Superseded for restore timing by D14 / drive legality by D22:** OE clears on idle or yield; MCU drives only under `BUS_GNT`.
+**Superseded for idle OE by D26:** ASIC is the bus keeper whenever `~BUS_GNT` (parks CS high / SCK low); OE clears only for grant / reset.
 
 Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-architecture.md`.
 
@@ -127,8 +128,8 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 1. **Both PSRAMs (RAM A + RAM B)** are first-class DMA endpoints. ASIC may read and write either device, including **cross-device** transfers (e.g. read A write B, read B write A, same-device A↔A / B↔B).
 2. **Flash is not an ASIC DMA target for V1 (or planned V1.x).** No flash opcodes, erase/program FSM, or flash CS assert from the QSPI engine.
-3. **Pass-through remains complete for the whole PMOD:** when ASIC `uio_oe=0`, the MCU may master **flash and both PSRAMs** (including flash firmware/storage experiments).
-4. During DMA mastership, ASIC may drive **RAM A CS and/or RAM B CS** (one active CE# per transaction on the shared SIO bus). **Flash CS stays OE-off** so the ASIC never contends on that net; board pull-up / MCU release keeps flash deselected while DMA runs.
+3. **Pass-through remains complete for the whole PMOD:** when ASIC grants the bus (`BUS_GNT`, `uio_oe=0`), the MCU may master **flash and both PSRAMs** (including flash firmware/storage experiments).
+4. During DMA mastership, ASIC may drive **RAM A CS and/or RAM B CS** (one active CE# per transaction on the shared SIO bus). **Flash is never selected by ASIC** (flash CS never driven low). ~~Flash CS stays OE-off~~ **Superseded by D26:** while `~BUS_GNT`, ASIC **parks flash CS high** (same bus-keeper policy as the RAM CS lines). Board **10 kΩ** CS pull-ups remain the keeper during reset / pre-enable.
 5. **Super stretch (post-shuttle / explicit cut only):** ASIC **flash read**; **maybe** flash write later. Not on the V1 ship ladder. NOR erase/BUSY/page rules make write a separate product-sized effort (see W25Q128JV notes in `05-qspi-psram.md` / datasheets).
 
 **Why:**
@@ -211,9 +212,9 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 3. Sample PSRAM read data on the **rising** edge of SCK (captured into `clk`-domain `rdata`; pulse `rdata_valid`). No falling-edge RX path in V1.
 4. DLL / pattern-based eye training remains a V1 non-goal.
 5. Phase 3 must **re-check** `tACLK` / board / TT / RP2040 clocking against **66 MHz clk / 33 MHz SCK** rising-edge before shuttle freeze.
-6. Treat **66 MHz as the maximum system clock**, not merely a nominal target. The primary ceiling is the SkyWater 130 GPIO rating: **66 MHz max for input I/O** and **33 MHz max for output I/O**. Dividing `clk` by two keeps the registered SCK output within the 33 MHz output limit.
+6. Treat **66 MHz as the maximum system clock**, not merely a nominal target. **Amended by D27:** the original sky130 GPIO rating justification (66 MHz in / 33 MHz out) **no longer applies**. Keep the same numbers because (a) the TT demoboard clock generator tops out around **66.5 MHz**, (b) half-rate registered SCK eases APS6404L `tACLK` vs a full-rate 66 MHz pad clock, and (c) SCK=clk/2 avoids fragile clock-gate/mux of `clk` onto the pad. Close I/O with IHP pad delay + TT mux STA + demoboard, not a published pad MHz ceiling.
 
-**Why:** Respects the SkyWater 130 GPIO input/output speed ceilings, avoids fragile clock-gate/mux of `clk` onto SCK, and keeps a simple rising-edge RX path. Half-rate SCK also eases `tACLK` margin vs a full-rate 66 MHz pad clock while remaining within APS6404L Linear Burst capability.
+**Why (amended D27):** Demoboard / PSRAM / implementation simplicity, not sky130 pad ratings. Half-rate SCK remains within APS6404L Linear Burst capability. IHP Open PDK `sg13g2_io` provides delay / load / transition limits only - **no MHz toggle rating** found in typ/fast/slow IO PDF datasheets or liberty.
 
 ## D17 - MCU owns QPI enter/exit; sole QPI read is `0xEB`
 
@@ -306,14 +307,14 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
    - `ui_in[2]` = **`BUS_REQ`** (MCU → ASIC): MCU wants the shared bidirectional QSPI `uio` bus.
    - `uo_out[1]` = **`BUS_GNT`** (ASIC → MCU): MCU has been given control of that bus (ASIC drivers released).
 2. **MCU drive rule:** MCU keeps its QSPI GPIOs Hi-Z unless **`BUS_GNT` is high**. While `BUS_GNT` is low, MCU lets the ASIC drive (or float) the bidirectional nets.
-3. **ASIC priority:** MCU bus request has priority over DMA. While `BUS_REQ` is high, the descriptor FSM must **not start a new QPI transaction**. If a QPI transaction is already in flight, it completes atomically (`busy` → 0), then ASIC clears `uio_oe` and asserts `BUS_GNT`. Single QPI operations remain atomic (no mid-command tear).
+3. **ASIC priority:** MCU bus request has priority over DMA. While `BUS_REQ` is high, the descriptor FSM must **not start a new QPI transaction**. If a QPI transaction is already in flight, it completes atomically (`busy` → 0), then ASIC **releases** `uio_oe` and asserts `BUS_GNT`. Single QPI operations remain atomic (no mid-command tear).
 4. **Grant / release sequence (release before seize):**
    1. MCU asserts `BUS_REQ` (drivers still Hi-Z).
-   2. ASIC finishes any in-flight QPI txn, holds `uio_oe = 0`, asserts `BUS_GNT`.
+   2. ASIC finishes any in-flight QPI txn, releases `uio_oe = 0`, asserts `BUS_GNT`.
    3. MCU sees `BUS_GNT`, enables its QSPI drivers, runs SPI/QSPI as needed.
    4. MCU finishes, Hi-Zs its QSPI GPIOs, then deasserts `BUS_REQ`.
-   5. ASIC deasserts `BUS_GNT`. If not IDLE, DMA may resume (next txn after grant falls).
-5. **Idle:** when IDLE/`DONE`, grant follows request promptly (`BUS_GNT` tracks `BUS_REQ` once OE is clear). Idle alone does **not** authorize MCU drive without grant.
+   5. ASIC deasserts `BUS_GNT` and **resumes bus-keeper drive** (D26). If not IDLE, DMA may resume (next txn after grant falls).
+5. **Idle:** when IDLE/`DONE`, grant follows request promptly (`BUS_GNT` tracks `BUS_REQ` once OE is clear). Idle alone does **not** authorize MCU drive without grant. While idle and `~BUS_GNT`, ASIC still parks the bus (D26).
 6. **START:** the top level synchronizes the raw level and rising-edge detects it into a one-`clk` pulse. The pulse is accepted only in IDLE with **`~BUS_REQ`** (hence `~BUS_GNT`); otherwise it is ignored and not queued. MCU must drop request, see grant low, and issue a new START rising edge.
 7. **`BUS_REQ` vs kill:** `BUS_REQ` **pauses** an active run between atomic txns and yields the bus; DMA resumes when request is released (unless quit / `rst_n` also applies). ~~ABORT~~ removed by **D23**; use **`rst_n`** to stop a runaway chain.
 8. Supersedes D14 "pass-through iff DONE" for drive legality. Closes Q3/Q4 remainder for this handshake.
@@ -329,7 +330,7 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 **Decision:**
 
 1. **Remove host ABORT.** There is no `ui_in` ABORT strobe and no `dma_abort` / soft-abort path in V1. ~~D14/D18 abort behavior~~ revoked.
-2. **Kill a runaway DMA with `rst_n`.** Asserting active-low reset returns the ASIC to IDLE (`DONE` high, `uio_oe` clear) the same as any other reset. Firmware must re-establish PSRAM QPI mode after reset if needed (D17).
+2. **Kill a runaway DMA with `rst_n`.** Asserting active-low reset (`rst_n=0`) returns the ASIC to IDLE (`DONE` high) and the top level forces every shared `uio_oe` bit low. Board CS pull-ups (D26) keep CE# high while reset holds. After `rst_n` deasserts with `~BUS_GNT`, ASIC resumes bus-keeper parking. Firmware must re-establish PSRAM QPI mode after reset if needed (D17).
 3. **`ui_in[1]`** (formerly ABORT) is **reserved** / open with `ui_in[7:3]`. **BUS_REQ** stays at **`ui_in[2]`** (D22).
 4. **`QUIT` end-of-chain (clarifies D19):** when the FSM fetches a TCD with **`CTRL_FLAGS.QUIT=1`**, it returns to **IDLE** / asserts **DONE** without executing that TCD. The next accepted **START** always begins a new run by fetching from **address `0x000000` on PSRAM 0** again (fixed head; D18) - it does not resume from a saved `NEXT_TCD` or mid-chain pointer.
 5. Mid-run bus yield remains **BUS_REQ** / **BUS_GNT** only (D22).
@@ -353,7 +354,7 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 | 3 | `NEXT_DEVICE` | device for the next FETCH of `NEXT_TCD` |
 | 7:4 | reserved | Write 0; post-V1 (was `[7:1]`; three bits claimed for device selects) |
 
-3. Pointer increments bump only the address field (`[22:0]`); device flags are sticky for the life of that TCD (device does not change mid-descriptor).
+3. While bytes remain after a completed chunk, pointer increments bump only the address field (`[22:0]`); device flags are sticky for the life of that TCD (device does not change mid-descriptor). After the final chunk makes `TRANSFER_LEN=0`, the working pointers need not be incremented because that descriptor no longer consumes them.
 4. After a data (or no-op) TCD completes, the next FETCH uses `{NEXT_DEVICE, NEXT_TCD[22:0]}`.
 5. Working metadata remains **88 DFFs** / **11-byte** TCD (repack inside `CTRL_FLAGS`; no width growth).
 
@@ -374,3 +375,44 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 **Why:** The existing QPI fetch and packed working-register order already decode most-significant bytes first. Keeping that order avoids pointer byte-reversal logic in the ASIC. Since C has no standard 24-bit integer type and the 11-byte TCD already requires explicit packing, big-endian pointer serialization adds little firmware complexity while favoring the two-tile implementation budget.
 
 **DFF / tile impact:** none. This freezes the existing RTL interpretation and places byte-order handling in firmware.
+
+## D26 - ASIC bus keeper; board CS pull-ups
+
+**Decision:**
+
+1. **ASIC is the shared-bus keeper whenever it has not granted the bus.** While `~BUS_GNT` (and outside hard reset), the ASIC actively drives:
+   - **Flash CS**, **RAM A CS**, and **RAM B CS** high (deselected)
+   - **SCK** low
+   - **SIO0..3** according to QPI phase when a transaction is live: drive on cmd / addr / write; **float only on dummy/wait and read-data** (listen / sample `uio_in`). ~~Between transactions and in IDLE, SIO may float or drive a don't-care~~ **Resolved in RTL:** SIO drives a don't-care (`0`) between transactions and in IDLE rather than floating, so no shared `uio` pin is ever left undriven while the ASIC is bus keeper; CS and SCK stay driven throughout.
+2. **Release for grant or reset.** On `BUS_GNT`, ASIC forces **all** shared `uio_oe` bits off so the MCU can master the bus. While active-low reset is asserted (`rst_n=0`), the top level also forces every shared output enable low, but reset does not itself grant MCU ownership. Resume parking after grant falls or reset deasserts when `~BUS_GNT`.
+3. **Flash never selected by ASIC.** Parking flash CS high is not flash DMA; the ASIC never drives flash CS low and emits no flash opcodes (D11 still binding for flash-out-of-V1).
+4. **Inter-transaction OE:** do **not** release CS/SCK between DMA transactions. That preserves CE# high and avoids floating selects without depending on firmware latency.
+5. **Board hardware:** the QSPI PMOD / demoboard path in use has a **10 kΩ pull-up on each CS** (flash, RAM A, RAM B). Those resistors are the keeper while `rst_n=0`, during power-up, and in any window before the TT mux enables this design. They are a backup, not a substitute for ASIC parking while the design is live and `~BUS_GNT`.
+6. **Handoff:** release-before-seize remains required. Overlap on CS-high / SCK-low idle levels is benign if it occurs briefly; firmware must still Hi-Z before dropping `BUS_REQ` and before START.
+7. Supersedes D8/D11/D22 language that idle or between-txn means full `uio_oe=0`, and the D11 claim that flash CS OE stays off for the whole DMA run.
+
+**Why:** Without continuous ASIC drive of CS/SCK while not granted, CE# can float into the low region long enough to approach `tCEM` and block PSRAM refresh, and a floating flash CS while SCK toggles is unsafe. Board 10 kΩ pull-ups cover reset-scale gaps; ASIC parking covers run-time gaps at zero extra DFFs.
+
+**DFF / tile impact:** none beyond existing OE mux logic (combinational park vs grant).
+
+Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/human/architecture/firmware.md`, `docs/human/architecture/blocks/descriptor-fsm.md`.
+
+## D27 - Target IHP SG13G2 shuttle (TTIHP26b); retire sky130 GPIO ceilings
+
+**Decision:**
+
+1. Tapeout vehicle is **Tiny Tapeout IHP** (**TTIHP26b** class), PDK **`ihp-sg13g2`** (IHP Open PDK), hardened with **LibreLane** via `ttihp-verilog-template` / `tt-gds-action@ttihp26b`. Drop sky130 / TTSKY26c as the planning PDK.
+2. Keep the digital **user-module port list** unchanged (`clk`, `ena`, `rst_n`, `ui_in[7:0]`, `uo_out[7:0]`, `uio_in`/`uio_out`/`uio_oe[7:0]`) - identical across TT PDKs.
+3. Electrical / pad model for planning:
+   - Core **1.2 V**, I/O **3.3 V** with on-pad level shifters (`sg13g2_IOPadIn`, `*Out*`, `*InOut*`).
+   - Chip-level TT wrapper uses **`sg13g2_IOPadIn`** for `clk`/`rst_n`/`ui_in`, **`sg13g2_IOPadOut30mA`** for `uo_out`, **`sg13g2_IOPadInOut30mA`** for `uio` (not the 4 mA variants).
+4. **I/O speed:** after searching local `IHP-Open-PDK` IO library docs (`sg13g2_io_*.pdf`) and liberty (`sg13g2_io_typ_1p2V_3p3V_25C.lib`), **no published maximum toggle frequency** exists for these pads. Cite delay / `max_capacitance` / `max_transition` + TT mux `signoff.sdc` budgets instead. **Do not** treat sky130's 66 MHz input / 33 MHz output / 4 mA pad ratings as binding on this project.
+5. **Clock policy (D16) stays numerically the same** (66 MHz `clk`, SCK=clk/2, rising-edge RX) with the amended justification in D16. Phase 3 checks `T-GPIO-IN` / `T-GPIO-OUT` / `T-GPIO-LIB` in `11-timing-analysis.md`.
+6. **Tiles:** use IHP tile boxes (1x1 ≈ 202.08 × 154.98 µm; 1x2 ≈ 202.08 × 313.74 µm). Soft ~500 DFF / 2-tile ceiling retained until first IHP synthesis; do not assume sky130 DFF density.
+7. Wrapper / flow notes: chip top is `tt_ihp_wrapper` (not caravel openframe); project GL netlists are unpowered (`nl`); template default `CLOCK_PERIOD` is 20 ns (50 MHz) - raise to ~15.15 ns when targeting 66 MHz in `src/config.json` / `info.yaml`.
+
+**Why:** User selected the IHP shuttle / template. SG13G2 3.3 V I/O keeps the APS6404L / QSPI PMOD plan intact. Stronger TT pad drive (30 mA) removes the sky130 output-slew argument that forced SCK≤33 MHz; half-rate SCK is kept for other reasons (D16).
+
+**DFF / tile impact:** none to RTL; area/DFF heuristics need an IHP harden before any budget relaxation.
+
+Detail: `02-constraints.md`, `11-timing-analysis.md`, human `architecture/limitations.md`.

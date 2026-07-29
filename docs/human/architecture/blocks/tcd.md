@@ -85,8 +85,10 @@ loop:
     while TRANSFER_LEN > 0:      # LEN==0 is no-op
         byte = READ(SRC_PTR)     # CS from SRC_DEVICE
         WRITE(DEST_PTR, byte)    # CS from DEST_DEVICE
-        SRC_PTR[22:0] += 1; DEST_PTR[22:0] += 1
         TRANSFER_LEN -= 1
+        if TRANSFER_LEN > 0:
+            SRC_PTR[22:0] += 1; DEST_PTR[22:0] += 1
+        # Final-step pointer values are not consumed after length reaches zero.
         # V1: each READ/WRITE is N=1 byte; CE# rises each txn (no tCEM slicer)
     fetch_ptr = NEXT_TCD
     fetch_device = NEXT_DEVICE

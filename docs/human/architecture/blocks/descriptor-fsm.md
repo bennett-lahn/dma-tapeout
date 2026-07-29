@@ -6,24 +6,25 @@ Status: rough RTL in `sys_controller.sv`. Host/mode control and descriptor seque
 
 Within `sys_controller`, orchestrate descriptor fetch and byte moves. Issue transaction requests to the separate QSPI engine; do not own bit-level QPI timing.
 
-## `uio_oe` arbitration
+## `uio_oe` arbitration (D26)
 
-The descriptor FSM **arbitrates** which block drives ASIC `uio_oe`:
+The descriptor FSM **arbitrates** ASIC `uio_oe`. The ASIC is the **bus keeper** whenever `~BUS_GNT` (including IDLE and between transactions). It releases the bus only for grant / reset.
 
 | Owner | When | `uio_oe` behavior |
 |---|---|---|
-| **Descriptor FSM** (default) | Idle, between QSPI transactions, yielding for `BUS_GNT`, and any time the engine is not live | Force release: `uio_oe = 0` |
-| **QSPI engine** | While a granted transaction is in flight and `~BUS_GNT` | Phase-accurate per-pin mask (SCK + selected RAM CS; flash CS OE off; SIO drive on cmd/addr/write, float on dummy/read) |
+| **Controller (park)** | `~BUS_GNT`, no live QPI txn (IDLE, between txns, UPDATE, etc.) | Drive **flash CS + RAM A CS + RAM B CS high**, **SCK low**, **SIO don't-care** - never left floating |
+| **QSPI engine (live txn)** | Transaction in flight and `~BUS_GNT` | Phase-accurate mask: SCK + both RAM CS (one low / one high) + flash CS high; SIO drives a don't-care except **float on dummy/read** (listen for the PSRAM) |
+| **Released** | `BUS_GNT` or asserted active-low reset (`rst_n=0`) | Force all shared `uio_oe = 0`; MCU may master only in the `BUS_GNT` case |
 
-FSM grants OE to the engine only for the duration of a requested QPI transaction, then reclaims it. **MCU priority (D22):** while `BUS_REQ` is high, do **not** pulse `txn_valid`; if `busy`, wait for the current QPI txn to finish (atomic), then keep OE off and assert `BUS_GNT`. Never leave both sources driving conflicting OE without a single mux select. Bus handoff phases: [`host-interface.md`](host-interface.md).
+Do **not** float CS/SCK between DMA transactions. **MCU priority (D22):** while `BUS_REQ` is high, do **not** pulse `txn_valid`; if `busy`, wait for the current QPI txn to finish (atomic), then release OE and assert `BUS_GNT`. Never leave both sources driving conflicting OE without a single mux select. Bus handoff phases: [`host-interface.md`](host-interface.md). Board **10 kΩ** CS pull-ups cover reset / pre-enable only ([`firmware.md`](../firmware.md)).
 
 ## Planned states (V1)
 
-1. `IDLE` - DONE high; `uio_oe=0`; accept the top-level-qualified one-`clk` **START** pulse with **`~BUS_REQ`**. A START pulse in every other state is ignored and not queued.
+1. `IDLE` - DONE high; ASIC parks bus (`~BUS_GNT`: CS high / SCK low); accept the top-level-qualified one-`clk` **START** pulse with **`~BUS_REQ`**. A START pulse in every other state is ignored and not queued.
 2. `STATE_FETCH` - QPI read **11 bytes** into working regs. First fetch (every START): `0x000000` / PSRAM 0; later: `NEXT_TCD` on `NEXT_DEVICE`. If `QUIT=1` → **IDLE** (next START starts at fixed head again).
 3. `STATE_READ` - read up to buffer depth `N` source bytes from `SRC_PTR` into the data buffer (V1: `N=1`; skipped if `TRANSFER_LEN == 0`)
 4. `STATE_WRITE` - write buffered bytes to `DEST_PTR` (same `N`)
-5. `STATE_UPDATE` - decrement `TRANSFER_LEN`; increment SRC/DEST address bits (device flags sticky); if length remains, loop to READ; if length hits 0, go FETCH for next TCD on `NEXT_DEVICE`
+5. `STATE_UPDATE` - decrement `TRANSFER_LEN`; if length remains, increment SRC/DEST address bits (device flags sticky) and loop to READ. If length hits 0, the working pointers may retain the final transaction addresses because they are no longer consumed; go FETCH for the next TCD on `NEXT_DEVICE`
 
 No `STATE_PROCESS` / ALU in V1. Post-V1 may insert process / cond-stop after READ: [`../post-v1.md`](../post-v1.md).
 
@@ -37,7 +38,7 @@ FSM issues **transaction requests** (not raw TCDs): `{cmd, addr, device_sel, byt
 | `STATE_READ` | `QSPI_CMD_FAST_READ`, len=`k`, from `SRC_PTR`, `device_sel`=`SRC_DEVICE` |
 | `STATE_WRITE` | `QSPI_CMD_WRITE`, len=`k`, to `DEST_PTR`, `device_sel`=`DEST_DEVICE`; first write nibble on `wdata` in the same cycle as `txn_valid` |
 
-Handshake summary: 1-cycle `txn_valid` only when `~busy` (no `txn_ready`); FSM holds `{cmd, addr, device_sel, byte_len}` stable for the whole txn; write first nibble on `wdata` with `txn_valid`; sink `rdata_valid` pulses (rising-SCK captures); on `wdata_next` (falling-SCK pulse) present next write nibble; engine ends write after `2 * byte_len` SCK beats (no `wdone`); wait for `busy` low before reclaiming OE / starting next. SCK = clk/2. Engine never stalls QPI for the FSM. Full contract: [`qspi-engine.md`](qspi-engine.md) (Descriptor FSM interface).
+Handshake summary: 1-cycle `txn_valid` only when `~busy` (no `txn_ready`); FSM holds `{cmd, addr, device_sel, byte_len}` stable for the whole txn; write first nibble on `wdata` with `txn_valid`; sink `rdata_valid` pulses (rising-SCK captures); on `wdata_next` (falling-SCK pulse) present next write nibble; engine ends write after `2 * byte_len` SCK beats (no `wdone`); wait for `busy` low before starting next / parking between txns. SCK = clk/2. Engine never stalls QPI for the FSM. Full contract: [`qspi-engine.md`](qspi-engine.md) (Descriptor FSM interface).
 
 ## Notes
 
@@ -47,7 +48,7 @@ Handshake summary: 1-cycle `txn_valid` only when `~busy` (no `txn_ready`); FSM h
 - **No ABORT** (D23): kill mid-run with **`rst_n`**
 - **QUIT:** after FETCH, if `QUIT=1` → IDLE / DONE; next START always refetches `0x000000` / PSRAM 0
 - **BUS_REQ** (`ui_in[2]`): finish current QPI transaction if any, assert `BUS_GNT`, pause (no new `txn_valid`); when REQ drops, deassert `BUS_GNT` and resume if not IDLE (D22)
-- After quit / return to IDLE / yield / reset, FSM must reclaim `uio_oe` and clear it (`BUS_GNT` may then follow REQ)
+- After quit / return to IDLE: resume parking (`rst_n && ~BUS_GNT`). On yield: release OE then assert `BUS_GNT`. While active-low reset is asserted (`rst_n=0`), force every shared `uio_oe` low; board CS pull-ups hold CE# high until reset is deasserted and the design parks again
 
 ## CE# refresh and Linear Burst page boundaries
 
