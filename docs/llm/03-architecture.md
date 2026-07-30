@@ -59,7 +59,7 @@ Shared SIO/SCK: only **one** PSRAM CE# may be low per transaction. Cross-device 
 | `uo_out[1]` | **BUS_GNT** (MCU may drive `uio`; D22) |
 | `ui_in[7:3]`, `uo_out[7:2]` | Reserved (status/DFT - packing open) |
 
-Protocol: DONE ⇔ idle; MCU drives `uio` only while `BUS_GNT`; START ignored while busy; no ABORT - use `rst_n` to stop a run (D23); `BUS_REQ` pauses DMA after atomic QPI txn (D22); fixed head (D18) + `QUIT` → IDLE, next START from addr 0 (D19/D23). Human summary: `docs/human/architecture/system.md` (I/O section). OE phases: `docs/human/architecture/blocks/host-interface.md`.
+Protocol: DONE ⇔ idle; MCU drives `uio` only while `BUS_GNT`; START ignored while busy; no ABORT - use `rst_n` to stop a run (D23); `BUS_REQ` pauses DMA after atomic QPI txn (D22); fixed head (D18) + `QUIT` → IDLE, next START from addr 0 (D19/D23). Human summary: `docs/human/architecture/system.md` (I/O section). Bidirectional ownership matrix: this file (below) and `docs/human/architecture/blocks/host-interface.md`.
 
 ## Memory layout and interfacing
 
@@ -101,6 +101,87 @@ On the demoboard, RP2040 GPIOs, ASIC `uio`, and the QSPI PMOD share those nets. 
 
 Human-facing phase tables and conceptual RTL: `docs/human/architecture/blocks/host-interface.md`.
 
+### Bidirectional I/O ownership specification (normative)
+
+This matrix is the V1 source of truth for who may drive each shared `uio` net. Verification (`CHK-PIN-SIO-OWN`, `Q-SIO-OWN`, `CHK-ARB-*`, park/reset checkers) and firmware handoffs implement this table. Handoffs are always **release before seize**.
+
+**Actors**
+
+| Actor | What it can drive |
+|---|---|
+| **ASIC** | TT `uio_out` when the matching `uio_oe` bit is 1 |
+| **MCU** | RP2040 GPIO outputs when firmware enables them (legal only while `BUS_GNT=1`) |
+| **PSRAM A / B** | Device SIO outputs while that device's CE# is low and the protocol phase is a device-output window (and briefly after CE# rises through `tHZ`) |
+| **Flash** | Device SIO only when flash CS is low under MCU grant (ASIC never selects flash) |
+| **Board** | 10 kΩ pull-ups on flash CS, RAM A CS, and RAM B CS (keepers during reset / pre-enable only) |
+
+**Legend for the tables below**
+
+| Cell | Meaning |
+|---|---|
+| **Drive** | Actor intentionally enables its output driver |
+| **Hi-Z** | Actor's output driver is off |
+| **Float** | No intentional digital driver on that net (ASIC and MCU Hi-Z; device not sourcing). Allowed only where listed. |
+| **Pull-up** | Board resistor is the only defined keeper (CS nets during reset / pre-enable) |
+| **Don't-care** | ASIC drives an arbitrary stable value (implementation may use `0`); level is not protocol-meaningful |
+
+**Global invariants (every phase)**
+
+1. At most one intentional digital driver per net. Equal driven values still count as illegal dual-drive on SIO (`Q-SIO-OWN` / `CHK-PIN-SIO-OWN`).
+2. MCU and ASIC must not both enable drivers on the same net with disagreeing levels. Brief overlap only on idle levels (CS high / SCK low) is the only benign MCU/ASIC exception; SIO has no such exception.
+3. RAM A CE# and RAM B CE# are never both low.
+4. ASIC never drives flash CS low.
+5. Unselected PSRAM never drives SIO (except its own bounded `tHZ` after its CE# rises).
+6. CS and SCK are never left floating while the ASIC is bus keeper (`rst_n=1`, `~BUS_GNT`). SIO is never left floating in park / IDLE / between-txn after the post-CE# `tHZ` window.
+
+#### Control-plane phases (all eight `uio` pins)
+
+| Phase | Condition | Flash CS | RAM A CS | RAM B CS | SCK | SIO[3:0] |
+|---|---|---|---|---|---|---|
+| **Reset** | `rst_n=0` | ASIC Hi-Z; board **Pull-up**; MCU Hi-Z | same | same | ASIC Hi-Z; MCU Hi-Z (**Float** unless MCU illegally drives) | ASIC Hi-Z; MCU Hi-Z; devices Hi-Z (**Float**) |
+| **ASIC park** | `rst_n=1`, `~BUS_GNT`, no live QPI txn | **ASIC Drive** high | **ASIC Drive** high | **ASIC Drive** high | **ASIC Drive** low | **ASIC Drive** don't-care; MCU Hi-Z; both PSRAM Hi-Z |
+| **MCU grant** | `BUS_GNT=1` | **ASIC Hi-Z**; **MCU** owns per host txn (else rely on pull-up when MCU leaves CS undriven) | same pattern for each CS MCU uses | same | **ASIC Hi-Z**; **MCU Drive** when mastering | **ASIC Hi-Z**; **MCU** or selected memory per host QSPI/SPI phase (see below) |
+| **ASIC live txn** | `rst_n=1`, `~BUS_GNT`, CE# window active | **ASIC Drive** high | **ASIC Drive** (one low / one high per `device_sel`) | same | **ASIC Drive** (clk/2 toggle) | See QPI sub-phases below |
+
+Reset does **not** grant the MCU the bus. MCU drivers stay Hi-Z until `BUS_GNT=1`.
+
+#### ASIC-master QPI sub-phases (SIO ownership)
+
+Applies only while ASIC is master (`~BUS_GNT`) and a RAM CE# is in its transaction window. CS/SCK follow the live-txn row above for the whole CE#-low interval.
+
+| QPI sub-phase | ASIC SIO | Selected PSRAM SIO | Unselected PSRAM / Flash SIO | Net intent |
+|---|---|---|---|---|
+| Command | **Drive** opcode nibbles | **Hi-Z** (inputs) | **Hi-Z** | ASIC → device |
+| Address | **Drive** address nibbles (`addr[23]=0`) | **Hi-Z** | **Hi-Z** | ASIC → device |
+| Write data (`0x02`) | **Drive** data nibbles | **Hi-Z** | **Hi-Z** | ASIC → device |
+| Dummy / wait (`0xEB`, 6 SCK) | **Hi-Z** (float) | **Hi-Z** (not yet sourcing) | **Hi-Z** | **Float** (listen window; no dual-drive) |
+| Read data (`0xEB`) | **Hi-Z** (float); sample `uio_in` | **Drive** data nibbles | **Hi-Z** | Device → ASIC |
+| Post-CE# turnaround | **Hi-Z** on SIO until modeled `tHZ` expires | May still **Drive** until `tHZ`, then **Hi-Z** | **Hi-Z** | **Float** or device-only; ASIC must not reclaim SIO OE early |
+| Between txns / IDLE park | After `tHZ`: return to **ASIC park** (SIO don't-care driven) | **Hi-Z** | **Hi-Z** | ASIC bus keeper |
+
+Write transactions have no dummy/read window: SIO stays ASIC-driven for command, address, and data, then enters the post-CE# turnaround rule before park reclaim.
+
+#### MCU-master phases (while `BUS_GNT=1`)
+
+ASIC `uio_oe` is all 0. Firmware is the only legal external master.
+
+| Host sub-phase | MCU SIO | Selected memory SIO | ASIC |
+|---|---|---|---|
+| Command / address / write / SPI-mode bring-up | **Drive** | **Hi-Z** | **Hi-Z** |
+| Dummy / read / device-output | **Hi-Z** | **Drive** (selected flash or PSRAM) | **Hi-Z** |
+| Idle gap under grant (between host txns) | Firmware choice: drive idle levels or Hi-Z; CE# should be high | **Hi-Z** | **Hi-Z** |
+
+#### Illegal (must fail in sim; firmware must avoid)
+
+| Condition | Why |
+|---|---|
+| ASIC SIO OE=1 while any PSRAM/flash model drives SIO | Pad contention (`CHK-PIN-SIO-OWN` / `Q-SIO-OWN`) |
+| MCU drives any `uio` while `BUS_GNT=0` | Fights ASIC bus keeper |
+| ASIC `uio_oe!=0` while `BUS_GNT=1` | Grant broken (`CHK-ARB-GNT-OE`) |
+| Both RAM CE# low | Shared SIO multiplex violation |
+| ASIC drives flash CS low | Flash is MCU pass-through only in V1 |
+| ASIC reclaim of SIO OE inside the selected device's `tHZ` after CE# rise | Turnaround contention (`T-HZ`) |
+
 ### Mode A - MCU pass-through (programming)
 
 - MCU asserts **BUS_REQ**, waits for **BUS_GNT**; ASIC **releases** `uio_oe = 0` on all QSPI pins.
@@ -110,7 +191,7 @@ Human-facing phase tables and conceptual RTL: `docs/human/architecture/blocks/ho
 ### Mode B - DMA master (execution)
 
 - MCU finishes any QSPI txn, high-Zs its QSPI GPIOs, drops **BUS_REQ**, waits for **BUS_GNT** low, then asserts START (`ui_in[0]`) while DONE is high.
-- ASIC leaves idle (DONE low): remains **bus keeper** while `~BUS_GNT` (D26) - parks all CS high and SCK low between txns; during a live txn drives SCK + CS mux (one RAM CE# low; flash CS stays high); SIO OE follows QSPI phase (drives a don't-care except float for dummy/read while sampling `uio_in`).
+- ASIC leaves idle (DONE low): remains **bus keeper** while `~BUS_GNT` (D26) - parks all CS high and SCK low between txns; during a live txn drives SCK + CS mux (one RAM CE# low; flash CS stays high); SIO OE follows the ownership matrix (drive cmd/addr/write; float dummy/read and through post-CE# `tHZ`; park don't-care after `tHZ`).
 - START ignored until idle returns. On quit TCD, return to idle: keep parking, assert DONE; next START fetches fixed head again (D14/D18/D19/D23). Kill mid-run with `rst_n` (D23; board CS pull-ups hold CE# during reset). Mid-run `BUS_REQ` pauses between atomic txns without forcing IDLE (D22).
 
 This boundary is as important as the internal FSM. Without a clean programming path, descriptor DMA is undemoable.
@@ -193,7 +274,7 @@ Notes from planning:
 - Abort: finish current QPI txn, then IDLE.
 - **BUS_REQ (D22):** MCU priority; do not start a new QPI txn while REQ; finish in-flight txn atomically, assert `BUS_GNT`, resume when REQ drops (unless IDLE).
 - No `STATE_PROCESS` in V1 (ALU / cond-stop are post-V1).
-- **`uio_oe` arbitration (D26):** ASIC is bus keeper while `rst_n && ~BUS_GNT` (park all CS high / SCK low; SIO drives a don't-care except float only on dummy/read during a live txn). Force every shared output enable low while active-low reset is asserted (`rst_n=0`) or under `BUS_GNT`. Do not float CS/SCK, or SIO between transactions / in idle outside reset. Board 10 kΩ CS pull-ups cover reset / pre-enable.
+- **`uio_oe` arbitration (D26):** ASIC is bus keeper while `rst_n && ~BUS_GNT` (park all CS high / SCK low; SIO per the bidirectional ownership matrix: drive don't-care in park; float only on dummy/read and through post-CE# `tHZ`). Force every shared output enable low while active-low reset is asserted (`rst_n=0`) or under `BUS_GNT`. Do not float CS/SCK, or SIO in idle / between transactions outside reset and outside the `tHZ` window. Board 10 kΩ CS pull-ups cover reset / pre-enable.
 
 ### 5. Post-V1 blocks (not in V1 silicon plan)
 
@@ -233,14 +314,14 @@ The DMA FSM issues transaction requests and arbitrates `uio_oe` (bus keeper whil
 
 #### FSM ↔ QSPI engine handshake (D21)
 
-Request (not a TCD): `{cmd, addr, device_sel, byte_len}` via `qspi_pkg` (`qspi_cmd_t`, `qspi_addr_t`, `qspi_device_sel_t`, `QPI_BYTE_LEN_W` in `src/rtl/types.svh`). `qspi_addr_t` is **24-bit** to match the QPI address phase; device uses `addr[22:0]` (`A[22:0]`); **`addr[23]` unused** (drive 0). `device_sel` selects PSRAM 0/1 from `SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE` as appropriate; pad CE#s remain `ram_a_cs_n` / `ram_b_cs_n`. `byte_len` is `logic [QPI_BYTE_LEN_W-1:0]` with `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)` and `QPI_MAX_BYTES = max(DMA_BUF_DEPTH, QPI_TCD_BYTES)`. Engine does **not** latch the request: FSM must keep it stable from `txn_valid` until `busy` low. Engine SCK is a registered toggle (**SCK = clk/2**); no `txn_ready` / no `wdone`.
+Request (not a TCD): `{cmd, addr, device_sel, byte_len}` via `qspi_pkg` (`qspi_cmd_t`, `qspi_addr_t`, `qspi_device_sel_t`, `QPI_BYTE_LEN_W` in `src/rtl/types.svh`). `qspi_addr_t` is **24-bit** to match the QPI address phase; device uses `addr[22:0]` (`A[22:0]`); **`addr[23]` unused** (drive 0). `device_sel` selects PSRAM 0/1 from `SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE` as appropriate; pad CE#s remain `ram_a_cs_n` / `ram_b_cs_n`. `byte_len` is `logic [QPI_BYTE_LEN_W-1:0]` with `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)` and `QPI_MAX_BYTES = max(DMA_BUF_DEPTH_MAX, QPI_TCD_BYTES)` (`DMA_BUF_DEPTH` itself is a module parameter, default 1). Engine does **not** latch the request: FSM must keep it stable from `txn_valid` until `busy` low. Engine SCK is a registered toggle (**SCK = clk/2**); no `txn_ready` / no `wdone`.
 
 | Signal | Dir | Contract |
 |---|---|---|
 | `txn_valid` | FSM → eng | **1-cycle pulse** to start; only when `~busy` |
 | `busy` | eng → FSM | In-flight txn; also the start qualifier; OE reclaim / BUS_GNT wait for clear |
 | `rdata` / `rdata_valid` | eng → FSM | Held read nibble + **1-`clk` pulse** on rising SCK; exactly `2 * byte_len` pulses |
-| `wdata` / `wdata_next` | FSM ↔ eng | First nibble with `txn_valid`; `wdata_next` asserts on falling SCK iff another nibble is needed for the active write (`2 * byte_len - 1` pulses total) |
+| `wdata` / `wdata_next` | FSM ↔ eng | First nibble with `txn_valid`; `wdata_next` asserts on falling SCK iff another nibble is needed (`2 * byte_len - 1` pulses). On `wdata_next`, next nibble must be on `wdata` before the next `clk` (same-cycle) for SPI/SIO setup |
 | `sclk` | eng → pad | **clk/2** when enabled; 0 in pad/idle states |
 | `ram_*_cs_n`, `sio_*` | eng ↔ pad | Device mux + SIO drive/OE (FSM grants `uio_oe` at top) |
 

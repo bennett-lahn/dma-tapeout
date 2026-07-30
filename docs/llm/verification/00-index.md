@@ -1,6 +1,6 @@
 # Verification Context Index
 
-This directory is the canonical, verbose verification plan for the V1 descriptor DMA. It defines the contracts that later testbench, formal, gate-level, STA, and demoboard work implement. It does not replace the architecture in `../03-architecture.md` or protocol truth in `../05-qspi-psram.md`.
+This directory is the canonical, verbose verification plan for the V1 descriptor DMA. It defines the contracts that later testbench, formal, gate-level, FPGA bring-up, STA, and demoboard work implement. It does not replace the architecture in `../03-architecture.md` or protocol truth in `../05-qspi-psram.md`.
 
 ## Reading order
 
@@ -18,21 +18,26 @@ Files 03 through 09 define the model, timing, scoreboard, checker, formal, stimu
 
 ## Stable vocabulary
 
+
+
 ### Verification venues
 
 - **Simulation** - cocotb behavioral and delay-annotated checks, including protocol behavior and end-to-end data correctness
 - **Formal** - control-plane safety invariants, bounded reachability, deadlock checks, and k-induction against the real `qspi_engine`
+- **FPGA hardware validation** - firmware-driven hardware regression on the carrier board and MCU with an FPGA standing in for the ASIC, run before shuttle commit
 - **Closure** - post-RTL STA and physical demoboard measurement for nanosecond timing and electrical validity
 
 The detailed boundary is in `01-strategy.md`. A simulation pass does not replace STA or board closure.
 
 ### DUT levels
 
-| Level | DUT boundary | Primary purpose |
-|---|---|---|
-| **L0** | `qspi_engine` plus one selected timed PSRAM model | QPI transaction, edge, nibble, CE#, and handshake behavior |
-| **L1** | `tt_um_lahnb_sgdma` plus dual PSRAM models | Host arbitration, descriptor chains, same-device and cross-device copies, and scoreboarding |
-| **L2** | Gate-level `tt_um_lahnb_sgdma` plus the L1 environment | Selected sign-off regressions, reset behavior, X hunting, and optional SDF |
+
+| Level  | DUT boundary                                           | Primary purpose                                                                             |
+| ------ | ------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| **L0** | `qspi_engine` plus one selected timed PSRAM model      | QPI transaction, edge, nibble, CE#, and handshake behavior                                  |
+| **L1** | `tt_um_lahnb_sgdma` plus dual PSRAM models             | Host arbitration, descriptor chains, same-device and cross-device copies, and scoreboarding |
+| **L2** | Gate-level `tt_um_lahnb_sgdma` plus the L1 environment | Selected sign-off regressions, reset behavior, X hunting, and optional SDF                  |
+
 
 Level names are fixed. `LEVEL=engine`, `LEVEL=top`, and `LEVEL=gl` select L0, L1, and L2 respectively.
 
@@ -45,8 +50,9 @@ The implementation ladder is fixed as **M0 through M6**:
 - **M2** - reference model, scoreboard, and directed suite
 - **M3** - delay layer, setup/hold sweeps, and launch/RX edge checks
 - **M4** - formal safety proofs and cover reachability
-- **M5** - randomized regression and coverage closure; the buffer-depth sweep is blocked until RTL parameterization
+- **M5** - randomized regression and coverage closure; the buffer-depth sweep is blocked until the sim harness selects `DMA_BUF_DEPTH`
 - **M6** - gate-level and X checks, then handoff to STA and demoboard closure
+- **M7** - FPGA hardware validation on the carrier board with real MCU firmware, before shuttle commit
 
 Exact entry and exit gates are in `01-strategy.md`. Milestones are cumulative and do not redefine project roadmap phase numbers.
 
@@ -54,14 +60,16 @@ Exact entry and exit gates are in `01-strategy.md`. Milestones are cumulative an
 
 IDs identify requirements and results, not individual Python function names. Once published, an ID is not reused for a different condition.
 
-| Prefix | Owner | Definition location |
-|---|---|---|
-| `Q-*` | Simulation-provable QSPI protocol and edge checks | `04-timing-in-sim.md` |
-| `T-*` | Nanosecond timing and physical closure checks | `../11-timing-analysis.md` |
-| `FP-*` | Formal properties | `07-formal.md` |
-| `CHK-*` | Always-on cocotb runtime monitors | `06-checkers.md` |
-| `TC-*` | Directed test cases | `08-stimulus-and-coverage.md` |
-| `COV-*` | Functional coverage points and crosses | `08-stimulus-and-coverage.md` |
+
+| Prefix  | Owner                                             | Definition location           |
+| ------- | ------------------------------------------------- | ----------------------------- |
+| `Q-*`   | Simulation-provable QSPI protocol and edge checks | `04-timing-in-sim.md`         |
+| `T-*`   | Nanosecond timing and physical closure checks     | `../11-timing-analysis.md`    |
+| `FP-*`  | Formal properties                                 | `07-formal.md`                |
+| `CHK-*` | Always-on cocotb runtime monitors                 | `06-checkers.md`              |
+| `TC-*`  | Directed test cases                               | `08-stimulus-and-coverage.md` |
+| `COV-*` | Functional coverage points and crosses            | `08-stimulus-and-coverage.md` |
+
 
 Existing `Q-*` and `T-*` IDs retain their meanings when timing documentation is split by venue. `Q-LAUNCH` and `Q-RXEDGE` are reserved for driven-phase launch stability and read-sampling-edge reconciliation. Bring-up IDs such as `B-PU` and decision IDs such as `D16` remain in their existing namespaces.
 
@@ -80,17 +88,20 @@ For every `pass`, retain the simulator or formal engine, level, seed where appli
 
 ## Status roll-up
 
-| Area | IDs or gate | Current status | Planned milestone |
-|---|---|---|---|
-| Platform smoke | M0 exit | todo | M0 |
-| QPI protocol | `Q-*` | todo | M1 and M3 |
-| Directed behavior | `TC-*`, `CHK-*` | todo | M2 |
-| Delay-annotated timing | `Q-LAUNCH`, `Q-RXEDGE` | todo | M3 |
-| Formal | `FP-*` | todo | M4 |
-| Random and coverage | `COV-*` | todo | M5 |
-| Buffer-depth sweep | `TC-DEPTH`, `COV-DEPTH*` | blocked | M5, after RTL parameterization |
-| Gate-level and X | M6 exit | todo | M6 |
-| Physical timing | `T-*` | todo | Post-M6 closure |
+
+| Area                     | IDs or gate              | Current status | Planned milestone                           |
+| ------------------------ | ------------------------ | -------------- | ------------------------------------------- |
+| Platform smoke           | M0 exit                  | todo           | M0                                          |
+| QPI protocol             | `Q-*`                    | todo           | M1 and M3                                   |
+| Directed behavior        | `TC-*`, `CHK-*`          | todo           | M2                                          |
+| Delay-annotated timing   | `Q-LAUNCH`, `Q-RXEDGE`   | todo           | M3                                          |
+| Formal                   | `FP-*`                   | todo           | M4                                          |
+| Random and coverage      | `COV-*`                  | todo           | M5                                          |
+| Buffer-depth sweep       | `TC-DEPTH`, `COV-DEPTH*` | blocked        | M5, after sim harness wires `DMA_BUF_DEPTH` |
+| Gate-level and X         | M6 exit                  | todo           | M6                                          |
+| FPGA hardware validation | M7 exit                  | todo           | M7                                          |
+| Physical timing          | `T-*`                    | todo           | Post-M6/M7 closure                          |
+
 
 This table is a planning roll-up, not evidence of implementation. Update the owning catalog first, then this summary.
 
@@ -104,3 +115,4 @@ This table is a planning roll-up, not evidence of implementation. Update the own
 - Existing timing checklist: `../11-timing-analysis.md`
 - Condensed human documentation: `../../human/`
 - Tiny Tapeout test flow reference: `../../../ttihp-verilog-template/test/`
+

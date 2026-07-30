@@ -19,12 +19,15 @@ Post-RTL / Phase 3 physical timing checklist, after feature-complete RTL and bef
 
 Engine SCK is a registered `clk/2` toggle, not a combinationally gated `clk`. CE# is asserted before the first rise, held after the last rise, and left high long enough to meet `tCPH`.
 
+M7 FPGA hardware validation (see [`verification/strategy.md`](../verification/strategy.md)) is a separate pre-shuttle checkpoint: an FPGA stands in for the ASIC on the same carrier board and MCU, running real firmware against real PSRAM devices. It closes no `T-*` row, since FPGA I/O electrical characteristics differ from IHP SG13G2 pads.
+
 ## Simulation prerequisites
 
 The full `Q-*` definitions live only in [`../../llm/verification/04-timing-in-sim.md`](../../llm/verification/04-timing-in-sim.md). In particular:
 
 - `Q-LAUNCH` checks that driven SIO and OE changes obey the low-SCK launch policy and modeled setup/hold windows. It must pass before physical `T-SP-HD` closure.
 - `Q-RXEDGE` reconciles each falling-edge PSRAM launch with exactly one following rising-edge DUT capture. It must pass before physical `T-ACLK` closure.
+- `Q-SIO-OWN` / `CHK-PIN-SIO-OWN` require that the ASIC and a PSRAM/SPI device never drive the same bidirectional SIO bit at once. It must pass before physical `T-HZ` turnaround closure.
 
 Passing either prerequisite only validates modeled behavior. It does not close routed IHP/TT paths or board timing.
 

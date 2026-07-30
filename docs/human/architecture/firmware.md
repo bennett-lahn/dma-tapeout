@@ -18,9 +18,11 @@ While `rst_n=1` and `BUS_GNT=0`, the ASIC owns the shared QSPI nets as a **bus k
 
 - Drives **flash CS**, **RAM A CS**, and **RAM B CS** high (deselected). Flash is never selected by the ASIC; parking its CS high is not flash DMA.
 - Drives **SCK** low.
-- Drives **SIO** with a don't-care in every phase except dummy/wait and read-data, where it floats to listen for the PSRAM. SIO is never left floating between transactions or in idle.
+- Drives **SIO** with a don't-care in park / IDLE / between transactions **after** the post-CE# `tHZ` window. During dummy/wait, read-data, and through `tHZ`, SIO floats so the selected PSRAM can source (or finish releasing) the bus.
 
 When `BUS_GNT=1`, the ASIC releases every shared `uio` output so the MCU can master the bus. While active-low reset is asserted (`rst_n=0`), it also disables every shared output enable, but reset does not grant MCU ownership. After grant falls or reset deasserts with `BUS_GNT=0`, the ASIC resumes parking immediately.
+
+Full phase-by-phase ownership (float vs ASIC / MCU / PSRAM drive): [`blocks/host-interface.md`](blocks/host-interface.md) and [`../../llm/03-architecture.md`](../../llm/03-architecture.md).
 
 ### Board CS pull-ups
 

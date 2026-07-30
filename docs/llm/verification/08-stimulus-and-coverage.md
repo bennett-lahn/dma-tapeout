@@ -10,39 +10,46 @@ The durable end-to-end oracles are the final memory image and ordered QPI transa
 
 IDs identify required behavior, not Python function names. One implementation may cover several IDs, but results and failures must report each ID separately. New cases get new IDs. Retired IDs remain reserved.
 
-| ID | Level | Directed stimulus | Required result | Milestone |
-|---|---|---|---|---|
-| `TC-SMOKE` | L1 | One PSRAM0 to PSRAM0 copy, length 1, then a quit TCD | Destination byte matches, ordered transactions are fetch, read, write, fetch, and DONE returns | M0 |
-| `TC-QPI-READ` | L0 | `0xEB` reads on each device with lengths 1 and 11 | Correct command, 24-bit address, six dummy cycles, nibble order, device CE#, and exact payload count | M1 |
-| `TC-QPI-WRITE` | L0 | `0x02` writes on each device with representative lengths | No dummy cycles, correct nibble order, exact payload count, and correct device CE# | M1 |
-| `TC-TCD-BE` | L1 | Known 11-byte descriptor containing pointer `0x123456` serialized as `12 34 56`, all three device flags exercised, and reserved bits zero | Pointer fields decode big-endian and all defined flags decode at their assigned positions | M2 |
-| `TC-SAME-0` | L1 | PSRAM0 to PSRAM0 copy | Exact payload copy with only PSRAM0 selected | M2 |
-| `TC-SAME-1` | L1 | PSRAM1 to PSRAM1 copy after head fetch on PSRAM0 | Exact payload copy with data transactions on PSRAM1 | M2 |
-| `TC-CROSS-01` | L1 | PSRAM0 source to PSRAM1 destination | Read and write select different devices and data matches | M2 |
-| `TC-CROSS-10` | L1 | PSRAM1 source to PSRAM0 destination | Read and write select different devices and data matches | M2 |
-| `TC-CHAIN` | L1 | At least three executable TCDs followed by quit, with non-contiguous buffers | Every TCD executes once in order and all destination ranges match | M2 |
-| `TC-NEXT-DEVICE` | L1 | Chain whose next TCD alternates between PSRAM0 and PSRAM1 | Each fetch uses `NEXT_DEVICE`; address zero remains a valid link | M2 |
-| `TC-LEN-CORNERS` | L1 | Lengths `0`, `1`, `N-1`, `N`, `N+1`, and `255`, omitting duplicate or invalid values for the selected `N` | Zero is a no-op, full chunks and final partial chunks are exact, and no extra transaction occurs | M2 |
-| `TC-QUIT` | L1 | Quit TCD with nonzero pointer and length fields | Quit is not executed, no data read or write follows that fetch, and DONE returns | M2 |
-| `TC-EMPTY` | L1 | Quit TCD at fixed head `0x000000` on PSRAM0 | Exactly one descriptor fetch, no data transaction, then DONE | M2 |
-| `TC-RESTART` | L1 | Complete a chain, replace or retain the head, then issue a new START | Every accepted START begins by fetching `0x000000` on PSRAM0, independent of stale working state | M2 |
-| `TC-ADDR-WIDE` | L1 | Valid TCD and payload addresses below, at, and above `0x010000`, including near `0x7FFFFF` without range overflow | All 23 address bits reach the wire correctly and `addr[23]` remains zero | M2 |
-| `TC-OVERLAP` | L1 | Same-device source and destination ranges that overlap in each direction | Result matches the architecture's sequential chunk behavior and the ordered transaction oracle, not an assumed full-buffer `memmove` snapshot | M2 |
-| `TC-START-ACTIVE` | L1 | START rising edges during fetch, read, write, update, and stall | Every active-time edge is ignored and not queued; a later command requires a fresh edge in IDLE | M2 |
-| `TC-START-HELD` | L1 | Hold raw START high through acceptance and completion, then lower it | Exactly one synchronized rising-edge pulse and no unintended restart | M2 |
-| `TC-START-PHASE` | L1 | Sweep raw START assertion phase and legal pulse width around `clk` edges | Captured assertions produce one pulse after synchronization; intentionally uncaptured short pulses do not create partial or repeated commands | M2 |
-| `TC-BUS-IDLE` | L1 | Assert and release BUS_REQ in IDLE, including START while request or grant is high | Grant follows only after ASIC OE release, all `uio_oe` clear under grant, and blocked START is not queued | M2 |
-| `TC-BUS-BOUNDARY` | L1 | Assert BUS_REQ in `NEW_FETCH`, `NEW_OP`, and `UPDATE`, before transaction launch | No new QPI transaction starts, grant occurs, and release resumes the retained state exactly once | M2 |
-| `TC-BUS-ACTIVE` | L1 | Assert BUS_REQ during fetch, payload read, and payload write | Current QPI transaction completes atomically, then grant occurs before any next transaction | M2 |
-| `TC-BUS-PHASE` | L1 | Assert BUS_REQ during command, address, dummy, read-data, write-data, and CE# end padding | No phase is torn, no CE# is switched early, and resume neither repeats nor skips a chunk update | M2 |
-| `TC-BUS-REPEAT` | L1 | Multiple request, grant, release cycles in one descriptor chain, including a request adjacent to completion | Data and transaction log equal an uninterrupted run except for legal idle gaps | M2 |
-| `TC-RESET-IDLE` | L1 | Reset from IDLE and while BUS_GNT is active | DONE returns high, BUS_GNT clears, all shared OE clears during reset, and post-reset START uses the fixed head | M2 |
-| `TC-RESET-ACTIVE` | L1 | Reset during every controller state and each externally visible QPI phase | Transaction may be truncated by reset, but CE# and OE become reset-safe, working state clears, and no spontaneous resume occurs | M2 |
-| `TC-DEPTH` | L1 | After RTL parameterization, run the applicable directed suite at `DMA_BUF_DEPTH=1,2,4,8` | Final memory and transaction lengths follow `k=min(N, remaining)` with no depth-specific functional change | M5, currently blocked |
+
+| ID                | Level | Directed stimulus                                                                                                                         | Required result                                                                                                                               | Milestone                         |
+| ----------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| `TC-SMOKE`        | L1    | One PSRAM0 to PSRAM0 copy, length 1, then a quit TCD                                                                                      | Destination byte matches, ordered transactions are fetch, read, write, fetch, and DONE returns                                                | M0                                |
+| `TC-QPI-READ`     | L0    | `0xEB` reads on each device with lengths 1 and 11                                                                                         | Correct command, 24-bit address, six dummy cycles, nibble order, device CE#, and exact payload count                                          | M1                                |
+| `TC-QPI-WRITE`    | L0    | `0x02` writes on each device with representative lengths                                                                                  | No dummy cycles, correct nibble order, exact payload count, and correct device CE#                                                            | M1                                |
+| `TC-TCD-BE`       | L1    | Known 11-byte descriptor containing pointer `0x123456` serialized as `12 34 56`, all three device flags exercised, and reserved bits zero | Pointer fields decode big-endian and all defined flags decode at their assigned positions                                                     | M2                                |
+| `TC-SAME-0`       | L1    | PSRAM0 to PSRAM0 copy                                                                                                                     | Exact payload copy with only PSRAM0 selected                                                                                                  | M2                                |
+| `TC-SAME-1`       | L1    | PSRAM1 to PSRAM1 copy after head fetch on PSRAM0                                                                                          | Exact payload copy with data transactions on PSRAM1                                                                                           | M2                                |
+| `TC-CROSS-01`     | L1    | PSRAM0 source to PSRAM1 destination                                                                                                       | Read and write select different devices and data matches                                                                                      | M2                                |
+| `TC-CROSS-10`     | L1    | PSRAM1 source to PSRAM0 destination                                                                                                       | Read and write select different devices and data matches                                                                                      | M2                                |
+| `TC-CHAIN`        | L1    | At least three executable TCDs followed by quit, with non-contiguous buffers                                                              | Every TCD executes once in order and all destination ranges match                                                                             | M2                                |
+| `TC-NEXT-DEVICE`  | L1    | Chain whose next TCD alternates between PSRAM0 and PSRAM1                                                                                 | Each fetch uses `NEXT_DEVICE`; address zero remains a valid link                                                                              | M2                                |
+| `TC-LEN-CORNERS`  | L1    | Lengths `0`, `1`, `N-1`, `N`, `N+1`, and `255`, omitting duplicate or invalid values for the selected `N`                                 | Zero is a no-op, full chunks and final partial chunks are exact, and no extra transaction occurs                                              | M2                                |
+| `TC-QUIT`         | L1    | Quit TCD with nonzero pointer and length fields                                                                                           | Quit is not executed, no data read or write follows that fetch, and DONE returns                                                              | M2                                |
+| `TC-EMPTY`        | L1    | Quit TCD at fixed head `0x000000` on PSRAM0                                                                                               | Exactly one descriptor fetch, no data transaction, then DONE                                                                                  | M2                                |
+| `TC-RESTART`      | L1    | Complete a chain, replace or retain the head, then issue a new START                                                                      | Every accepted START begins by fetching `0x000000` on PSRAM0, independent of stale working state                                              | M2                                |
+| `TC-ADDR-WIDE`    | L1    | Valid TCD and payload addresses below, at, and above `0x010000`, including near `0x7FFFFF` without range overflow                         | All 23 address bits reach the wire correctly and `addr[23]` remains zero                                                                      | M2                                |
+| `TC-OVERLAP`      | L1    | Same-device source and destination ranges that overlap in each direction                                                                  | Result matches the architecture's sequential chunk behavior and the ordered transaction oracle, not an assumed full-buffer `memmove` snapshot | M2                                |
+| `TC-START-ACTIVE` | L1    | START rising edges during fetch, read, write, update, and stall                                                                           | Every active-time edge is ignored and not queued; a later command requires a fresh edge in IDLE                                               | M2                                |
+| `TC-START-HELD`   | L1    | Hold raw START high through acceptance and completion, then lower it                                                                      | Exactly one synchronized rising-edge pulse and no unintended restart                                                                          | M2                                |
+| `TC-START-PHASE`  | L1    | Sweep raw START assertion phase and legal pulse width around `clk` edges                                                                  | Captured assertions produce one pulse after synchronization; intentionally uncaptured short pulses do not create partial or repeated commands | M2                                |
+| `TC-BUS-IDLE`     | L1    | Assert and release BUS_REQ in IDLE, including START while request or grant is high                                                        | Grant follows only after ASIC OE release, all `uio_oe` clear under grant, and blocked START is not queued                                     | M2                                |
+| `TC-BUS-BOUNDARY` | L1    | Assert BUS_REQ in `NEW_FETCH`, `NEW_OP`, and `UPDATE`, before transaction launch                                                          | No new QPI transaction starts, grant occurs, and release resumes the retained state exactly once                                              | M2                                |
+| `TC-BUS-ACTIVE`   | L1    | Assert BUS_REQ during fetch, payload read, and payload write                                                                              | Current QPI transaction completes atomically, then grant occurs before any next transaction                                                   | M2                                |
+| `TC-BUS-PHASE`    | L1    | Assert BUS_REQ during command, address, dummy, read-data, write-data, and CE# end padding                                                 | No phase is torn, no CE# is switched early, and resume neither repeats nor skips a chunk update                                               | M2                                |
+| `TC-BUS-REPEAT`   | L1    | Multiple request, grant, release cycles in one descriptor chain, including a request adjacent to completion                               | Data and transaction log equal an uninterrupted run except for legal idle gaps                                                                | M2                                |
+| `TC-RESET-IDLE`   | L1    | Reset from IDLE and while BUS_GNT is active                                                                                               | DONE returns high, BUS_GNT clears, all shared OE clears during reset, and post-reset START uses the fixed head                                | M2                                |
+| `TC-RESET-ACTIVE` | L1    | Reset during every controller state and each externally visible QPI phase                                                                 | Transaction may be truncated by reset, but CE# and OE become reset-safe, working state clears, and no spontaneous resume occurs               | M2                                |
+| `TC-RESET-REPEAT` | L1    | Run one directed chain to normal quit completion, assert and release `rst_n` from IDLE, re-initialize source and destination memory identically, then run the identical chain again with a fresh START | The second run's ordered transaction log and final memory are byte-for-byte identical to the first run; no working state, counter, or pointer carries over across the reset boundary | M2                                |
+| `TC-DEPTH`        | L1    | Run the applicable directed suite at `DMA_BUF_DEPTH=1,2,4,8`                                                                              | Final memory and transaction lengths follow `k=min(N, remaining)` with no depth-specific functional change                                    | M5, blocked on sim harness wiring |
+
 
 `TC-OVERLAP` records actual V1 byte or chunk ordering. Firmware must not infer stronger overlap semantics than the architecture provides.
 
+`TC-RESET-ACTIVE` and `TC-RESET-REPEAT` continue to run normal `Q-*` timing checks up to the sampled reset edge. Any apparent violation fully explained by the reset-driven OE release is reported as a distinct `RESET-TRUNCATED` event per `04-timing-in-sim.md`, not folded into an ordinary timing pass or fail.
+
 ## Constrained-random generation
+
+
 
 ### Determinism
 
@@ -59,7 +66,19 @@ For every run, save a stimulus manifest containing:
 - reset transitions
 - `DMA_BUF_DEPTH`, timing profile, simulator, and RTL revision
 
+
+
 ### Legal chain generator
+
+Firmware-legal chain generation is implemented as one class, not a sequence of free functions, so a single field's construction rule can be inspected, overridden, or replaced independently while constructing or debugging a specific corner. The class:
+
+- is constructed from a base `SEED` and the stream-name contract in the Determinism section above; it owns its own child `random.Random` streams and does not read module-global random state,
+- exposes one entry point that returns a complete legal chain, an ordered list of TCD values plus the terminating quit descriptor, together with the exact byte layout chosen for each descriptor and payload region in memory,
+- exposes one separately callable method per generated dimension (chain length, per-TCD device tuple, per-TCD length class, per-TCD address class, payload pattern, and layout/overlap class) so a test can hold every other dimension at a fixed, inspectable value while sweeping or targeting one,
+- reuses `reference/tcd.py` encoding and `reference/chain.py` validation rather than duplicating field ranges or bit layout, so any chain the generator returns is guaranteed to pass `validate_tcd` and to interpret without a `reference_limit` error, and
+- treats the bias table below as data the class consumes, not literal constants inlined in its generation logic, so a directed test can construct the same class with a narrowed or overridden bias table for a targeted scenario without forking the generator.
+
+The class lives in `reference/generator.py`, in the `reference/` package alongside the golden interpreter it depends on but in its own module: generating stimulus and interpreting it are distinct responsibilities that must stay separately testable, and the class must not import cocotb.
 
 Generate only firmware-legal chains for the main correctness regression:
 
@@ -109,7 +128,7 @@ Random injection has two orthogonal selectors:
 - Controller state: `SYS_CTRL_IDLE`, `NEW_FETCH`, `FETCH`, `NEW_OP`, `READ`, `WRITE`, `UPDATE`, and `STALL`.
 - QPI phase when a transaction is active: `CS_ON`, command, address, wait, read data, write data, `SCLK_OFF`, and `CS_OFF`.
 
-For each targeted state or phase, jitter raw BUS_REQ so the synchronized assertion lands at the start, middle, or final cycle of that region where its duration permits. Hold the request until BUS_GNT is observed, retain it for a random legal host interval, then model release-before-seize by removing host drive before deasserting BUS_REQ.
+For each targeted state or phase, jitter raw BUS_REQ so the synchronized assertion lands at the start, middle, or final cycle of that region where its duration permits. Hold the request until BUS_GNT is observed, retain it for a random legal host interval (biased towards lower periods), then model release-before-seize by removing host drive before deasserting BUS_REQ.
 
 Required invariants are independent of injection point:
 
@@ -119,9 +138,11 @@ Required invariants are independent of injection point:
 - release resumes the retained controller state without duplicate fetch, read, write, or update
 - START while request or grant is active is ignored and not queued
 
+
+
 ## `DMA_BUF_DEPTH` sweep
 
-The current RTL declares `DMA_BUF_DEPTH` as a package `localparam` fixed at 1. It cannot presently compile selectable depths 2, 4, or 8, so `TC-DEPTH`, `COV-DEPTH`, `COV-DEPTH-LEN`, and `COV-DEPTH-DEVICE` are `blocked` pending RTL parameterization.
+RTL exposes `DMA_BUF_DEPTH` as a module parameter (default 1; package `DMA_BUF_DEPTH_MAX=8`). `TC-DEPTH`, `COV-DEPTH`, `COV-DEPTH-LEN`, and `COV-DEPTH-DEVICE` remain `blocked` until the sim harness selects depths 2, 4, and 8.
 
 After that prerequisite, compile and run depths `1`, `2`, `4`, and `8` in isolated build directories. Depth 1 remains the V1 tapeout configuration. Larger depths are verification configurations for depth-agnostic correctness and do not change the frozen tapeout configuration.
 
@@ -139,28 +160,32 @@ Once enabled, the depth sweep does not exercise the known `tCEM` threshold becau
 
 Coverage is sampled from decoded transactions, host-visible behavior, reference-model events, and stable internal state observation where necessary. Hits count only when all applicable checkers and scoreboards pass for that case.
 
-| ID | Coverage point or cross | Required bins | Closure |
-|---|---|---|---|
-| `COV-LEN` | Transfer length class | `0`, `1`, `N-1`, `N`, `N+1`, `2N-1`, `2N`, `2N+1`, `255`, middle | Every applicable distinct bin at each swept depth |
-| `COV-CHUNK` | Chunk position and size | only chunk, first full, middle full, final full, final partial | Every applicable bin at each swept depth |
-| `COV-DEVICE` | Source x destination device | `0x0`, `0x1`, `1x0`, `1x1` | 100 percent |
-| `COV-NEXTDEV` | Current fetch device x next fetch device | all four transitions | 100 percent |
-| `COV-CHAINLEN` | Executable TCD count | `0`, `1`, `2`, `3+` | 100 percent |
-| `COV-END` | Descriptor outcome | quit, zero-length follow, one-chunk complete, multi-chunk complete | 100 percent |
-| `COV-ADDR` | Address class per SRC, DEST, and NEXT | zero, below 64K, at or above 64K, 1K-edge neighborhood, highest legal range | 100 percent for each pointer role |
-| `COV-DATA` | Payload pattern | zero, ones, walking or alternating, incrementing, random | 100 percent |
-| `COV-CTRL-STATE` | Controller state reached | all eight encoded states | 100 percent |
-| `COV-QPI-PHASE` | QPI phase reached | all ten encoded states, with READ_DATA and WRITE_DATA separately | 100 percent |
-| `COV-BUS-STATE` | BUS_REQ synchronized assertion x controller state | IDLE, NEW_FETCH, FETCH, NEW_OP, READ, WRITE, UPDATE | 100 percent; STALL assertion is excluded because request is already high |
-| `COV-BUS-PHASE` | BUS_REQ synchronized assertion x active QPI phase | CS_ON, command, address, wait, read data, write data, SCLK_OFF, CS_OFF | 100 percent of legal crosses |
-| `COV-BUS-RESUME` | Stall origin x resumed action | IDLE, NEW_FETCH, NEW_OP, UPDATE | 100 percent |
-| `COV-START-PHASE` | Raw START assertion phase | early, near-edge before, on-edge, near-edge after, late | All bins for capture-required pulses |
-| `COV-START-RESULT` | START context x capture result | idle accepted, idle uncaptured short pulse, active ignored, request/grant ignored, held-high single capture | 100 percent |
-| `COV-RESET-STATE` | Reset assertion x controller state | all eight encoded states | 100 percent |
-| `COV-RESET-PHASE` | Reset assertion x external QPI phase | idle/pad, command, address, wait, read data, write data, termination | 100 percent |
-| `COV-DEPTH` | Compile-time depth | `1`, `2`, `4`, `8` | All bins with assigned suite passing after RTL parameterization; currently `blocked` |
-| `COV-DEPTH-LEN` | Depth x length class | every applicable `COV-LEN` corner at every depth | 100 percent after RTL parameterization; currently `blocked` |
-| `COV-DEPTH-DEVICE` | Depth x source/destination tuple | all four tuples at every depth | 100 percent after RTL parameterization; currently `blocked` |
+
+| ID                 | Coverage point or cross                           | Required bins                                                                                               | Closure                                                                     |
+| ------------------ | ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `COV-LEN`          | Transfer length class                             | `0`, `1`, `N-1`, `N`, `N+1`, `2N-1`, `2N`, `2N+1`, `255`, middle                                            | Every applicable distinct bin at each swept depth                           |
+| `COV-CHUNK`        | Chunk position and size                           | only chunk, first full, middle full, final full, final partial                                              | Every applicable bin at each swept depth                                    |
+| `COV-DEVICE`       | Source x destination device                       | `0x0`, `0x1`, `1x0`, `1x1`                                                                                  | 100 percent                                                                 |
+| `COV-NEXTDEV`      | Current fetch device x next fetch device          | all four transitions                                                                                        | 100 percent                                                                 |
+| `COV-CHAINLEN`     | Executable TCD count                              | `0`, `1`, `2`, `3+`                                                                                         | 100 percent                                                                 |
+| `COV-END`          | Descriptor outcome                                | quit, zero-length follow, one-chunk complete, multi-chunk complete                                          | 100 percent                                                                 |
+| `COV-ADDR`         | Address class per SRC, DEST, and NEXT             | zero, below 64K, at or above 64K, 1K-edge neighborhood, highest legal range                                 | 100 percent for each pointer role                                           |
+| `COV-DATA`         | Payload pattern                                   | zero, ones, walking or alternating, incrementing, random                                                    | 100 percent                                                                 |
+| `COV-CTRL-STATE`   | Controller state reached                          | all eight encoded states                                                                                    | 100 percent                                                                 |
+| `COV-QPI-PHASE`    | QPI phase reached                                 | all ten encoded states, with READ_DATA and WRITE_DATA separately                                            | 100 percent                                                                 |
+| `COV-BUS-STATE`    | BUS_REQ synchronized assertion x controller state | IDLE, NEW_FETCH, FETCH, NEW_OP, READ, WRITE, UPDATE                                                         | 100 percent; STALL assertion is excluded because request is already high    |
+| `COV-BUS-PHASE`    | BUS_REQ synchronized assertion x active QPI phase | CS_ON, command, address, wait, read data, write data, SCLK_OFF, CS_OFF                                      | 100 percent of legal crosses                                                |
+| `COV-BUS-RESUME`   | Stall origin x resumed action                     | IDLE, NEW_FETCH, NEW_OP, UPDATE                                                                             | 100 percent                                                                 |
+| `COV-START-PHASE`  | Raw START assertion phase                         | early, near-edge before, on-edge, near-edge after, late                                                     | All bins for capture-required pulses                                        |
+| `COV-START-RESULT` | START context x capture result                    | idle accepted, idle uncaptured short pulse, active ignored, request/grant ignored, held-high single capture | 100 percent                                                                 |
+| `COV-RESET-STATE`  | Reset assertion x controller state                | all eight encoded states                                                                                    | 100 percent                                                                 |
+| `COV-RESET-PHASE`  | Reset assertion x external QPI phase              | idle/pad, command, address, wait, read data, write data, termination                                        | 100 percent                                                                 |
+| `COV-DEPTH`        | Compile-time depth                                | `1`, `2`, `4`, `8`                                                                                          | All bins with assigned suite passing; currently `blocked` on harness wiring |
+| `COV-DEPTH-LEN`    | Depth x length class                              | every applicable `COV-LEN` corner at every depth                                                            | 100 percent; currently `blocked` on harness wiring                          |
+| `COV-DEPTH-DEVICE` | Depth x source/destination tuple                  | all four tuples at every depth                                                                              | 100 percent; currently `blocked` on harness wiring                          |
+
+
+
 
 ## Coverage closure and exclusions
 
@@ -188,15 +213,20 @@ Examples of legitimate exclusions are `N-1=0` duplicating the zero bin at depth 
 ## Regression allocation
 
 - Icarus is authoritative for the full required directed suite, four-state behavior, and a representative random seed set.
-- Verilator runs the high-volume legal random suite at L1 and, after RTL parameterization, all four depths.
+- Verilator runs the high-volume legal random suite at L1 and, once the harness wires the parameter, all four depths.
 - Every Verilator-only failure is reduced and reproduced on Icarus, or classified with a retained tool-divergence reproducer.
 - L2 reuses only the high-value subset defined in `09-gate-level-and-x.md`; L2 does not reopen M5 functional coverage.
+
+
 
 ## Related
 
 - Verification levels, milestones, and sign-off: `01-strategy.md`
 - Seeds, commands, and artifacts: `02-platform.md`
+- Golden chain interpreter and reset-interrupted/repeated-run scoreboard rules: `05-reference-model.md`
+- Timing catalog, `Q-SCKIDLE`, and reset-interrupted timing classification: `04-timing-in-sim.md`
 - Gate-level, reset-randomization, and X policy: `09-gate-level-and-x.md`
 - Architecture and host CDC: `../03-architecture.md`
 - TCD semantics: `../04-tcd-and-datapath.md`
 - QPI protocol: `../05-qspi-psram.md`
+

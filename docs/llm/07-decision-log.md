@@ -274,7 +274,7 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 **Decision:**
 
 1. V1 on-chip RX→TX **data buffer depth is 1 byte** (`N=1`, 8 DFFs).
-2. Descriptor FSM and QSPI engine **must not depend on a specific `N` for correctness**. Treat buffer depth as a parameter: each copy step moves `k = min(N, TRANSFER_LEN)` bytes, then advances SRC/DEST/`TRANSFER_LEN` by `k`.
+2. Descriptor FSM and QSPI engine **must not depend on a specific `N` for correctness**. Treat buffer depth as module parameter `DMA_BUF_DEPTH` (default 1) on `tt_um_lahnb_sgdma` / `sys_controller`: each copy step moves `k = min(N, TRANSFER_LEN)` bytes, then advances SRC/DEST/`TRANSFER_LEN` by `k`. Package `DMA_BUF_DEPTH_MAX` sizes QPI interface widths for the verification sweep ceiling.
 3. Changing `N` later (deeper scratch for fewer cmd+addr reissues) is a **performance / DFF trade only** - no TCD format, host protocol, or cross-device CS rule changes.
 4. At V1 `N=1` (and 11-byte TCD fetch), `tCEM` and Linear Burst one-page-cross are **not binding** - no CE# refresh timer or page slicer. **Thresholds at 33 MHz SCK** if a later design holds CE# for a full `N`-byte payload: first `tCEM` (4 us extended) violation at **`N ≥ 60`** on `0xEB` read (**`N ≥ 63`** on `0x02` write); first possible two-page-cross at **`N ≥ 1026`**. Page limit is unreachable before `tCEM` fails. See human `descriptor-fsm.md`.
 
@@ -286,12 +286,12 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 **Decision:**
 
-1. FSM issues a **transaction request** (not a TCD slice): `cmd`, `addr`, `device_sel`, exact `byte_len` (`qspi_pkg` types; `device_sel` ≠ pad CE#). `byte_len` width is `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)` with `QPI_MAX_BYTES = max(DMA_BUF_DEPTH, QPI_TCD_BYTES)`.
+1. FSM issues a **transaction request** (not a TCD slice): `cmd`, `addr`, `device_sel`, exact `byte_len` (`qspi_pkg` types; `device_sel` ≠ pad CE#). `byte_len` width is `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)` with `QPI_MAX_BYTES = max(DMA_BUF_DEPTH_MAX, QPI_TCD_BYTES)`. Actual buffer depth `N` is module parameter `DMA_BUF_DEPTH` (default 1) on `tt_um_lahnb_sgdma` / `sys_controller`.
 2. Start is a **1-cycle `txn_valid` pulse**, legal only when **`~busy`**. There is **no `txn_ready`** port (`busy` is the start qualifier; CE# pad + `tCPH` are folded into `busy` / idle sequencing).
 3. Engine does **not** latch the request; FSM must hold `{cmd, addr, device_sel, byte_len}` stable from `txn_valid` until `busy` low.
 4. Data path is nibble-wide (`rdata`/`wdata` `[3:0]`); two SCK beats per payload byte.
 5. Read: on each rising SCK in the data phase, engine captures `sio_in` → `rdata` and pulses **`rdata_valid`** one `clk`. FSM always sinks; engine transfers exactly `2 * byte_len` nibbles.
-6. Write: first nibble on `wdata` with `txn_valid`. Engine pulses **`wdata_next`** on **falling SCK** iff another nibble is required to finish the accepted transaction; FSM updates `wdata` for the following rise. This produces exactly `2 * byte_len - 1` pulses and no extraneous pulse after the final nibble or outside the active write. **No `wdone`:** engine ends the write after `2 * byte_len` SCK beats, then end-pad / raise CE#.
+6. Write: first nibble on `wdata` with `txn_valid`. Engine pulses **`wdata_next`** on **falling SCK** iff another nibble is required to finish the accepted transaction; FSM must place the next nibble on `wdata` **before the next `clk` cycle** (same-cycle response) so setup time into the SPI/SIO path is preserved for the following rising SCK. This produces exactly `2 * byte_len - 1` pulses and no extraneous pulse after the final nibble or outside the active write. **No `wdone`:** engine ends the write after `2 * byte_len` SCK beats, then end-pad / raise CE#.
 7. Engine **never stalls** SCK/CE# for the FSM; owns CE# start (`CS_ON`) / end (`SCLK_OFF` then `CS_OFF`) pad and ≥2-`clk` `tCPH` (`CS_OFF` + `IDLE`).
 8. FSM grants `uio_oe` while `busy`; reclaims when `busy` clears.
 
@@ -416,3 +416,28 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/human/architec
 **DFF / tile impact:** none to RTL; area/DFF heuristics need an IHP harden before any budget relaxation.
 
 Detail: `02-constraints.md`, `11-timing-analysis.md`, human `architecture/limitations.md`.
+
+## D28 - FPGA hardware validation before shuttle freeze
+
+**Decision:**
+
+1. Add **M7 - FPGA hardware validation** to the verification ladder (`verification/01-strategy.md`): before RTL is frozen for the shuttle, load the synthesizable RTL onto an FPGA that occupies the ASIC's position on the same carrier board and MCU the eventual demoboard will use, with real dual PSRAM devices.
+2. M7 exercises a high-value `TC-*` hardware regression subset (same-device copies, both cross-device directions, chaining, `QUIT`, zero length, bus handoff, and reset recovery) driven by real MCU firmware rather than cocotb.
+3. M7 may require adapting existing testbench-derived stimulus and writing new MCU firmware test code outside the cocotb `test/` tree; that firmware is retained and tied to the RTL revision it validated.
+4. M7 gates shuttle freeze alongside M6. It does not replace M6 (which requires the actual synthesized ASIC netlist) and closes no `T-*` row, since FPGA I/O electrical characteristics differ from IHP pads.
+
+**Why:** Catches firmware and system-integration bugs that a cocotb PSRAM model, an idealized clock, or a symbolic formal environment cannot expose, using the cheapest available real-hardware checkpoint before an irreversible shuttle commit.
+
+**DFF / tile impact:** none; process/verification decision only.
+
+## D29 - SCK parked while deselected is a checked protocol requirement, not an architecture preference
+
+**Context:** `verification/04-timing-in-sim.md` and `verification/03-psram-model.md` previously stated that SCK toggling while every RAM CE# is high is "not a universal device-protocol error" and only required by this design's own `CS_ON`/`SCLK_OFF`/`CS_OFF` padding choice.
+
+**Decision:** Treat SCK toggling while no device is selected as an erroneous SCK cycle in every case, not only for this design's own padding style. APS6404L-class devices define clocked behavior only while CE# is low; the shared bus adds flash CS and both RAM CE#s, so the check is: SCK stays low for the entire interval during which flash CS, RAM A CE#, and RAM B CE# are all high (both engine CS outputs at L0, where flash CS is not an engine port). This is checked by new stable IDs `Q-SCKIDLE` (`verification/04-timing-in-sim.md`) and `CHK-PIN-SCK-PARK` (`verification/06-checkers.md`), and applies regardless of which side of the shared bus (ASIC or MCU pass-through) currently owns drive.
+
+**Relationship to existing checks:** `CHK-ARB-PARK` is unchanged and remains scoped to the ASIC's own driven value while `~BUS_GNT`. `Q-SCKIDLE` / `CHK-PIN-SCK-PARK` are a stricter, always-on, resolved-bus-level check that also catches an errant MCU-side SCK toggle with no device selected.
+
+**Why:** The datasheet only defines SCK behavior while CE# is low; treating an idle-time SCK toggle as benign would hide a real firmware or arbitration bug on real hardware even though the current architecture's own padding never produces one.
+
+**DFF / tile impact:** none; verification-catalog decision only. No RTL change is implied because `qspi_engine`'s existing padding already satisfies the stricter check.

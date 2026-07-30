@@ -10,9 +10,9 @@ The V1 verification plan must show that the descriptor DMA:
 4. copies every requested byte to the correct device and address, and
 5. remains physically usable at the target 66 MHz system clock and approximately 33 MHz SCK.
 
-No single tool can establish all five. Sign-off is split across simulation, formal, and physical closure, with explicit handoffs between them.
+No single tool can establish all five. Sign-off is split across simulation, formal, FPGA hardware validation, and physical closure, with explicit handoffs between them.
 
-## Three verification venues
+## Verification venues
 
 ### 1. Simulation
 
@@ -41,7 +41,22 @@ SymbiYosys owns control-plane invariants and reachability that are difficult to 
 
 `sys_controller` is verified with the real `qspi_engine`. Formal does not replace the engine with an abstract responder for integration proofs. Formal is not used to establish analog timing, PSRAM storage fidelity, or full-chain payload equivalence over arbitrary memory sizes.
 
-### 3. Physical closure
+### 3. FPGA hardware validation
+
+Before RTL is frozen for the shuttle, the synthesizable `tt_um_lahnb_sgdma` RTL is loaded onto an FPGA that stands in for the ASIC in the same connector position on the same carrier board and with the same MCU the eventual TT demoboard will use. The MCU, PMOD, and both APS6404L devices are otherwise unchanged from the silicon setup.
+
+This venue owns:
+
+- a high-value hardware regression subset of `TC-*` (same-device copies, both cross-device directions, chaining, `QUIT`, zero length, bus handoff, and reset recovery) driven by real MCU firmware instead of a cocotb host driver
+- real board timing, real bus loading, and real APS6404L devices in place of the Python PSRAM model
+- firmware and system-integration bugs that an idealized clock, a symbolic formal environment, or a behavioral PSRAM model cannot expose
+- one hardware checkpoint before an irreversible shuttle commit, taken while an RTL fix is still cheap
+
+Reaching this venue may require adapting existing testbench-derived stimulus (for example, reusing the reference-model chain generator's intent as fixed firmware test vectors) and writing new MCU firmware test code that is not part of the cocotb `test/` tree. That firmware and its test scripts are retained and tied to the RTL revision they validated.
+
+FPGA hardware validation does not prove IHP pad, TT mux, or routed-net timing. FPGA I/O electrical characteristics differ from IHP SG13G2 pads and do not substitute for `T-*` evidence. It also does not replace M6 gate-level and X checks, which require the actual synthesized ASIC netlist rather than an FPGA bitstream. A pass here is hardware-level functional and firmware-integration confidence, not physical timing sign-off.
+
+### 4. Physical closure
 
 STA and demoboard work own values that depend on implementation and hardware:
 
@@ -123,7 +138,7 @@ Every regression result records:
 - timing profile and overridden delay values
 - gate and SDF mode where applicable
 
-The intended buffer-depth sweep is `1, 2, 4, 8`, while the V1 implementation and tapeout configuration remain `DMA_BUF_DEPTH=1`. The current RTL declares `DMA_BUF_DEPTH` as a package `localparam`, so values 2, 4, and 8 cannot be selected at compile time. The sweep is blocked until RTL parameterization is implemented; after that prerequisite, larger values test depth-agnostic correctness without changing the V1 tapeout configuration.
+The intended buffer-depth sweep is `1, 2, 4, 8`, while the V1 implementation and tapeout configuration remain `DMA_BUF_DEPTH=1`. RTL exposes `DMA_BUF_DEPTH` as a module parameter on `tt_um_lahnb_sgdma` / `sys_controller` (package `DMA_BUF_DEPTH_MAX=8` sizes interface widths). Larger values test depth-agnostic correctness without changing the V1 tapeout configuration; the M5 sweep still depends on the sim Makefile wiring `-GDMA_BUF_DEPTH=N`.
 
 ## Milestone ladder
 
@@ -149,7 +164,7 @@ M0 deliberately uses L1 so the first smoke validates the TT wrapper path, not on
 **Exit:**
 
 - dual APS6404L models implement required V1 QPI reads and writes
-- model protocol policing rejects unsupported opcode, malformed phase count, bad address bit, invalid CE# overlap, and flash-CS assertion
+- model protocol policing rejects unsupported opcode, malformed phase count, bad address bit, invalid CE# overlap, flash-CS assertion, and ASIC-versus-device bidirectional SIO drive overlap (`Q-SIO-OWN`)
 - behavioral `Q-*` rows assigned to M1 pass at L0 and applicable L1 cases
 - Icarus and Verilator agree on the directed protocol set
 
@@ -204,7 +219,7 @@ M3 supplies pre-STA evidence. It does not close a `T-*` row.
 - the designated high-volume suite passes on Verilator
 - failures reproduce from one printed seed and command
 - depth 1 passes its applicable suite
-- after RTL parameterization, `DMA_BUF_DEPTH` values 2, 4, and 8 pass their applicable suite; until then this M5 item is `blocked`
+- `DMA_BUF_DEPTH` values 2, 4, and 8 pass their applicable suite once the sim harness selects the module parameter; until the harness lands this M5 item remains `blocked`
 - required `COV-*` points and crosses meet closure criteria or have reviewed exclusions
 
 ### M6 - Gate-level and X checks
@@ -218,6 +233,18 @@ M3 supplies pre-STA evidence. It does not close a `T-*` row.
 - randomized X-initialization and X-assignment runs have no unexplained divergence
 - SDF status is recorded as pass, blocked, or not applicable with reason
 - unresolved physical `T-*` rows are handed to STA and demoboard closure
+
+### M7 - FPGA hardware validation
+
+**Entry:** M0 through M5 complete. M6 may proceed independently since it requires a different artifact, the synthesized ASIC netlist, while M7 requires only an FPGA-synthesizable build of the same RTL.
+
+**Exit:**
+
+- the RTL synthesizes for the selected FPGA target and fits the carrier board's connector and voltage requirements in the ASIC's pin position
+- MCU firmware drives START, TCD installation, and DONE handshaking against the FPGA exactly as it will drive the ASIC
+- the selected high-value hardware regression subset passes with real dual PSRAM devices: same-device copies, both cross-device directions, chaining, `QUIT`, zero length, bus handoff, and reset recovery
+- any divergence from simulation is triaged as a firmware, board, FPGA-only artifact, or RTL defect before it is dismissed
+- the firmware and hardware test scripts used are retained and tied to the RTL revision they validated
 
 ## Sign-off gates
 
@@ -238,6 +265,7 @@ Before shuttle freeze:
 
 - RTL verification freeze is complete
 - M6 is complete for the final netlist
+- M7 FPGA hardware validation passes on the carrier board with real MCU firmware
 - all required `T-*` rows are closed by STA and/or demoboard evidence
 - the final configuration is 66 MHz maximum `clk`, SCK=`clk/2`, rising-edge RX unless a documented architecture decision changes it
 - the demoboard passes same-device, both cross-device directions, chaining, bus handoff, and reset recovery
@@ -247,7 +275,7 @@ Before shuttle freeze:
 - Minimize a failure while preserving its seed and timing profile.
 - Classify it as DUT, model, checker, reference model, tool divergence, or physical-assumption failure.
 - A checker or model defect does not waive the behavior it was intended to verify.
-- When a simulator divergence appears, retain a reduced reproducer and assign one expected behavior from the language and cocotb contracts before suppressing a configuration.
+- When a simulator divergence appears, whether at compile time or in a test result, retain a reduced reproducer and assign one expected behavior from the language and cocotb contracts before suppressing a configuration. A compile-time failure is rerun under Verilator specifically for its more detailed diagnostic before triage, per `02-platform.md`.
 - Do not mark a parent milestone complete while a required child ID is `fail`, `wip`, or `blocked`.
 
 ## Related

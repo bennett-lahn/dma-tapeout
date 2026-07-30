@@ -31,17 +31,19 @@ Icarus is the required L2 simulator because it supports four-state gate nets and
 
 The required subset is:
 
-| Test ID | Why it remains at L2 |
-|---|---|
-| `TC-SMOKE` | Basic synthesized end-to-end connectivity and sequential operation |
-| `TC-TCD-BE` | Descriptor bit and byte connectivity through synthesized logic |
-| `TC-SAME-0`, `TC-SAME-1` | Both PSRAM CE# paths and shared SIO mapping |
-| `TC-CROSS-01`, `TC-CROSS-10` | Device-select muxing in both directions |
-| `TC-CHAIN`, `TC-QUIT`, `TC-RESTART` | State retention, chain control, reset-to-fixed-head behavior |
-| `TC-BUS-IDLE`, `TC-BUS-ACTIVE`, `TC-BUS-REPEAT` | Grant polarity, atomic completion, OE release, and resume |
-| `TC-RESET-IDLE`, `TC-RESET-ACTIVE` | Initialization and reset recovery across gate storage elements |
 
-Run the final tapeout depth, `DMA_BUF_DEPTH=1`. The intended larger-depth RTL verification configurations are currently blocked because `DMA_BUF_DEPTH` is a package `localparam`; even after parameterization, they are not required at L2 unless separate netlists are intentionally hardened.
+| Test ID                                         | Why it remains at L2                                               |
+| ----------------------------------------------- | ------------------------------------------------------------------ |
+| `TC-SMOKE`                                      | Basic synthesized end-to-end connectivity and sequential operation |
+| `TC-TCD-BE`                                     | Descriptor bit and byte connectivity through synthesized logic     |
+| `TC-SAME-0`, `TC-SAME-1`                        | Both PSRAM CE# paths and shared SIO mapping                        |
+| `TC-CROSS-01`, `TC-CROSS-10`                    | Device-select muxing in both directions                            |
+| `TC-CHAIN`, `TC-QUIT`, `TC-RESTART`             | State retention, chain control, reset-to-fixed-head behavior       |
+| `TC-BUS-IDLE`, `TC-BUS-ACTIVE`, `TC-BUS-REPEAT` | Grant polarity, atomic completion, OE release, and resume          |
+| `TC-RESET-IDLE`, `TC-RESET-ACTIVE`              | Initialization and reset recovery across gate storage elements     |
+
+
+Run the final tapeout depth, `DMA_BUF_DEPTH=1`. Larger-depth RTL configurations are for L1 sweeps via the module parameter; they are not required at L2 unless separate netlists are intentionally hardened.
 
 L2 tests use only top-level pins, resolved shared-bus signals, decoded QPI transactions, final memory, and ordered transaction logs as pass criteria. They must not depend on RTL hierarchy, source enum values, internal register names, or synthesis-generated instance names.
 
@@ -50,7 +52,7 @@ L2 tests use only top-level pins, resolved shared-bus signals, decoded QPI trans
 - every selected test and applicable external `CHK-*` monitor passes
 - no unexpected X or Z reaches DONE, BUS_GNT, `uio_oe`, active CS, SCK, or driven SIO after reset release
 - all `uio_oe` bits are zero while reset is asserted and while BUS_GNT is high
-- no RAM CE# overlap or flash-CS assertion occurs
+- no RAM CE# overlap, flash-CS assertion, or ASIC-versus-PSRAM/SPI dual drive of bidirectional SIO occurs
 - no gate-model warning indicates an unresolved cell, port-width mismatch, or missing primitive
 - result artifacts identify the netlist hash and PDK model revision
 
@@ -73,7 +75,7 @@ Randomized mid-transaction reset is a separate reproducible campaign. Choose the
 - idle, descriptor fetch, payload read, payload write, update or inter-transaction gap, and granted stall
 - CE# lead-in, command, address, wait, read data, write data, and CE# termination
 
-Jitter assertion and release phase across one `clk` period. Hold reset low across at least two rising edges so synchronous state reset is required. A boundary experiment that does not span a rising edge may check immediate OE clearing, but it must not require state convergence.
+Jitter assertion and release phase across one `clk` period. Hold reset low across at least two rising edges so synchronous state reset is required. A boundary experiment that does not span a rising edge may check immediate OE clearing, but it must not require state convergence, as this is not a valid `rst_n` assertion.
 
 After every reset:
 
@@ -103,7 +105,9 @@ When an X reaches a checker:
 1. retain the first-X timestamp and the earliest upstream signal visible in the waveform
 2. rerun the same seed and configuration with waves
 3. determine whether the source is missing reset, illegal stimulus, contention, timing annotation, cell-model limitation, or DUT logic
-4. fix or document the root cause before marking the case pass
+4. fix or document the root cause before marking the case pass (manual step explicitly working alongside user)
+
+
 
 ## True four-state gate simulation
 
@@ -111,7 +115,7 @@ A true four-state gate experiment evaluates the synthesized netlist and cell pri
 
 - flops or latches that remain unknown because reset did not reach them
 - unknown select propagation through synthesized muxes
-- shared-net contention and undriven periods
+- shared-net contention and undriven periods, including ASIC-versus-PSRAM/SPI dual drive of bidirectional SIO (`CHK-PIN-SIO-OWN` / `Q-SIO-OWN`)
 - gate connectivity or polarity errors hidden by RTL initialization assumptions
 - X contamination from timing-check notifiers when timing checks are active
 
@@ -138,6 +142,8 @@ The experiment asks whether behavior depends on an unspecified initial value or 
 Run these experiments primarily at L0 and L1 for fast diagnosis. Optional L2 Verilator runs may help reduce a netlist problem, but they do not satisfy the required Icarus L2 row.
 
 ## SDF strategy
+
+
 
 ### Status model
 
@@ -196,13 +202,17 @@ An SDF functional pass may support investigation of QSPI launch, sampling, and O
 
 ## Simulator and evidence matrix
 
-| Activity | DUT | Simulator | Logic model | Required for M6 | Interpretation |
-|---|---|---|---|---|---|
-| RTL regression | L0/L1 RTL | Icarus | Four-state RTL | Yes, inherited from M5 | Primary functional correctness |
-| Fast random regression | L1 RTL | Verilator | Binary execution with configured X choices | Yes, inherited from M5 | Throughput and X sensitivity |
-| Functional gate | L2 netlist | Icarus | Four-state gates, no SDF | Yes | Required connectivity, reset, OE, and X check |
-| Timed gate | L2 netlist | Icarus plus qualified SDF | Four-state gates with supported annotation | Conditional | Delay-sensitive diagnostic, not STA replacement |
-| Gate diagnostic | L2 netlist | Verilator | Binary execution with X choices | No | Optional reduction aid |
+
+| Activity               | DUT        | Simulator                 | Logic model                                | Required for M6        | Interpretation                                  |
+| ---------------------- | ---------- | ------------------------- | ------------------------------------------ | ---------------------- | ----------------------------------------------- |
+| RTL regression         | L0/L1 RTL  | Icarus                    | Four-state RTL                             | Yes, inherited from M5 | Primary functional correctness                  |
+| Fast random regression | L1 RTL     | Verilator                 | Binary execution with configured X choices | Yes, inherited from M5 | Throughput and X sensitivity                    |
+| Functional gate        | L2 netlist | Icarus                    | Four-state gates, no SDF                   | Yes                    | Required connectivity, reset, OE, and X check   |
+| Timed gate             | L2 netlist | Icarus plus qualified SDF | Four-state gates with supported annotation | Conditional            | Delay-sensitive diagnostic, not STA replacement |
+| Gate diagnostic        | L2 netlist | Verilator                 | Binary execution with X choices            | No                     | Optional reduction aid                          |
+
+
+
 
 ## M6 closure
 
@@ -225,3 +235,4 @@ An M6 waiver names the exact test or observation, netlist and PDK revision, owne
 - QSPI timing split and `T-*` ownership: `../11-timing-analysis.md`
 - IHP shuttle and netlist decision: `../07-decision-log.md`
 - Tiny Tapeout gate template: `../../../ttihp-verilog-template/test/`
+

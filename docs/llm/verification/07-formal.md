@@ -104,7 +104,7 @@ prep -top sys_qspi_harness
 
 Use `mode bmc` with Bitwuzla for counterexample search and `mode cover` with Bitwuzla for reachability. In `mode prove`, `smtbmc` performs base-case checking and temporal induction up to the configured depth. A larger depth is not automatically a stronger architecture claim. Record the first depth that closes and one reproducible margin run above it.
 
-The current `DMA_BUF_DEPTH` is a package local parameter fixed at 1, not a module parameter. Formal results therefore apply to depth 1 unless the RTL is deliberately parameterized later. Do not report a formal 1/2/4/8 sweep from the current source.
+`DMA_BUF_DEPTH` is a module parameter (default 1). Formal results apply to the elaborated depth; do not report a 1/2/4/8 formal sweep unless each depth is deliberately bound and proven.
 
 ## Assertion style
 

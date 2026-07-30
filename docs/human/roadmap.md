@@ -19,10 +19,10 @@
 
 ## Phase 1 - Skeleton RTL
 
-- [ ] Tiny Tapeout wrapper + pin map
-- [ ] Pass-through mux + mode control (ASIC bus keeper while `~BUS_GNT`; flash CS parked high / never low; `BUS_REQ`/`BUS_GNT`)
-- [ ] QSPI engine (QPI `0xEB` read / `0x02` write, CE# time limit, **RAM A/B CS mux**; no ASIC enter/exit quad)
-- [ ] Working register file (11-byte TCD fields)
+- [x] Tiny Tapeout wrapper + pin map
+- [x] Pass-through mux + mode control (ASIC bus keeper while `~BUS_GNT`; flash CS parked high / never low; `BUS_REQ`/`BUS_GNT`)
+- [x] QSPI engine (QPI `0xEB` read / `0x02` write, CE# time limit, **RAM A/B CS mux**; no ASIC enter/exit quad)
+- [x] Working register file (11-byte TCD fields)
 
 ## Phase 2 - Descriptor DMA (V1 feature complete)
 
@@ -35,13 +35,14 @@
 - [ ] M2 - reference model, dual-axis scoreboard, directed tests, and always-on checkers
 - [ ] M3 - delay layer, setup/hold sweeps, and launch/RX edge checks
 - [ ] M4 - formal safety proofs and cover reachability
-- [ ] M5 - randomized regression and coverage closure; buffer-depth sweep blocked pending RTL parameterization
+- [ ] M5 - randomized regression and coverage closure; buffer-depth sweep blocked pending sim harness `DMA_BUF_DEPTH` wiring
 
 ## Phase 3 - Demoboard + hardening
 
 - [ ] RP2 demoboard scripts (bulk A↔B / scatter-gather patterns)
 - [ ] Area/DFF audit vs 2-tile budget
 - [ ] M6 - gate-level and X checks, then hand remaining physical `T-*` rows to STA and demoboard closure
+- [ ] M7 - FPGA hardware validation: load synthesizable RTL on an FPGA standing in for the ASIC on the same carrier board and MCU, adapt/write firmware test code, and pass a high-value hardware regression subset before freezing RTL for shuttle
 - [ ] Close **66 MHz `clk` / 33 MHz SCK** / rising-edge RX (D16 / D27): use delay-annotated simulation for `Q-*` pre-checks, STA for IHP pad + TT mux margin, and the demoboard for final number validity; see [`verification/strategy.md`](verification/strategy.md), [`architecture/timing.md`](architecture/timing.md), and [`../llm/verification/04-timing-in-sim.md`](../llm/verification/04-timing-in-sim.md)
 - [ ] CI + GDS flow green
 - [ ] Freeze RTL for shuttle

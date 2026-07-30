@@ -16,7 +16,7 @@ Bit-level QSPI master used by the descriptor FSM:
 
 QSPI has four bidirectional data lines reused for I/O, giving up to about **4x** throughput vs 1-bit SPI (half-duplex data phases, tighter timing).
 
-`uio_oe` is **arbitrated by the descriptor FSM** as a **bus keeper** (D26): while `rst_n && ~BUS_GNT`, ASIC drives CS high and SCK low (including IDLE and between transactions); the engine's own SIO mask drives a don't-care in every phase except **dummy/read**, where it floats to listen for the PSRAM - SIO is never left floating during IDLE or between transactions outside reset. On `BUS_GNT` or asserted active-low reset (`rst_n=0`), all shared OE is forced off. Board **10 kΩ** CS pull-ups cover reset / pre-enable. Bus ownership phases: [`host-interface.md`](host-interface.md); arbiter: [`descriptor-fsm.md`](descriptor-fsm.md).
+`uio_oe` is **arbitrated by the descriptor FSM** as a **bus keeper** (D26): while `rst_n && ~BUS_GNT`, ASIC drives CS high and SCK low (including IDLE and between transactions); the engine's own SIO mask drives cmd/addr/write, floats for **dummy/read**, and stays floated through post-CE# **`tHZ`** before park reclaim of SIO don't-care. On `BUS_GNT` or asserted active-low reset (`rst_n=0`), all shared OE is forced off. Board **10 kΩ** CS pull-ups cover reset / pre-enable. Ownership matrix: [`host-interface.md`](host-interface.md); arbiter: [`descriptor-fsm.md`](descriptor-fsm.md).
 
 Hard CE# / clock limits are summarized in `[../limitations.md](../limitations.md)`. Full opcode tables: `[../../../llm/05-qspi-psram.md](../../../llm/05-qspi-psram.md)`. With V1 buffer depth `N=1` (and 11-byte TCD fetch), each CE# pulse is short enough that `**tCEM` and Linear Burst one-page-cross limits are not binding** - no CE# refresh timer or page slicer required (see `[descriptor-fsm.md](descriptor-fsm.md)`). Revisit if `N` grows (D20).
 
@@ -61,18 +61,18 @@ Start legality is `~busy`. Write/read length is entirely from `byte_len` (engine
 | `cmd` | in | `qspi_cmd_t` | V1: `QSPI_CMD_FAST_READ` (`0xEB`) or `QSPI_CMD_WRITE` (`0x02`). Hold until `!busy`. |
 | `addr` | in | `qspi_addr_t` `[23:0]` | Full 24-bit QPI address phase. Device uses `addr[22:0]` as `A[22:0]`; **`addr[23]=0`**. Do not put `ptr[23]` here. Hold until `!busy`. |
 | `device_sel` | in | `qspi_device_sel_t` | `QSPI_PSRAM0` / `QSPI_PSRAM1` from `ptr[23]`; steers `ram_*_cs_n`. Hold until `!busy`. |
-| `byte_len` | in | `qpi_byte_len_t` | Payload bytes this CE# (FETCH=`QPI_TCD_BYTES`, data=`k` ≤ `N`). `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)`, `QPI_MAX_BYTES = max(DMA_BUF_DEPTH, QPI_TCD_BYTES)`. Hold until `!busy`. |
-| `wdata` | in | `[3:0]` | Write nibble. **Must be valid on the `txn_valid` cycle**; update after each `wdata_next` for the next rising SCK. |
+| `byte_len` | in | `qpi_byte_len_t` | Payload bytes this CE# (FETCH=`QPI_TCD_BYTES`, data=`k` ≤ `N`). `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)`, `QPI_MAX_BYTES = max(DMA_BUF_DEPTH_MAX, QPI_TCD_BYTES)`. Hold until `!busy`. |
+| `wdata` | in | `[3:0]` | Write nibble. **Must be valid on the `txn_valid` cycle**. When `wdata_next` asserts, the **next** nibble must already be on `wdata` **before the next `clk` cycle** (same-cycle response) so the engine has setup time into the SPI/SIO path for the following rising SCK. |
 | `busy` | out | 1 | High while not `IDLE` (in flight through CE# complete). Start qualifier; OE reclaim / BUS_GNT wait for 0. |
 | `rdata` | out | `[3:0]` | Last captured read nibble (held between captures). |
 | `rdata_valid` | out | 1 | **1-`clk` pulse** with new `rdata` on each rising SCK in `READ_DATA`. FSM always sinks. Exactly `2 * byte_len` pulses per read. |
-| `wdata_next` | out | 1 | **1-`clk` pulse** on **falling SCK** iff another nibble is needed to finish the active write. Exactly `2 * byte_len - 1` pulses per write; never asserts after the final nibble or outside that transaction. |
+| `wdata_next` | out | 1 | **1-`clk` pulse** on **falling SCK** iff another nibble is needed to finish the active write. Exactly `2 * byte_len - 1` pulses per write; never asserts after the final nibble or outside that transaction. FSM must place the next `wdata` nibble on the bus before the next `clk` (see `wdata`). |
 | `sio_in` | in | `[3:0]` | Pad SIO sample. |
 | `sclk` | out | 1 | QSPI SCK: **clk/2** toggle while enabled; **0** in `IDLE` / `CS_ON` / `SCLK_OFF` / `CS_OFF`. |
 | `ram_a_cs_n` | out | 1 | RAM A CE# (active low). Never both RAM CE#s low. |
 | `ram_b_cs_n` | out | 1 | RAM B CE# (active low). |
 | `sio_out` | out | `[3:0]` | Pad SIO drive data (cmd/addr/write). |
-| `sio_oe` | out | `[3:0]` | Per-pin OE for this engine; driven (don't-care `sio_out`) in every state except `WAIT` / `READ_DATA`, where it floats to listen for the PSRAM. Top / FSM parks CS+SCK while `~BUS_GNT` (flash CS never driven low). |
+| `sio_oe` | out | `[3:0]` | Per-pin OE for this engine; driven for cmd/addr/write; floats in `WAIT` / `READ_DATA` and through post-CE# `tHZ` before park reclaim. Top / FSM parks CS+SCK while `~BUS_GNT` (flash CS never driven low). |
 
 ### Flows
 
@@ -86,8 +86,8 @@ Start legality is `~busy`. Write/read length is entirely from `byte_len` (engine
 **Write (STATE_WRITE):**
 
 1. When `~busy`, FSM presents request with the **first write nibble already on `wdata`**, and pulses `txn_valid` (same cycle).
-2. Engine does not stage that nibble; FSM keeps it on `wdata` until `wdata_next`, then updates for the next beat.
-3. On falling SCK in the write data phase, the engine pulses `wdata_next` iff another nibble remains in the accepted transaction; the FSM places that nibble in time for the next rising SCK.
+2. Engine does not stage that nibble; FSM keeps it on `wdata` until `wdata_next`.
+3. On falling SCK in the write data phase, the engine pulses `wdata_next` iff another nibble remains in the accepted transaction. The FSM must put that next nibble on `wdata` **before the next `clk` cycle** (combinational / same-cycle update) so setup time into the SPI controller is preserved for the following rising SCK.
 4. Engine ends after exactly `2 * byte_len` SCK beats, then `SCLK_OFF` → `CS_OFF` → `IDLE`.
 5. Because the first nibble accompanies `txn_valid`, the engine emits exactly `2 * byte_len - 1` `wdata_next` pulses. It never emits an extra pulse after the final nibble.
 6. Engine never waits on the FSM after accept; never writes past `byte_len`.
@@ -96,11 +96,12 @@ Start legality is `~busy`. Write/read length is entirely from `byte_len` (engine
 
 1. Engine does **not** latch the request; FSM must keep `{cmd, addr, device_sel, byte_len}` stable from `txn_valid` until `busy` is low.
 2. On writes, the first nibble must be on `wdata` in the same cycle as `txn_valid`.
-3. Engine **never stalls** SCK/CE# waiting on the FSM (deterministic QPI).
-4. FSM pulses `txn_valid` only while `~busy`.
-5. Engine owns start/end CE# pad and ≥2-`clk` `tCPH` (via `CS_OFF` + `IDLE` before the next CE# fall). Never both `ram_a_cs_n` and `ram_b_cs_n` low; flash CS never driven low (parked high by top/FSM while `~BUS_GNT`).
-6. FSM parks CS/SCK while `~BUS_GNT` (D26); grants SIO OE only for live cmd/addr/write; reclaim / release all OE when `BUS_GNT` (idle park resumes when grant falls). Do not start a new txn while `BUS_REQ` (D22).
-7. `wdata_next` asserts iff the controller must provide another nibble for the current write. It must remain low after the final nibble and during every non-write phase.
+3. When `wdata_next` asserts, the next write nibble must be on `wdata` before the next `clk` cycle (setup into the SPI/SIO path for the next rising SCK). A registered update one cycle later is illegal.
+4. Engine **never stalls** SCK/CE# waiting on the FSM (deterministic QPI).
+5. FSM pulses `txn_valid` only while `~busy`.
+6. Engine owns start/end CE# pad and ≥2-`clk` `tCPH` (via `CS_OFF` + `IDLE` before the next CE# fall). Never both `ram_a_cs_n` and `ram_b_cs_n` low; flash CS never driven low (parked high by top/FSM while `~BUS_GNT`).
+7. FSM parks CS/SCK while `~BUS_GNT` (D26); grants SIO OE for live cmd/addr/write; float SIO for dummy/read and through `tHZ`; reclaim / release all OE when `BUS_GNT` (idle park resumes when grant falls). Do not start a new txn while `BUS_REQ` (D22).
+8. `wdata_next` asserts iff the controller must provide another nibble for the current write. It must remain low after the final nibble and during every non-write phase.
 
 ## Engine behavior notes
 

@@ -12,11 +12,11 @@ The descriptor FSM **arbitrates** ASIC `uio_oe`. The ASIC is the **bus keeper** 
 
 | Owner | When | `uio_oe` behavior |
 |---|---|---|
-| **Controller (park)** | `~BUS_GNT`, no live QPI txn (IDLE, between txns, UPDATE, etc.) | Drive **flash CS + RAM A CS + RAM B CS high**, **SCK low**, **SIO don't-care** - never left floating |
-| **QSPI engine (live txn)** | Transaction in flight and `~BUS_GNT` | Phase-accurate mask: SCK + both RAM CS (one low / one high) + flash CS high; SIO drives a don't-care except **float on dummy/read** (listen for the PSRAM) |
+| **Controller (park)** | `~BUS_GNT`, no live QPI txn, after any post-CE# `tHZ` | Drive **flash CS + RAM A CS + RAM B CS high**, **SCK low**, **SIO don't-care** - never left floating outside `tHZ` |
+| **QSPI engine (live txn)** | Transaction in flight and `~BUS_GNT` | Phase-accurate mask: SCK + both RAM CS (one low / one high) + flash CS high; SIO drives cmd/addr/write; **float on dummy/read and through `tHZ`** |
 | **Released** | `BUS_GNT` or asserted active-low reset (`rst_n=0`) | Force all shared `uio_oe = 0`; MCU may master only in the `BUS_GNT` case |
 
-Do **not** float CS/SCK between DMA transactions. **MCU priority (D22):** while `BUS_REQ` is high, do **not** pulse `txn_valid`; if `busy`, wait for the current QPI txn to finish (atomic), then release OE and assert `BUS_GNT`. Never leave both sources driving conflicting OE without a single mux select. Bus handoff phases: [`host-interface.md`](host-interface.md). Board **10 kΩ** CS pull-ups cover reset / pre-enable only ([`firmware.md`](../firmware.md)).
+Do **not** float CS/SCK between DMA transactions. Do **not** reclaim SIO drive inside the selected device's `tHZ` after CE# rises. **MCU priority (D22):** while `BUS_REQ` is high, do **not** pulse `txn_valid`; if `busy`, wait for the current QPI txn to finish (atomic), then release OE and assert `BUS_GNT`. Never leave both sources driving conflicting OE without a single mux select. Ownership matrix: [`host-interface.md`](host-interface.md); agent detail: [`../../../llm/03-architecture.md`](../../../llm/03-architecture.md). Board **10 kΩ** CS pull-ups cover reset / pre-enable only ([`firmware.md`](../firmware.md)).
 
 ## Planned states (V1)
 
@@ -30,7 +30,7 @@ No `STATE_PROCESS` / ALU in V1. Post-V1 may insert process / cond-stop after REA
 
 ## QSPI engine requests (D21)
 
-FSM issues **transaction requests** (not raw TCDs): `{cmd, addr, device_sel, byte_len}` (`qspi_pkg` types in `types.svh`). Engine does **not** latch the request. `byte_len` is `qpi_byte_len_t`, with `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)` and `QPI_MAX_BYTES = max(DMA_BUF_DEPTH, QPI_TCD_BYTES)`.
+FSM issues **transaction requests** (not raw TCDs): `{cmd, addr, device_sel, byte_len}` (`qspi_pkg` types in `types.svh`). Engine does **not** latch the request. `byte_len` is `qpi_byte_len_t`, with `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)` and `QPI_MAX_BYTES = max(DMA_BUF_DEPTH_MAX, QPI_TCD_BYTES)`. Buffer depth `N` is module parameter `DMA_BUF_DEPTH` (default 1).
 
 | FSM use | Engine txn |
 |---|---|
@@ -38,7 +38,7 @@ FSM issues **transaction requests** (not raw TCDs): `{cmd, addr, device_sel, byt
 | `STATE_READ` | `QSPI_CMD_FAST_READ`, len=`k`, from `SRC_PTR`, `device_sel`=`SRC_DEVICE` |
 | `STATE_WRITE` | `QSPI_CMD_WRITE`, len=`k`, to `DEST_PTR`, `device_sel`=`DEST_DEVICE`; first write nibble on `wdata` in the same cycle as `txn_valid` |
 
-Handshake summary: 1-cycle `txn_valid` only when `~busy` (no `txn_ready`); FSM holds `{cmd, addr, device_sel, byte_len}` stable for the whole txn; write first nibble on `wdata` with `txn_valid`; sink `rdata_valid` pulses (rising-SCK captures); on `wdata_next` (falling-SCK pulse) present next write nibble; engine ends write after `2 * byte_len` SCK beats (no `wdone`); wait for `busy` low before starting next / parking between txns. SCK = clk/2. Engine never stalls QPI for the FSM. Full contract: [`qspi-engine.md`](qspi-engine.md) (Descriptor FSM interface).
+Handshake summary: 1-cycle `txn_valid` only when `~busy` (no `txn_ready`); FSM holds `{cmd, addr, device_sel, byte_len}` stable for the whole txn; write first nibble on `wdata` with `txn_valid`; sink `rdata_valid` pulses (rising-SCK captures); on `wdata_next` (falling-SCK pulse) present the next write nibble on `wdata` before the next `clk` (same-cycle, for SPI/SIO setup); engine ends write after `2 * byte_len` SCK beats (no `wdone`); wait for `busy` low before starting next / parking between txns. SCK = clk/2. Engine never stalls QPI for the FSM. Full contract: [`qspi-engine.md`](qspi-engine.md) (Descriptor FSM interface).
 
 ## Notes
 

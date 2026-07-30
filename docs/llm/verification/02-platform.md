@@ -49,6 +49,7 @@ test/
     __init__.py
     tcd.py
     chain.py
+    generator.py
     scoreboard.py
   monitors/
     __init__.py
@@ -68,7 +69,7 @@ Responsibilities:
 - `tests/` contains cocotb test entry points. Test names carry `TC-*` IDs in docstrings or metadata, not in Python identifiers.
 - `common/` contains host actions, clock/reset helpers, run configuration, deterministic random support, and artifact naming.
 - `models/` contains the two independent APS6404L instances and delay layer.
-- `reference/` contains the pure-Python TCD encoder/decoder, chain interpreter, and scoreboards. It must not call DUT internals.
+- `reference/` contains the pure-Python TCD encoder/decoder, chain interpreter, the modularized legal-chain generator class described in `08-stimulus-and-coverage.md`, and scoreboards. None of these may call DUT internals, and the generator is kept in its own module (`generator.py`) separate from the golden interpreter (`chain.py`) it depends on, since generating stimulus and interpreting it are distinct responsibilities that must stay separately testable.
 - `monitors/` contains passive protocol decoders and always-on `CHK-*` checks.
 - `formal/` contains `.sby` jobs, harnesses, and bind files. It shares RTL sources and constants conceptually, but does not import cocotb code.
 
@@ -108,6 +109,12 @@ Both simulators must pass the M1 directed protocol set and the assigned M2 behav
 - Waveform formats and hierarchy names differ. Tests and scoreboards must not use waveform format or generated hierarchy names as functional input.
 - A simulator-specific pass is insufficient when the matrix marks both simulators required. Reduce and document divergences rather than adding silent conditional expectations.
 
+### Compile-error diagnostics
+
+Whenever a build fails to compile or elaborate on either simulator, rerun the exact same failing configuration under Verilator specifically before triage, even if Icarus was the simulator that originally failed. Verilator's elaboration diagnostics (width mismatches, undeclared or unconnected signals, parameter errors, and unsupported constructs) are typically more specific than Icarus's and shorten root-cause time. Retain the full compile log from both simulators for the failing configuration, not only the one that first reported the error.
+
+If Icarus and Verilator disagree, whether one compiles a configuration the other rejects, or both compile but disagree on a required test result, report this explicitly as a tool-divergence finding rather than silently trusting whichever simulator happened to pass. Record the exact diverging construct or behavior, both tool versions, and classify the divergence per the failure-handling contract in `01-strategy.md` before either result is used as evidence.
+
 ## Makefile interface
 
 All commands run from `test/` in WSL. These targets and variables are stable:
@@ -136,7 +143,7 @@ All commands run from `test/` in WSL. These targets and variables are stable:
 | `GATES` | unset | TT-compatible gate-level selector; `yes` implies `LEVEL=gl` |
 | `SEED` | `1` | unsigned test seed printed at start and failure |
 | `TEST_FILTER` | empty | cocotb test-name regular expression |
-| `DMA_BUF_DEPTH` | `1` | Reserved compile-time selector for the 1/2/4/8 sweep; current RTL supports only 1 |
+| `DMA_BUF_DEPTH` | `1` | Compile-time module parameter override for the 1/2/4/8 sweep (`-GDMA_BUF_DEPTH=N`) |
 | `TIMING_PROFILE` | `ideal` | named timing parameter set |
 | `WAVES` | `auto` | `auto`, `always`, or `never` |
 | `SDF` | unset | optional SDF path for L2 |
@@ -152,7 +159,7 @@ make test LEVEL=gl SIM=icarus GATES=yes NETLIST=gate_level_netlist.v
 make random LEVEL=top SIM=verilator SEED=4231 TIMING_PROFILE=nominal
 ```
 
-`DMA_BUF_DEPTH` is currently a package `localparam` fixed at 1 in `src/rtl/types.svh`, not a module or build parameter. The Makefile must reject values 2, 4, and 8 with a clear blocked-prerequisite message until RTL parameterization exists. Those values are reserved by the verification plan, not selectable configurations of the current RTL.
+`DMA_BUF_DEPTH` is a module parameter on `tt_um_lahnb_sgdma` / `sys_controller` (default 1). Package `DMA_BUF_DEPTH_MAX` in `src/rtl/types.svh` sizes `qpi_byte_len_t` / cycle counters for the 1..8 sweep. The Makefile should pass `-GDMA_BUF_DEPTH=$(DMA_BUF_DEPTH)` (or the simulator equivalent) and reject values outside `1..DMA_BUF_DEPTH_MAX`.
 
 The Makefile maps `TEST_FILTER` to cocotb 2.x `COCOTB_TEST_FILTER` and lists modules through `COCOTB_TEST_MODULES`. Do not use removed legacy environment names.
 
@@ -174,7 +181,7 @@ The directory contains:
 - randomized stimulus manifest
 - scoreboard transaction trace on mismatch
 
-Simulator build products must also be isolated by compile-time configuration. After RTL parameterization, a Verilator build for `DMA_BUF_DEPTH=4` must never be reused for depth 1. Generated files stay outside source packages.
+Simulator build products must also be isolated by compile-time configuration. A Verilator build for `DMA_BUF_DEPTH=4` must never be reused for depth 1. Generated files stay outside source packages.
 
 ## Seed and reproduction contract
 

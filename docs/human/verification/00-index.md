@@ -17,6 +17,7 @@ Condensed map of the V1 verification plan. The detailed specifications and catal
 | Directed tests | `TC-*` | Simulation | [`08-stimulus-and-coverage.md`](../../llm/verification/08-stimulus-and-coverage.md) |
 | Functional coverage | `COV-*` | Simulation | [`08-stimulus-and-coverage.md`](../../llm/verification/08-stimulus-and-coverage.md) |
 | Control-plane proofs and covers | `FP-*` | Formal | [`07-formal.md`](../../llm/verification/07-formal.md) |
+| Firmware-driven hardware regression | `TC-*` subset | FPGA on the carrier board (M7) | [`../../llm/verification/01-strategy.md`](../../llm/verification/01-strategy.md) |
 | Nanosecond and physical closure | `T-*` | STA and demoboard | [`../../llm/11-timing-analysis.md`](../../llm/11-timing-analysis.md) |
 
 Published IDs keep their meanings even if implementation files change. Required results use `todo`, `wip`, `pass`, `fail`, `blocked`, or `na`, and every `pass` retains its revision, configuration, tool, and artifact.
@@ -26,9 +27,10 @@ Published IDs keep their meanings even if implementation files change. Required 
 | Gate | Status | Note |
 |---|---|---|
 | M0-M6 implementation | `todo` | The platform documents exist, but verification code and evidence do not yet exist |
-| `Q-LAUNCH`, `Q-RXEDGE` | `todo` | Current QSPI RTL has known launch and receive-edge TODOs; execute the M3 checks before assigning `pass` or `fail` |
+| `Q-LAUNCH`, `Q-RXEDGE` | `todo` | Execute the M3 checks against current RTL before assigning `pass` or `fail` |
 | SDF run | `blocked` | No compatible final-netlist SDF artifact is available yet |
-| `DMA_BUF_DEPTH=1,2,4,8` sweep | `blocked` | `DMA_BUF_DEPTH` is currently a package `localparam`; RTL parameterization is required before compile-time depth sweeps |
+| `DMA_BUF_DEPTH=1,2,4,8` sweep | `blocked` | RTL module parameter exists; sim harness must select depths before the sweep can run |
+| M7 FPGA hardware validation | `todo` | Not started; requires an FPGA-synthesizable build and carrier-board bring-up with real MCU firmware |
 | `T-*` closure | `todo` | STA and demoboard evidence follow M6 |
 
 Do not treat delay-annotated simulation, zero-delay gate simulation, or missing future artifacts as physical signoff.

@@ -158,7 +158,7 @@ The following rules are deliberate:
 - A later TCD fetch reads current memory. A preceding copy may therefore modify a descriptor that has not yet been fetched.
 - A normal run completes only by fetching a quit descriptor. Budget exhaustion and invalid memory/TCD input are model errors, not normal completion.
 
-For the V1 tapeout configuration `dma_buf_depth=1`. The reference model accepts other positive depths so it is ready for the intended `1, 2, 4, 8` sweep, but the RTL sweep is blocked while `DMA_BUF_DEPTH` remains a package `localparam` fixed at 1.
+For the V1 tapeout configuration `dma_buf_depth=1`. The reference model accepts other positive depths for the intended `1, 2, 4, 8` sweep; RTL selects depth via module parameter `DMA_BUF_DEPTH`.
 
 ## Normalized transaction log
 
@@ -240,6 +240,17 @@ For a reset test:
 
 Tests that require an exact post-reset memory image should schedule reset between transactions or use a PSRAM model with explicitly specified partial-write commit behavior.
 
+### Repeated-run epochs after reset
+
+`TC-RESET-REPEAT` in `08-stimulus-and-coverage.md` runs an identical chain twice across a reset boundary and requires the second run to behave exactly like the first. The scoreboard supports this as two independent epochs, not one extended epoch:
+
+1. run the golden interpreter and open a normal scoreboard epoch for the first pass, using its own initial memory clone,
+2. after the reset boundary, re-initialize memory identically and run the golden interpreter and a second independent scoreboard epoch for the second pass,
+3. require each epoch to independently pass both scoreboard axes against the golden interpreter, and
+4. additionally require the two epochs' observed transaction logs to be equal to each other field-for-field, in order.
+
+Step 4 is a stronger equality check than either epoch's oracle comparison alone. It specifically targets working state, counters, or pointers that could otherwise leak across the reset boundary and produce a result that still matches the golden interpreter by coincidence while differing from the first run.
+
 ## Mismatch diagnostics
 
 Every scoreboard failure prints the first failing axis and a stable, copy-paste-friendly report. The minimum header is:
@@ -303,11 +314,13 @@ Use a distinct `reference` axis for invalid TCD encoding, out-of-range access, u
 - Transaction mismatches identify the first divergent field and retain surrounding trace context.
 - Memory mismatches identify device, byte address, expected value, observed value, and classification.
 - Reset tests apply prefix semantics and synchronous-reset sampling explicitly.
+- `TC-RESET-REPEAT` produces two independently oracle-passing epochs whose observed transaction logs are field-for-field identical to each other.
 
 ## Related
 
 - Strategy and M2 gate: `01-strategy.md`
 - Platform package layout and artifacts: `02-platform.md`
 - Always-on runtime checks: `06-checkers.md`
+- Directed test catalog and legal chain generator: `08-stimulus-and-coverage.md`
 - TCD architecture: `../04-tcd-and-datapath.md`
 - Integrated controller architecture: `../03-architecture.md`

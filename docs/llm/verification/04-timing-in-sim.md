@@ -55,7 +55,7 @@ The wrapper resolves DUT and model SIO drives after their respective delays:
 - both drive the same known value - still report overlap, even if the resolved value agrees,
 - both drive different values - resolve as unknown where supported and fail immediately.
 
-Drive ownership is checked from delayed output enables, not inferred only from resolved logic values.
+Drive ownership is checked from delayed output enables, not inferred only from resolved logic values. Any ASIC-plus-device overlap on a bidirectional SIO bit fails `Q-SIO-OWN` / `CHK-PIN-SIO-OWN` immediately after artifacts are preserved. Equal levels do not make dual drive legal.
 
 ## Parameters and sources
 
@@ -134,7 +134,7 @@ Implement hold checks by retaining protected-window end times and evaluating eve
 - `Q-CHD` measures from the final rising SCK edge to CE# rising.
 - `Q-CSP` measures from CE# falling to the first rising SCK edge.
 
-SCK high while all CE# signals are high is not treated as a universal device-protocol error. For this design, separate architecture checks require SCK low while parked and require CE# transitions with SCK low because `qspi_engine` uses `CS_ON`, `SCLK_OFF`, and `CS_OFF` padding.
+APS6404L-class devices define clocked behavior only while CE# is low. SCK must remain low for the entire interval during which no device is selected (flash CS, RAM A CE#, and RAM B CE# all high at L1; both engine CS outputs high at L0). A SCK transition during that interval is an erroneous SCK cycle, not a benign don't-care, and is checked as `Q-SCKIDLE` below. This holds regardless of which side of the shared bus currently owns drive; `qspi_engine`'s own `CS_ON`, `SCLK_OFF`, and `CS_OFF` padding already produces the required waveform by construction, so the check exists to catch a regression, not to describe an optional style choice.
 
 ### Read termination
 
@@ -146,6 +146,12 @@ The APS6404L documentation recommends a longer final-read CE# hold satisfying `t
 2. advisory numeric report - measured final CE# hold minus `(configured tACLK + observed tCLK)`.
 
 The advisory margin must be reported and reviewed. It is not silently converted into a different Table 10 minimum, and a simulation report does not replace physical closure.
+
+### SCK parked while deselected
+
+`Q-SCKIDLE` requires SCK to remain low for the complete interval during which no device is selected on the shared bus. At L1 this means flash CS, RAM A CE#, and RAM B CE# are all high; at L0, where flash CS is not an engine port, it means both engine CS outputs are high. A violation is reported at the device-plane transition timestamp together with the identity of the last-active and next-active transaction, if any, so an apparent violation caused by MCU pass-through activity to a device outside the DUT's own CS outputs is not confused with an ASIC-caused one.
+
+This is a shared-bus protocol check, not an arbitration-park check: `CHK-ARB-PARK` in `06-checkers.md` judges only the ASIC's own driven value while it holds the bus, while `Q-SCKIDLE` judges the resolved SCK net and applies whenever no device is selected, including while the MCU masters the bus.
 
 ## `Q-LAUNCH`
 
@@ -160,7 +166,7 @@ For every command, address, and write-data nibble:
 
 OE release into read dummy and OE reclaim after a read are also required to occur while SCK is low. Device-driven read-data changes are not `Q-LAUNCH` events; they are checked under `Q-RXEDGE`.
 
-The current `qspi_engine.sv` contains a known TODO stating that driven phase changes can coincide with an external SCK rise. It also notes that the delayed edge detector does not implement the documented RX edge. The checks remain `todo` until RTL is tested and corrected in a later implementation task. This documentation task does not modify RTL.
+`Q-LAUNCH` exists to hold `qspi_engine` to the APS6404L setup/hold contract on an ongoing basis, independent of any specific RTL revision's implementation history: any future change to the engine's output timing must still satisfy this window. The check remains `todo` until the M3 harness runs it against current RTL; whether it passes or fails is determined by that execution, not asserted in this document.
 
 ## `Q-RXEDGE`
 
@@ -196,11 +202,28 @@ These IDs retain the meanings established in `../11-timing-analysis.md`. Moving 
 | `Q-CHD` | CE# remains low at least 3.0 ns after the final rising SCK | L0/L1 | M3 | todo |
 | `Q-TERM` | Final read data is committed before CE# rises, with SCK frozen and no extra beat; advisory long-hold margin is reported | L0/L1 | M3 | todo |
 | `Q-MUX` | At most one RAM CE# is low; ASIC flash CS stays high while `~BUS_GNT` | L0/L1 | M1 | todo |
+| `Q-SIO-OWN` | ASIC and any selected PSRAM/SPI device never drive the same bidirectional SIO bit at once; equal driven values still fail; ownership uses delayed OE / model-drive enables; legal phases follow `../03-architecture.md` | L0/L1 | M1, delay rerun M3 | todo |
 | `Q-RST` | Asserted `rst_n` aborts the ASIC transaction, releases all top-level shared OE, and returns the engine/controller to reset state without a soft-abort command | L0/L1 | M1 | todo |
+| `Q-SCKIDLE` | SCK remains low for the entire interval while no device is selected (flash CS, RAM A CE#, and RAM B CE# all high at L1; both engine CS outputs high at L0); no erroneous SCK cycle occurs while deselected | L0/L1 | M1 | todo |
 | `Q-LAUNCH` | Driven SIO and OE change only with SCK low and meet modeled 2 ns setup and hold windows | L0 | M3 | todo |
 | `Q-RXEDGE` | Each read nibble launched from a falling edge is captured exactly once on the documented following rising edge | L0, selected L1 | M3 | todo |
 
 Every AC value in this catalog is sourced through the parameter table above from `../05-qspi-psram.md` and APS6404L Rev 2.3 Table 10. Status uses the vocabulary in `00-index.md`.
+
+## Reset-interrupted timing checks
+
+Timing monitors do not pause because a test intends to assert reset soon. Every `Q-*` window open before the sampled reset edge, the first rising `clk` edge observed with `rst_n=0`, is evaluated exactly as it would be in an uninterrupted run: the physical setup, hold, and CE#/SCK relationships that hold up to that edge do not depend on what happens afterward, and the interrupted operation's pre-edge timing is not exempted from the fundamental PSRAM timing requirements it is checking.
+
+After the sampled reset edge, `rst_n=0` combinationally clears every shared `uio_oe` bit at top level (`CHK-RST-OE` in `06-checkers.md`), and sequential controller/engine state converges over the following edges (`CHK-RST-INTERNAL`, `Q-RST`). This can force CE#, SCK, or SIO to change in a way that would otherwise look like a `Q-CEM`, `Q-CPH`, `Q-CHD`, `Q-MUX`, `Q-SCKIDLE`, or `Q-LAUNCH` violation if judged only against the uninterrupted protocol contract.
+
+Classify a timing-window observation whose violation is fully explained by the sampled reset edge's forced OE release and state convergence as a distinct `RESET-TRUNCATED` event, not a fail of the specific `Q-*` ID that would otherwise apply:
+
+1. record the specific `Q-*` ID that would have fired, the reset-sample timestamp, and the forced signal proven responsible for the apparent violation,
+2. require that every part of the window strictly before the sampled reset edge still meets its normal requirement,
+3. require that the only explanation for the post-edge segment of the violation is the documented reset behavior in `Q-RST`, `CHK-RST-OE`, or `CHK-RST-INTERNAL`, and
+4. report the event distinctly and permanently, for example `Q-CHD RESET-TRUNCATED at t=...`, so it is never silently dropped and never miscounted as an ordinary timing pass or fail.
+
+A `RESET-TRUNCATED` event requires the same review discipline as a coverage exclusion in `08-stimulus-and-coverage.md`: it is recorded with the affected `Q-*` ID, the exact window, the reset-sample timestamp, the forced signal proven responsible, and a reviewer sign-off before it is excluded from that ID's pass/fail count. An unreviewed reset-adjacent anomaly is a `fail`, not a silent pass. A timing window that is already violated strictly before the sampled reset edge is an ordinary `Q-*` failure; reset does not retroactively excuse a violation that occurred while `rst_n=1`.
 
 ## `tACLK` sweep methodology
 
@@ -267,6 +290,8 @@ Those items remain in `../11-timing-analysis.md` for STA and demoboard evidence.
 ## Related
 
 - Timed PSRAM parser and dual-device behavior: `03-psram-model.md`
+- Always-on runtime checkers and reset sampling rules: `06-checkers.md`
+- Directed reset tests and coverage exclusion discipline: `08-stimulus-and-coverage.md`
 - Verification venue split and M3 exit: `01-strategy.md`
 - Platform configuration and artifacts: `02-platform.md`
 - Architecture and D16 rising-edge policy: `../03-architecture.md`
@@ -274,4 +299,4 @@ Those items remain in `../11-timing-analysis.md` for STA and demoboard evidence.
 - Physical `T-*` closure: `../11-timing-analysis.md`
 - Converted APS6404L Rev 2.3 timing text: `../../datasheets/md/APS6404L_3SQR.md`
 - Authoritative APS6404L Rev 2.3 PDF: `../../datasheets/pdfs/APS6404L_3SQR.pdf`
-- Current RTL timing TODO: `../../../src/rtl/qspi_engine.sv`
+- Engine RTL implementing this contract: `../../../src/rtl/qspi_engine.sv`

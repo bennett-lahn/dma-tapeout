@@ -105,7 +105,7 @@ Control plane:
 | Pass-through     | MCU may drive `uio` **iff `BUS_GNT`**; idle alone is not a drive permit (D22)                                  |
 | BUS_REQ          | MCU priority: finish current QPI txn (atomic), then **release** `uio_oe` + assert `BUS_GNT`; no new DMA txn while REQ   |
 | BUS_GNT release  | After MCU Hi-Z and drops `BUS_REQ`, ASIC drops `BUS_GNT` and **resumes parking**; if not idle, DMA may resume |
-| Bus keeper       | While `~BUS_GNT`, ASIC drives all CS high and SCK low, and drives SIO with a don't-care everywhere except a live txn's dummy/read phase, where it floats to listen (D26) |
+| Bus keeper       | While `~BUS_GNT`, ASIC drives all CS high and SCK low; SIO don't-care in park after `tHZ`, float on dummy/read and through `tHZ` (D26) |
 | Kill             | No soft abort; assert **`rst_n`** to stop a runaway DMA (D23); board 10 kΩ CS pull-ups hold CE# during reset |
 
 
@@ -188,23 +188,43 @@ Ordered sequence:
 | Actor | Configuration                                                                                                                                                    |
 | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | MCU   | QSPI GPIOs remain high-Z unless / until `BUS_GNT`. Host may still drive `ui_in` (START ignored while busy; `BUS_REQ`) and read `uo_out`; kill via `rst_n`       |
-| ASIC  | Masters QSPI when not yielding: parks or drives **all CS high / SCK** while `~BUS_GNT`; during a live txn, one RAM CS may go low; **flash CS stays high**; SIO OE follows phase (drives a don't-care except float on dummy/read) |
+| ASIC  | Masters QSPI when not yielding: parks or drives **all CS high / SCK** while `~BUS_GNT`; during a live txn, one RAM CS may go low; **flash CS stays high**; SIO OE follows phase (drive cmd/addr/write; float dummy/read and through post-CE# `tHZ`) |
 | PSRAM | Sees ASIC as sole master on the selected device (when not granted to MCU)                                                                                           |
 
 
 START is ignored in this phase. **BUS_REQ** pauses after the current QPI transaction (atomic), grants the bus, then resumes DMA when REQ drops (unless quit / `rst_n` also applies).
 
+#### Bidirectional ownership matrix (normative summary)
+
+Canonical detail: [`../../../llm/03-architecture.md`](../../../llm/03-architecture.md) (Bidirectional I/O ownership specification). This table is the human summary used by firmware and verification (`CHK-PIN-SIO-OWN` / `Q-SIO-OWN` / `CHK-ARB-*`).
+
+| Phase | Flash/RAM CS | SCK | SIO[3:0] |
+| --- | --- | --- | --- |
+| `rst_n=0` | ASIC Hi-Z; board 10 kΩ pull-ups | Float (ASIC/MCU Hi-Z) | Float (all masters/devices Hi-Z) |
+| ASIC park (`~BUS_GNT`, no live txn) | ASIC drives all CS **high** | ASIC drives **low** | ASIC drives don't-care; MCU/PSRAM Hi-Z |
+| MCU grant (`BUS_GNT=1`) | ASIC Hi-Z; MCU owns CS | ASIC Hi-Z; MCU owns SCK | ASIC Hi-Z; MCU or selected memory per host phase |
+| ASIC cmd / addr / write | ASIC drives (one RAM CS low) | ASIC toggles | **ASIC drives**; selected PSRAM Hi-Z |
+| ASIC dummy (`0xEB`) | ASIC drives (one RAM CS low) | ASIC toggles | **Float** (ASIC Hi-Z; PSRAM not sourcing yet) |
+| ASIC read data | ASIC drives (one RAM CS low) | ASIC toggles | **PSRAM drives**; ASIC Hi-Z (sample `uio_in`) |
+| Post-CE# `tHZ` | ASIC may park CS high | ASIC may park SCK low | **ASIC SIO stays Hi-Z** until `tHZ`; device may still drive, then Hi-Z |
+| After `tHZ` / IDLE park | ASIC park | ASIC park | ASIC drives don't-care again |
+
+**MCU under grant:** drive SIO for command/address/write; float SIO for dummy/read so the selected flash or PSRAM can drive. Never enable MCU drivers while `BUS_GNT=0`.
+
+**Illegal:** ASIC and PSRAM/flash co-driving SIO; MCU driving while `~BUS_GNT`; ASIC OE while `BUS_GNT`; both RAM CE# low; ASIC driving flash CS low.
+
 #### Sub-phases: SIO `uio_oe` while ASIC is master
 
-While `~BUS_GNT`, CS (flash + both RAMs) and SCK stay driven. Flash CS is always parked high. Inactive RAM CS is parked high; the selected RAM CS follows the engine (low during the CE# window). SIO0..3 float only while another device may be sourcing the bus (dummy/wait, read data); every other phase drives a don't-care so the shared pins are never left undriven while the ASIC is bus keeper:
+While `~BUS_GNT`, CS (flash + both RAMs) and SCK stay driven for the live CE# window and for park. Flash CS is always parked high. Inactive RAM CS is parked high; the selected RAM CS follows the engine (low during the CE# window). SIO0..3 float for dummy/read and through post-CE# `tHZ`; every other keeper phase drives a don't-care:
 
 
-| QSPI phase                     | SIO `uio_oe` | ASIC uses                      |
-| ------------------------------ | ------------ | ------------------------------ |
-| Command / address / write data | `1` (drive)  | `uio_out` nibbles/bits         |
-| Dummy / wait                   | `0` (listen) | ignore or don't-care `uio_out` |
-| Read data                      | `0` (listen) | sample `uio_in`                |
-| Between txns / IDLE (park)     | `1` (drive)  | Don't-care `uio_out` (`0`); CS/SCK also driven |
+| QSPI phase                     | SIO `uio_oe` | ASIC uses                      | Device SIO |
+| ------------------------------ | ------------ | ------------------------------ | ---------- |
+| Command / address / write data | `1` (drive)  | `uio_out` nibbles/bits         | Hi-Z |
+| Dummy / wait                   | `0` (listen) | ignore or don't-care `uio_out` | Hi-Z (not sourcing yet) |
+| Read data                      | `0` (listen) | sample `uio_in`                | Selected PSRAM drives |
+| Post-CE# through `tHZ`         | `0` (listen) | do not reclaim yet             | May drive until `tHZ`, then Hi-Z |
+| Between txns / IDLE (park)     | `1` (drive) after `tHZ` | Don't-care `uio_out` (`0`); CS/SCK also driven | Hi-Z |
 
 
 Data path is **QPI** (`0xEB` / `0x02`; D15/D17). ASIC emits no SPI and no Enter/Exit Quad; MCU must leave both devices in QPI before START.
@@ -217,8 +237,8 @@ assign uio_out = qspi_out; // engine already parks cs_n high / sclk low in IDLE
 wire park = ~bus_gnt;
 assign uio_oe = park ? {ram_b_cs_oe, ram_a_cs_oe, sio_oe_mux, sck_oe, flash_cs_oe} : 8'h00;
 // flash_cs_oe / sck_oe / both ram_cs_oe = 1 while park
-// sio_oe_mux = engine sio_oe: drives a don't-care in every phase except
-// float (0) during dummy/read, where the PSRAM may be sourcing the bus
+// sio_oe_mux = engine sio_oe: drive don't-care except float (0) during
+// dummy/read and through post-CE# tHZ before park reclaim
 // never drive flash CS low; never both RAM CE# low
 ```
 

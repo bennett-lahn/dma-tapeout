@@ -16,20 +16,24 @@ Protocol truth and all device AC values come from `../05-qspi-psram.md`, backed 
 
 ## Attachment at each DUT level
 
+
+
 ### L0 - engine
 
-Attach one selected model to `qspi_engine` SCK, SIO, and the selected RAM CE#. Tie or monitor the unselected CE# high. The L0 wrapper also exposes DUT SIO output enable so the model can distinguish driven values from high impedance.
+Attach one selected model to `qspi_engine` SCK, SIO, and the selected RAM CE#. Monitor the unselected CE# high. The L0 wrapper also exposes DUT SIO output enable so the model can distinguish driven values from high impedance.
 
 ### L1 and L2 - integrated top
 
 Attach two model instances to the shared `uio` SCK and SIO nets:
 
-| Instance | CE# pin | Address space |
-|---|---|---|
-| PSRAM0 | `uio[6]` | `0x000000` through `0x7FFFFF` |
-| PSRAM1 | `uio[7]` | `0x000000` through `0x7FFFFF` |
 
-Both instances observe the same SCK and SIO values, but only the instance with CE# low may parse or drive a transaction. A shared-bus monitor, outside either individual memory instance, detects both RAM CE# signals low together, flash CS assertion by the ASIC, and SIO contention.
+| Instance | CE# pin  | Address space                 |
+| -------- | -------- | ----------------------------- |
+| PSRAM0   | `uio[6]` | `0x000000` through `0x7FFFFF` |
+| PSRAM1   | `uio[7]` | `0x000000` through `0x7FFFFF` |
+
+
+Both instances observe the same SCK and SIO values, but only the instance with CE# low may parse or drive a transaction. A shared-bus monitor, outside either individual memory instance, detects both RAM CE# signals low together, flash CS assertion by the ASIC, and any simultaneous ASIC-plus-device drive of bidirectional SIO (`Q-SIO-OWN` / `CHK-PIN-SIO-OWN`).
 
 Flash CS must remain high while the ASIC owns or parks the bus under `~BUS_GNT`. This is not a ban on MCU flash access: architecture permits the MCU to assert flash CS while `BUS_GNT` is high and all ASIC `uio_oe` bits are clear.
 
@@ -63,6 +67,17 @@ After the sixth dummy cycle, each falling SCK edge schedules the next read nibbl
 Each completed byte is committed to sparse memory in wire order. A transaction ending after only one nibble of a byte is malformed and must not silently commit a partial byte.
 
 The model rejects every other ASIC opcode. In particular, it does not accept `0x38` as an alias even though the device supports it in QPI mode, because the frozen V1 ASIC allowlist is exactly `0xEB` and `0x02`.
+
+## Extensibility for future commands and features
+
+The model's opcode handling, timing parameters, and protocol-policing rules are deliberately structured so that a future command, device feature, or corrected timing characteristic can be added without restructuring the parser:
+
+- opcode decoding dispatches through a table keyed by the decoded command byte, not a hard-coded two-way branch on `0xEB`/`0x02`. A future opcode (for example, a post-V1 flash command per `../10-post-v1-features.md`, or a currently-rejected device command needed for a robustness test) is a new table entry with its own phase-count, dummy-cycle, and data-direction contract, not a rewrite of the existing read/write path.
+- per-instance AC timing parameters (`tACLK`, `tCSP`, `tCHD`, `tCPH`, `tHZ`, `tSP`, `tHD`, `tCEM`, and the `tCH`/`tCL` ratios) are named, overridable fields on the model rather than inlined constants, so a future device variant, package option, or corrected datasheet revision can override them per instance without touching parser logic.
+- protocol-policing rules are independent predicates evaluated over parser state, not one monolithic conditional chain, so a new rule (for example, a future burst-length, wrap-mode, or additional ownership constraint) is an additional predicate rather than a modification of an existing one.
+- the sparse-memory and transaction-log interfaces in this document and `05-reference-model.md` are opcode-agnostic; a new data-moving command reuses them without redefining the record schema.
+
+The V1 allowlist itself stays frozen at exactly `0xEB` and `0x02` per `../05-qspi-psram.md`. Extensibility is a structural property of the model's implementation, not an early relaxation of that allowlist, and adding a table entry for a future command does not by itself make the ASIC legally able to emit it.
 
 ## Parser state and termination
 
@@ -110,23 +125,27 @@ The model records page crossings and continuous CE# low time. V1 transactions ar
 
 Protocol failures are immediate test failures with instance, simulation timestamp, parser phase, observed value, and transaction history. Required checks are:
 
-| Condition | Required model response |
-|---|---|
-| Unsupported opcode | Fail and identify the decoded opcode |
-| Command or address truncated by CE# | Fail with the completed nibble count |
-| `0xEB` dummy count other than six | Fail at early termination or first mistimed data beat |
-| Write data during an incomplete phase | Fail without committing a partial byte |
-| Odd data-nibble count at termination | Fail |
-| `A[23] != 0` | Fail before any memory access |
-| Address outside `0x000000..0x7FFFFF` | Fail before access or wrap |
-| Both RAM CE# signals low | Shared monitor fails and names both instances |
-| ASIC flash CS low while `~BUS_GNT` | Shared monitor fails |
-| ASIC drives SIO during read dummy or read-data phase | Fail as drive overlap or contention |
-| Model drives while its CE# is not active, except bounded `tHZ` release | Fail |
-| CE# low longer than configured `tCEM` | Fail `Q-CEM` |
-| CE# high gap shorter than `tCPH` | Fail `Q-CPH` |
 
-The model does not declare SCK high while CE# is high universally illegal. The architecture itself parks SCK low between transactions and sequences CE# only while SCK is low, so architecture-owned checks may require that waveform for this DUT. That is distinct from claiming a general APS6404L prohibition in every operating context.
+| Condition                                                                                                                                                        | Required model response                                                                                              |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Unsupported opcode                                                                                                                                               | Fail and identify the decoded opcode                                                                                 |
+| Command or address truncated by CE#                                                                                                                              | Fail with the completed nibble count                                                                                 |
+| `0xEB` dummy count other than six                                                                                                                                | Fail at early termination or first mistimed data beat                                                                |
+| Write data during an incomplete phase                                                                                                                            | Fail without committing a partial byte                                                                               |
+| Odd data-nibble count at termination                                                                                                                             | Fail                                                                                                                 |
+| `A[23] != 0`                                                                                                                                                     | Fail before any memory access                                                                                        |
+| Address outside `0x000000..0x7FFFFF`                                                                                                                             | Fail before access or wrap                                                                                           |
+| Both RAM CE# signals low                                                                                                                                         | Shared monitor fails and names both instances                                                                        |
+| ASIC flash CS low while `~BUS_GNT`                                                                                                                               | Shared monitor fails                                                                                                 |
+| SCK transitions while flash CS, RAM A CE#, and RAM B CE# are all high (no device selected)                                                                        | Shared monitor fails as an erroneous SCK cycle: `Q-SCKIDLE` / `CHK-PIN-SCK-PARK`                                     |
+| ASIC and a selected PSRAM/SPI device both drive any SIO bit (command, address, write, dummy, read-data, or post-CE# `tHZ` window), including equal driven values | Fail `Q-SIO-OWN` / `CHK-PIN-SIO-OWN` as drive overlap or contention. Legal ownership phases: `../03-architecture.md` |
+| ASIC drives SIO during read dummy or read-data phase                                                                                                             | Fail as the read-phase special case of the same ownership rule                                                       |
+| Model drives while its CE# is not active, except bounded `tHZ` release                                                                                           | Fail                                                                                                                 |
+| CE# low longer than configured `tCEM`                                                                                                                            | Fail `Q-CEM`                                                                                                         |
+| CE# high gap shorter than `tCPH`                                                                                                                                 | Fail `Q-CPH`                                                                                                         |
+
+
+SCK must remain low for the entire interval during which no device is selected: flash CS, RAM A CE#, and RAM B CE# all high at L1, or both engine CS outputs high at L0 where flash CS is not an engine port. APS6404L-class devices define clocked behavior only while CE# is low; a SCK transition while every device is deselected is an erroneous SCK cycle, not a benign don't-care, regardless of which side of the shared bus (ASIC or MCU pass-through) currently owns drive. The shared-bus monitor fails this as `Q-SCKIDLE` / `CHK-PIN-SCK-PARK`. This is independent of, and stricter than, the architecture's own bus-keeper parking policy (`CHK-ARB-PARK` in `06-checkers.md`), which only judges the ASIC's own driven value while it holds the bus; `Q-SCKIDLE` judges the resolved SCK net itself and applies whenever no device is selected, including while the MCU masters the bus.
 
 ## Timing handoff
 
@@ -167,7 +186,7 @@ M1 model acceptance requires:
 - directed `0xEB` and `0x02` transactions decode with the required nibble order,
 - six and only six read dummy cycles are accepted,
 - unsupported opcodes and malformed phase lengths fail,
-- address bit 23, range, CE# overlap, flash-CS, and drive-overlap checks fire on injected violations,
+- address bit 23, range, CE# overlap, flash-CS, ASIC-versus-device SIO ownership (`Q-SIO-OWN`), and SCK-parked-while-deselected (`Q-SCKIDLE`) checks fire on injected violations,
 - transaction logs reconstruct exact addresses and bytes, and
 - Icarus and Verilator agree on the directed protocol cases.
 
@@ -183,3 +202,4 @@ M3 adds the delay behavior and timing checks in `04-timing-in-sim.md`. Passing e
 - Datasheet conversion policy: `../../datasheets/README.md`
 - Converted APS6404L Rev 2.3 sections 11.1, 11.2, 13, and 14.6: `../../datasheets/md/APS6404L_3SQR.md`
 - Manufacturer PDF, authoritative for figures and tables: `../../datasheets/pdfs/APS6404L_3SQR.pdf`
+

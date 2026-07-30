@@ -18,13 +18,14 @@ Signoff requires reproducible evidence for the exact RTL or netlist revision and
 
 Current blockers to this gate:
 
-- `Q-LAUNCH` and `Q-RXEDGE` are expected to fail until the current QSPI RTL is corrected.
-- The depth sweep cannot run until `DMA_BUF_DEPTH` changes from a package `localparam` to an RTL compile-time parameter. Current results apply only to depth 1.
+- `Q-LAUNCH` and `Q-RXEDGE` remain `todo` pending M3 execution against current RTL.
+- The depth sweep cannot run until the sim harness selects module parameter `DMA_BUF_DEPTH`. Default / tapeout remains depth 1.
 
 ## Final-netlist and shuttle freeze
 
 - [ ] RTL verification freeze is complete.
 - [ ] M6 passes on the final `DMA_BUF_DEPTH=1` netlist using the required Icarus L2 test subset and IHP cell models.
+- [ ] M7 FPGA hardware validation passes on the carrier board with real MCU firmware and real PSRAM devices.
 - [ ] Reset, `BUS_REQ` and `BUS_GNT`, shared output enables, chip selects, and sampled data have no unexplained post-reset X or Z behavior.
 - [ ] Verilator X-initial and X-assignment experiments have no unexplained seed-dependent divergence.
 - [ ] SDF is explicitly `pass`, `fail`, `blocked`, or `na` with evidence. It is currently `blocked` pending a compatible artifact; a zero-delay gate pass does not change that status.
@@ -32,7 +33,7 @@ Current blockers to this gate:
 - [ ] Final configuration remains 66 MHz maximum `clk`, SCK=`clk/2`, and rising-edge RX unless a recorded architecture decision changes it.
 - [ ] Demoboard tests pass same-device copies, both cross-device directions, chaining, bus handoff, and reset recovery.
 
-Delay-annotated RTL or SDF simulation is diagnostic and regression evidence only. It does not close physical setup, hold, `tACLK`, pad, TT mux, package, board, load, transition, clock-quality, or signal-integrity `T-*` rows.
+Delay-annotated RTL or SDF simulation is diagnostic and regression evidence only. It does not close physical setup, hold, `tACLK`, pad, TT mux, package, board, load, transition, clock-quality, or signal-integrity `T-*` rows. M7 FPGA hardware validation is firmware and system-integration confidence only; FPGA I/O electrical characteristics differ from IHP pads, so it also closes no `T-*` row.
 
 ## Evidence links
 

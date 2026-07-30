@@ -53,6 +53,8 @@ Every sampled logic value is checked for resolution before integer conversion. `
 | `CHK-PIN-FLASH-HIGH` | While the ASIC drives flash CS, its value is 1. The ASIC never selects flash. | na | required | top-observable |
 | `CHK-PIN-ADDR23-ZERO` | Every decoded ASIC QPI address has address bit 23 equal to 0. Device selection is not encoded in this bit. | required | required | L0-port/pin at L0, top-observable at L1 |
 | `CHK-PIN-KNOWN` | Driven CE#, SCK, and SIO values, and sampled read SIO values, contain no unknown or high-impedance bit where the protocol requires a value. | required | required | L0-port at L0, top-observable at L1 |
+| `CHK-PIN-SIO-OWN` | ASIC and any selected PSRAM/SPI device model never drive the same bidirectional SIO bit at the same time. Fail on any overlapping OE/model-drive window, including when both drive the same known value. Judge ownership from ASIC `uio_oe` (or L0 SIO OE) and the model's drive enable after the timing layer's delays when present; do not infer safety from the resolved net alone. | required | required | L0-port at L0, top-observable at L1 |
+| `CHK-PIN-SCK-PARK` | SCK stays low for the entire interval while no device is selected: flash CS, RAM A CE#, and RAM B CE# all high at L1, or both engine CS outputs high at L0. No erroneous SCK cycle occurs while every device is deselected, regardless of which side of the shared bus currently owns drive. | required | required | L0-port at L0, top-observable at L1 |
 | `CHK-ARB-GNT-OE` | Whenever `BUS_GNT=1`, all eight ASIC `uio_oe` bits are 0. | na | required | top-observable |
 | `CHK-ARB-GNT-QUIET` | No ASIC QPI transaction begins or remains active while `BUS_GNT=1`; a grant rise occurs only with both RAM CE# high and SCK low on the resolved bus. | na | required | top-observable |
 | `CHK-ARB-PARK` | While `rst_n=1`, `BUS_GNT=0`, and no QPI transaction is active, all eight ASIC output enables are 1, flash CS and both RAM CS outputs are high, and SCK output is low. SIO output values are don't-care but their OEs are 1. | na | required | top-observable |
@@ -61,7 +63,11 @@ Every sampled logic value is checked for resolution before integer conversion. `
 
 `CHK-ARB-PARK` excludes the complete CE#-low transaction interval. During a read transaction, SIO must float for dummy and read phases, so requiring all OEs high there would be wrong. CS and SCK remain enabled at L1 throughout DMA ownership.
 
+`CHK-PIN-SIO-OWN` is the ASIC-versus-device half-duplex rule for shared SIO. It covers command, address, write, dummy, read-data, and post-CE# `tHZ` release windows. Ownership phases are defined by the normative matrix in `../03-architecture.md` (Bidirectional I/O ownership specification); human summary: `../../human/architecture/blocks/host-interface.md`. MCU-versus-ASIC contention remains under the `CHK-ARB-*` grant/OE rows, not this ID. The same condition is cataloged for the timing/model venue as `Q-SIO-OWN` in `04-timing-in-sim.md`; a model or wrapper may report either ID, but every applicable L0/L1 run must still dispose `CHK-PIN-SIO-OWN`.
+
 `CHK-ARB-GNT-QUIET` is the external atomicity check. It proves that grant does not overlap an externally active transaction, but it cannot prove the internal `qspi_busy` value. That stronger RTL-only condition has its own ID below.
+
+`CHK-PIN-SCK-PARK` is the runtime counterpart of `Q-SCKIDLE` in `04-timing-in-sim.md`. It differs from `CHK-ARB-PARK`: `CHK-ARB-PARK` judges only the ASIC's own driven value while `~BUS_GNT`, while `CHK-PIN-SCK-PARK` judges the resolved SCK net itself and applies whenever no device is selected, including while the MCU pass-through masters the bus. A model or wrapper may report either the `CHK-*` or `Q-*` ID, but every applicable L0/L1 run must still dispose `CHK-PIN-SCK-PARK`. A violation whose apparent cause is a sampled reset edge follows the `RESET-TRUNCATED` classification in `04-timing-in-sim.md` rather than an ordinary fail.
 
 ### Engine request and streaming handshake checks
 
@@ -72,7 +78,7 @@ Every sampled logic value is checked for resolution before integer conversion. `
 | `CHK-HS-RDATA-COUNT` | A completed `0xEB` read emits exactly `2 * byte_len` `rdata_valid` pulses. A write emits zero. Each pulse occurs only during the accepted transaction. | required | required | L0-port at L0, RTL-hierarchy-only at L1 |
 | `CHK-HS-WDATA-COUNT` | A completed `0x02` write emits exactly `2 * byte_len - 1` `wdata_next` pulses. A read emits zero. No pulse occurs after the final nibble or outside the accepted transaction. | required | required | L0-port at L0, RTL-hierarchy-only at L1 |
 | `CHK-HS-PULSE-WIDTH` | `txn_valid`, `rdata_valid`, and `wdata_next` are never high on two consecutive rising `clk` samples. | required | required | L0-port at L0, RTL-hierarchy-only at L1 |
-| `CHK-HS-WDATA-KNOWN` | On a write acceptance and after every `wdata_next`, `wdata` is a resolved 4-bit value. The sequence presented is retained for comparison with pin-decoded write data. | required | required | L0-port at L0, RTL-hierarchy-only at L1 |
+| `CHK-HS-WDATA-KNOWN` | On a write acceptance and on every cycle where `wdata_next=1`, `wdata` is a resolved 4-bit value holding the **next** nibble (same-cycle response before the following `clk`, per D21 setup contract). The sequence presented is retained for comparison with pin-decoded write data. | required | required | L0-port at L0, RTL-hierarchy-only at L1 |
 | `CHK-HS-OPCODE` | Every accepted command is exactly `0xEB` or `0x02`; `0xEB` has six QPI wait cycles and `0x02` has none. | required | required | L0-port plus pins at L0, RTL-hierarchy and pins at L1 |
 
 For count checks, capture `cmd` and `byte_len` on acceptance, initialize both counts to zero, and count sampled pulses until `busy` returns low. Compare only when the transaction completes normally. If reset is sampled while busy, mark the transaction aborted, retain partial counts for diagnostics, and do not demand the completed-transaction total.
@@ -179,7 +185,7 @@ Do not derive observed pin facts from internal request fields. For example, `CHK
 - Every applicable L0/L1 test reports a disposition for every catalog ID.
 - Required rows are never silently disabled by test selection.
 - Read and write count checkers pass for lengths `1`, `DMA_BUF_DEPTH`, and every distinct directed boundary length.
-- Grant, park, and reset checks pass for idle and every meaningful transaction phase.
+- Grant, park, reset, ASIC-versus-device SIO ownership, and SCK-parked-while-deselected checks pass for idle and every meaningful transaction phase.
 - Reset tests distinguish the low transition from the first rising `clk` edge sampled low.
 - At least one controlled negative test per monitor group proves the monitor can fail and emits the required ID and context.
 - Icarus and Verilator agree on all checks assigned to both simulators.

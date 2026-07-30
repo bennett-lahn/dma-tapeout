@@ -27,7 +27,7 @@ Aligned with the TT community QSPI flash+PSRAM PMOD map. V1 DMA uses **both RAM 
 | 6 | RAM A CS | Park high when idle/other die; drive low only for PSRAM A txns |
 | 7 | RAM B CS | Park high when idle/other die; drive low only for PSRAM B txns |
 
-Only one PSRAM CE# low per transaction (shared SIO). Cross-device = read then write with CS switch. While `~BUS_GNT`, ASIC is the bus keeper (D26): CS high / SCK low between txns and in IDLE; SIO drives a don't-care everywhere except floating for dummy/read (never left floating in IDLE or between txns). Board has **10 kΩ** pull-ups on each CS. Pass-through / OE rules: [`blocks/host-interface.md`](blocks/host-interface.md), [`firmware.md`](firmware.md).
+Only one PSRAM CE# low per transaction (shared SIO). Cross-device = read then write with CS switch. While `~BUS_GNT`, ASIC is the bus keeper (D26): CS high / SCK low between txns and in IDLE; SIO drives a don't-care in park after `tHZ`, and floats for dummy/read (and through `tHZ`). Board has **10 kΩ** pull-ups on each CS. Ownership matrix: [`blocks/host-interface.md`](blocks/host-interface.md); firmware: [`firmware.md`](firmware.md).
 
 ### Inputs: host control (partial freeze)
 
