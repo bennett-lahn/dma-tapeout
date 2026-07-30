@@ -37,10 +37,12 @@ typedef enum logic {
    ,QSPI_PSRAM1 = 1'b1
 } qspi_device_sel_t;
 
-localparam int unsigned DMA_BUF_DEPTH = 1;   // N (D20)
+// Actual buffer depth N is module parameter DMA_BUF_DEPTH (default 1) in
+// tt_um_lahnb_sgdma / sys_controller. When hardening, depth and max depth should be the same.
+localparam int unsigned DMA_BUF_DEPTH_MAX = 8; // verification sweep ceiling (D20)
 localparam int unsigned QPI_TCD_BYTES = 11; // Must be > 2 for qspi_engine correctness
 localparam int unsigned QPI_MAX_BYTES =
-   (DMA_BUF_DEPTH > QPI_TCD_BYTES) ? DMA_BUF_DEPTH : QPI_TCD_BYTES;
+   (DMA_BUF_DEPTH_MAX > QPI_TCD_BYTES) ? DMA_BUF_DEPTH_MAX : QPI_TCD_BYTES;
 
 localparam int unsigned QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1);
 // QPI payload uses 2 SCK cycles per byte; also covers addr/wait (6)

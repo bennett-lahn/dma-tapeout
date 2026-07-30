@@ -35,10 +35,12 @@ module sys_controller
    import qspi_pkg::qspi_device_sel_t;
    import qspi_pkg::qpi_byte_len_t;
    import qspi_pkg::qpi_payload_nibble_cnt_t;
-   import qspi_pkg::DMA_BUF_DEPTH;
+   import qspi_pkg::DMA_BUF_DEPTH_MAX;
    import qspi_pkg::QPI_TCD_BYTES;
    import qspi_pkg::QSPI_PSRAM0;
-(
+#(
+   parameter int unsigned DMA_BUF_DEPTH = 1 // N (D20); V1 tapeout = 1
+)(
    input   logic       clk
    ,input  logic       rst_n
 
@@ -60,6 +62,12 @@ module sys_controller
    ,output qpi_byte_len_t    qspi_byte_len
    ,output logic       [3:0] qspi_wdata
 );
+
+// Elaboration check: package qpi_* widths assume N <= DMA_BUF_DEPTH_MAX.
+generate
+   if (DMA_BUF_DEPTH < 1 || DMA_BUF_DEPTH > DMA_BUF_DEPTH_MAX)
+      $error("sys_controller: DMA_BUF_DEPTH must be in 1 .. DMA_BUF_DEPTH_MAX");
+endgenerate
 
 sys_control_state_t curr_state;
 sys_control_state_t next_state;

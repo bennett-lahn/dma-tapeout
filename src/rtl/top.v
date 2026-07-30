@@ -19,7 +19,9 @@
 
 module tt_um_lahnb_sgdma
    import qspi_pkg::*;
-(
+#(
+  parameter int unsigned DMA_BUF_DEPTH = 1 // N (D20); V1 tapeout = 1; sim sweep via -G
+)(
   input  wire [7:0] ui_in     // Dedicated inputs
   ,output wire [7:0] uo_out    // Dedicated outputs
   ,input  wire [7:0] uio_in    // IOs: Input path
@@ -101,7 +103,9 @@ qspi_engine qspi_engine (
    ,.sio_oe     (sio_oe)
 );
 
-sys_controller sys_controller (
+sys_controller #(
+   .DMA_BUF_DEPTH(DMA_BUF_DEPTH)
+) sys_controller (
    .clk             (clk)
    ,.rst_n           (rst_n)
    ,.start           (start)

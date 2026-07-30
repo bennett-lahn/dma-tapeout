@@ -257,35 +257,3 @@ always_ff @(posedge clk) begin
 end
 
 endmodule
-
-// TODO: Fix QPI launch timing at driven phase boundaries.
-// curr_state and sclk can currently advance on the same clk edge, causing
-// sio_out/sio_oe to change when the external SCLK rises at SEND_CMD_1 to
-// SEND_CMD_2, SEND_CMD_2 to SEND_ADDR, and SEND_ADDR to WRITE_DATA. The PSRAM
-// therefore receives no guaranteed data setup time on those first nibbles.
-// Architect the sequencer so every driven data and OE change occurs while SCLK
-// is low and is stable before the following rising edge, for example by
-// advancing driven phases after a falling edge or adding low-SCLK preparation
-// cycles. Also reconcile RX timing with the documented contract: the current
-// delayed rising-edge detector samples sio_in near the external falling edge,
-// not on the external rising edge.
-
-// Register sio_out, sio_oe
-
-// On falling edge:
-
-// - Advance state machine
-// - Update sio_out, sio_oe
-// - Request next write nibble
-// - Mark beat complete / increment data count (note 1 sclk delay here)
-
-// On rising edge:
-
-// - Capture sio_in
-
-// Special handling
-
-// - Special handling needed when sclk_en is rising
-// - Treat sclk_en rise as sclk fall cycle
-
-// if sclk_en, follow sclk_en protocol
