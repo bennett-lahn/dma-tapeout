@@ -1,0 +1,22 @@
+; qspi_engine_bmc.sby - Phase 0 stub (M4 fills properties and assumptions)
+; Run from test/formal/engine/ with native WSL sby/yosys (see docs/llm/verification/07-formal.md)
+; TODO(M4): set depth, assumption profile, and FP-* BMC targets; do not claim pass until M4 sign-off.
+
+[options]
+mode bmc
+depth 32
+multiclock off
+
+[engines]
+smtbmc bitwuzla
+
+[script]
+read -formal -sv ../../src/rtl/types.svh ../../src/rtl/qspi_engine.sv
+read -formal -sv qspi_engine_harness.sv ../bind/qspi_engine_properties.sv
+prep -top qspi_engine_harness
+
+[files]
+../../src/rtl/types.svh
+../../src/rtl/qspi_engine.sv
+qspi_engine_harness.sv
+../bind/qspi_engine_properties.sv

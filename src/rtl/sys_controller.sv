@@ -315,7 +315,7 @@ always_ff @(posedge clk) begin
 end
 
 // State a stall resumes into: the state being left, or the retained origin while stalled.
-assign stall_origin = (curr_state == STALL) ? stalled_state : curr_state;
+assign stall_origin = sys_control_state_t'((curr_state == STALL) ? stalled_state : curr_state);
 
 // Register done/bus_gnt to prevent signal glitches propagating to output I/O.
 always_ff @(posedge clk) begin

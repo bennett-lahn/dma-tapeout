@@ -33,5 +33,7 @@ dma-venv/
 *.fst
 *.log
 sim_build/
+test/runs/*
+!test/runs/.gitkeep
 results.xml
 **/__pycache__/

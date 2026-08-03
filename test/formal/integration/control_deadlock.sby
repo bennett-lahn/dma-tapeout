@@ -1,0 +1,25 @@
+; control_deadlock.sby - Phase 0 stub (M4 fills bounded watchdog checks)
+; Run from test/formal/integration/ with native WSL sby/yosys (see docs/llm/verification/07-formal.md)
+; Primary harness: sys_qspi_harness; retains FP-DLK-QSPI + integration FP-DLK-* chain.
+; TODO(M4): checker-local watchdog counters and FP-DLK-* bounds from 07-formal.md.
+
+[options]
+mode bmc
+depth 96
+multiclock off
+
+[engines]
+smtbmc bitwuzla
+
+[script]
+read -formal -sv ../../src/rtl/types.svh ../../src/rtl/qspi_engine.sv ../../src/rtl/sys_controller.sv
+read -formal -sv sys_qspi_harness.sv ../bind/sys_controller_properties.sv ../bind/qspi_engine_properties.sv
+prep -top sys_qspi_harness
+
+[files]
+../../src/rtl/types.svh
+../../src/rtl/qspi_engine.sv
+../../src/rtl/sys_controller.sv
+sys_qspi_harness.sv
+../bind/sys_controller_properties.sv
+../bind/qspi_engine_properties.sv

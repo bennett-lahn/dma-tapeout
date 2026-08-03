@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Cocotb-friendly wrapper around OSS CAD Suite's real vvp.
+#
+# Suite bin/vvp forces PYTHONHOME/PYTHONEXECUTABLE to the suite tree, which
+# breaks cocotb's embed of dma-venv (system Python). This wrapper keeps the
+# suite dynamic linker + libexec/vvp, adds system lib dirs so libpython loads,
+# and points PYGPI at the active venv interpreter.
+#
+# env.sh prepends this directory to PATH ahead of the suite bin/.
+# Pair with wrappers/iverilog so sim.vvp shebang points here, not suite bin/vvp.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/common.sh"
+
+TOP="$(find_suite_top)"
+VVP_REAL="${TOP}/libexec/vvp"
+LDSO="${TOP}/lib/ld-linux-x86-64.so.2"
+
+if [ ! -x "$VVP_REAL" ] || [ ! -x "$LDSO" ]; then
+    echo "vvp wrapper: missing suite runtime under $TOP" >&2
+    exit 1
+fi
+
+if [ -n "${VIRTUAL_ENV:-}" ] && [ -x "${VIRTUAL_ENV}/bin/python" ]; then
+    export PYGPI_PYTHON_BIN="${PYGPI_PYTHON_BIN:-${VIRTUAL_ENV}/bin/python}"
+    export PYTHONEXECUTABLE="${PYTHONEXECUTABLE:-${VIRTUAL_ENV}/bin/python}"
+elif command -v python3 >/dev/null 2>&1; then
+    export PYGPI_PYTHON_BIN="${PYGPI_PYTHON_BIN:-$(command -v python3)}"
+    export PYTHONEXECUTABLE="${PYTHONEXECUTABLE:-$(command -v python3)}"
+fi
+
+unset PYTHONHOME
+
+if [ -z "${LIBPYTHON_LOC:-}" ] && command -v cocotb-config >/dev/null 2>&1; then
+    LIBPYTHON_LOC="$(cocotb-config --libpython 2>/dev/null || true)"
+    if [ -n "$LIBPYTHON_LOC" ]; then
+        export LIBPYTHON_LOC
+    fi
+fi
+
+# Suite --library-path replaces the default search path. Keep suite lib FIRST
+# so suite glibc wins; append system dirs so libpython (and deps) still resolve.
+# Prepending /usr/lib causes __nptl_change_stack_perm / GLIBC_PRIVATE failures.
+LIB_PATH="${TOP}/lib:/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu"
+
+exec "$LDSO" --inhibit-cache --inhibit-rpath "" \
+    --library-path "$LIB_PATH" \
+    "$VVP_REAL" "$@"

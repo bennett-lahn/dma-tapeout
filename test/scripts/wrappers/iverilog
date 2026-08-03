@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Wrap OSS CAD Suite iverilog so compiled sim.vvp shebang uses our cocotb-friendly
+# wrappers/vvp instead of suite bin/vvp (which forces PYTHONHOME).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/common.sh"
+
+TOP="$(find_suite_top)"
+IVL_REAL="${TOP}/libexec/iverilog"
+LDSO="${TOP}/lib/ld-linux-x86-64.so.2"
+WRAPPER_VVP="${SCRIPT_DIR}/vvp"
+
+if [ ! -x "$IVL_REAL" ] || [ ! -x "$LDSO" ] || [ ! -x "$WRAPPER_VVP" ]; then
+    echo "iverilog wrapper: missing suite runtime or wrappers/vvp under $TOP" >&2
+    exit 1
+fi
+
+exec "$LDSO" --inhibit-cache --inhibit-rpath "" \
+    --library-path "${TOP}/lib" \
+    "$IVL_REAL" -p "VVP_EXECUTABLE=${WRAPPER_VVP}" "$@"

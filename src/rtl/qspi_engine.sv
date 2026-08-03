@@ -91,7 +91,7 @@ always_comb begin
       SEND_ADDR: begin
          if (cycle_cnt == 'd6) begin
             if (qspi_wait_cycles(cmd) == 3'd0)
-               next_state = (cmd == QSPI_CMD_WRITE) ? WRITE_DATA : READ_DATA;
+               next_state = qspi_state_t'((cmd == QSPI_CMD_WRITE) ? WRITE_DATA : READ_DATA);
             else
                next_state = WAIT;
          end else begin
@@ -100,7 +100,7 @@ always_comb begin
       end
       WAIT: begin
          if (cycle_cnt == qspi_wait_cycles(cmd))
-            next_state = (cmd == QSPI_CMD_WRITE) ? WRITE_DATA : READ_DATA;
+            next_state = qspi_state_t'((cmd == QSPI_CMD_WRITE) ? WRITE_DATA : READ_DATA);
          else
             next_state = WAIT;
       end
@@ -236,7 +236,7 @@ always_ff @(posedge clk) begin
       cycle_cnt  <= '0;
    end else begin
       if (sclk_en)
-         curr_state <= (sclk_will_fall) ? next_state : curr_state;
+         curr_state <= qspi_state_t'((sclk_will_fall) ? next_state : curr_state);
       else
          curr_state <= next_state;
       unique case (curr_state)
