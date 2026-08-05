@@ -32,15 +32,25 @@ Stable selectors are `LEVEL=engine`, `LEVEL=top`, and `LEVEL=gl`.
 | **M4** | Required `FP-*` safety proofs, helper invariants, covers, and bounded deadlock checks |
 | **M5** | Reproducible random regression, `COV-*` closure, and depth sweep |
 | **M6** | Required Icarus L2 subset, X checks, SDF disposition, and `T-*` handoff |
-| **M7** | FPGA hardware validation on the carrier board with real MCU firmware, before shuttle commit |
+| **M7** | FPGA hardware validation on the carrier board with real MCU firmware, before shuttle commit (firmware bring-up ready once M0-M5 sim gate is met; see roadmap / D30) |
 
 Milestones are cumulative. A required child ID in `fail`, `wip`, or `blocked` prevents its parent milestone from closing.
 
 ## Known blockers
 
 - `Q-LAUNCH` and `Q-RXEDGE` remain `todo`: the M3 harness has not yet executed them against current RTL.
+- M3 also owns delay-annotated reruns of `Q-CEM` / `Q-CPH` / `Q-SIO-OWN` and `Q-CSP` / `Q-CHD` / `Q-TERM`.
+- Independent `QspiPinMonitor` is still a stub; pin ADDR23/KNOWN dispose via model IDs for now (M2 path).
+- Model-plane Z→0 idealization remains (`tb_top` / `tb_engine` float→0).
+- CI L1 Icarus smoke job is still open (local smoke is green).
 - SDF remains `blocked` until hardening produces a compatible netlist-matched artifact and annotation is qualified.
 - The M5 `DMA_BUF_DEPTH=1,2,4,8` sweep needs the sim harness to select the module parameter. RTL default remains depth 1 (V1 tapeout).
 - M7 FPGA hardware validation has not started.
+
+## Progress and operational lessons
+
+- M0 (`TC-SMOKE`) and M1 behavioral exit are green (Icarus ≡ Verilator on the directed protocol set under `ideal`). Next milestone is M2 reference / scoreboard / directed `TC-*`.
+- Do not mix nix Icarus into cocotb runs; use `source test/env.sh` (suite wrappers). Raw suite `bin/vvp` breaks `dma-venv` via `PYTHONHOME`.
+- PSRAM model must remain SCK/CE#-edge driven with six real dummy cycles - no clk-polling calibration.
 
 Full strategy and milestone gates: [`../../llm/verification/01-strategy.md`](../../llm/verification/01-strategy.md).

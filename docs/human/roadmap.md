@@ -1,6 +1,6 @@
 # Roadmap
 
-## Phase 0 - Planning (current)
+## Phase 0 - Planning
 
 - [x] Choose DMA over hash
 - [x] Capture dual documentation set (`docs/human`, `docs/llm`)
@@ -24,25 +24,31 @@
 - [x] QSPI engine (QPI `0xEB` read / `0x02` write, CE# time limit, **RAM A/B CS mux**; no ASIC enter/exit quad)
 - [x] Working register file (11-byte TCD fields)
 
-## Phase 2 - Descriptor DMA (V1 feature complete)
+## Phase 2 - Descriptor DMA (V1 feature complete) (current)
 
-- [ ] Fetch + single-TCD copy (same-device PSRAM)
+- [x] Fetch + single-TCD copy (same-device PSRAM) - exercised by M0 `TC-SMOKE` (length-1); broader lengths/corners still M2
 - [ ] Cross-device PSRAM copy (A↔B)
 - [ ] Chained TCDs (incl. next TCD on other device; zero-length no-op)
 - [ ] DONE / error status
-- [ ] M0 - toolchain and L1 same-device smoke
-- [ ] M1 - dual-PSRAM model, protocol policing, and behavioral QSPI checks
+- [x] M0 - toolchain and L1 same-device smoke (`source test/env.sh && test/scripts/run_smoke.sh`)
+- [x] Verification scaffold + durable toolchain hooks (`test/env.sh`, wrappers, doctor/run scripts)
+- [x] SCK-accurate dual PSRAM model (6 dummy cycles; table-driven `0xEB`/`0x02`) with M1 protocol policing
+- [x] M1 - protocol policing, L0 QPI directed tests, and Icarus/Verilator agreement (behavioral `Q-*` under `ideal`; residual: independent `QspiPinMonitor` stub, model-plane Z→0, CI smoke still open; M3 owns delays / `Q-LAUNCH` / `Q-RXEDGE`)
 - [ ] M2 - reference model, dual-axis scoreboard, directed tests, and always-on checkers
 - [ ] M3 - delay layer, setup/hold sweeps, and launch/RX edge checks
 - [ ] M4 - formal safety proofs and cover reachability
 - [ ] M5 - randomized regression and coverage closure; buffer-depth sweep blocked pending sim harness `DMA_BUF_DEPTH` wiring
+- [ ] CI smoke job (L1 Icarus)
+- [ ] Firmware library + demoboard bring-up for M7 readiness (MicroPython under `firmware/`; host-side `firmware/tests` may start earlier; demoboard HIL still Phase 3 / M7)
 
 ## Phase 3 - Demoboard + hardening
 
-- [ ] RP2 demoboard scripts (bulk A↔B / scatter-gather patterns)
+Once the cocotb/RTL verification milestones that gate M7 entry are complete, **FPGA testing must be ready to run**. That requires demoboard/FPGA bring-up including firmware, so the firmware library and bring-up work above is allowed and needed before or as M7 starts (not deferred until after M7). Host-side unit logic under `firmware/tests/` can start earlier; demoboard HIL remains M7.
+
+- [ ] RP2 demoboard scripts (bulk A↔B / scatter-gather patterns) - firmware bring-up complete enough that M7 can start
 - [ ] Area/DFF audit vs 2-tile budget
 - [ ] M6 - gate-level and X checks, then hand remaining physical `T-*` rows to STA and demoboard closure
-- [ ] M7 - FPGA hardware validation: load synthesizable RTL on an FPGA standing in for the ASIC on the same carrier board and MCU, adapt/write firmware test code, and pass a high-value hardware regression subset before freezing RTL for shuttle
+- [ ] M7 - FPGA hardware validation: load synthesizable RTL on an FPGA standing in for the ASIC on the same carrier board and MCU, run firmware-driven high-value hardware regression before freezing RTL for shuttle
 - [ ] Close **66 MHz `clk` / 33 MHz SCK** / rising-edge RX (D16 / D27): use delay-annotated simulation for `Q-*` pre-checks, STA for IHP pad + TT mux margin, and the demoboard for final number validity; see [`verification/strategy.md`](verification/strategy.md), [`architecture/timing.md`](architecture/timing.md), and [`../llm/verification/04-timing-in-sim.md`](../llm/verification/04-timing-in-sim.md)
 - [ ] CI + GDS flow green
 - [ ] Freeze RTL for shuttle
@@ -63,9 +69,19 @@ Ship order if schedule slips:
 1. Pass-through + QPI + single TCD copy on **RAM A**
 2. **RAM B** CS + same-device B + **cross-device** A↔B
 3. Chaining
-4. Abort / status polish
+4. Status polish / `rst_n` kill language (D23; no soft-abort pin)
 
 Do not pull post-V1 items above chaining to “save” the interview story - the bulk A↔B demo is enough.
+
+## Verification roadblocks (lessons)
+
+Keep these out of the next milestones; details in the verification execution plan:
+
+1. **Do not mix nix Icarus with cocotb** - use OSS CAD Suite via `test/env.sh`; harden with Docker/nix in a separate shell.
+2. **Never call raw suite `bin/vvp`** - use wrappers from `env.sh` (`PYTHONHOME` breaks `dma-venv` / cocotb).
+3. **PSRAM model must stay SCK/CE#-driven** - no clk-polling or dummy-count calibration hacks.
+4. **Agents run only `test/scripts/*.sh`** - avoid brittle one-liners and `/tmp` logs.
+5. **Wipe `test/sim_build/`** after Icarus/wrapper changes.
 
 ## Open questions
 

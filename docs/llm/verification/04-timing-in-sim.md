@@ -196,19 +196,40 @@ These IDs retain the meanings established in `../11-timing-analysis.md`. Moving 
 
 | ID | Requirement | Primary level | Milestone | Status |
 |---|---|---|---|---|
-| `Q-CEM` | Every CE# low pulse remains below `tCEM`: 4 us extended or 8 us standard | L0/L1 | M1, delay rerun M3 | todo |
-| `Q-CPH` | CE# high gap is at least 18 ns between bursts | L0/L1 | M1, delay rerun M3 | todo |
+| `Q-CEM` | Every CE# low pulse remains below `tCEM`: 4 us extended or 8 us standard | L0/L1 | M1, delay rerun M3 | pass |
+| `Q-CPH` | CE# high gap is at least 18 ns between bursts | L0/L1 | M1, delay rerun M3 | pass |
 | `Q-CSP` | CE# falls at least 2.5 ns before the first rising SCK | L0/L1 | M3 | todo |
 | `Q-CHD` | CE# remains low at least 3.0 ns after the final rising SCK | L0/L1 | M3 | todo |
 | `Q-TERM` | Final read data is committed before CE# rises, with SCK frozen and no extra beat; advisory long-hold margin is reported | L0/L1 | M3 | todo |
-| `Q-MUX` | At most one RAM CE# is low; ASIC flash CS stays high while `~BUS_GNT` | L0/L1 | M1 | todo |
-| `Q-SIO-OWN` | ASIC and any selected PSRAM/SPI device never drive the same bidirectional SIO bit at once; equal driven values still fail; ownership uses delayed OE / model-drive enables; legal phases follow `../03-architecture.md` | L0/L1 | M1, delay rerun M3 | todo |
-| `Q-RST` | Asserted `rst_n` aborts the ASIC transaction, releases all top-level shared OE, and returns the engine/controller to reset state without a soft-abort command | L0/L1 | M1 | todo |
-| `Q-SCKIDLE` | SCK remains low for the entire interval while no device is selected (flash CS, RAM A CE#, and RAM B CE# all high at L1; both engine CS outputs high at L0); no erroneous SCK cycle occurs while deselected | L0/L1 | M1 | todo |
+| `Q-MUX` | At most one RAM CE# is low; ASIC flash CS stays high while `~BUS_GNT` | L0/L1 | M1 | pass |
+| `Q-SIO-OWN` | ASIC and any selected PSRAM/SPI device never drive the same bidirectional SIO bit at once; equal driven values still fail; ownership uses delayed OE / model-drive enables; legal phases follow `../03-architecture.md` | L0/L1 | M1, delay rerun M3 | pass |
+| `Q-RST` | Asserted `rst_n` aborts the ASIC transaction, releases all top-level shared OE, and returns the engine/controller to reset state without a soft-abort command | L0/L1 | M1 | pass |
+| `Q-SCKIDLE` | SCK remains low for the entire interval while no device is selected (flash CS, RAM A CE#, and RAM B CE# all high at L1; both engine CS outputs high at L0); no erroneous SCK cycle occurs while deselected | L0/L1 | M1 | pass |
 | `Q-LAUNCH` | Driven SIO and OE change only with SCK low and meet modeled 2 ns setup and hold windows | L0 | M3 | todo |
 | `Q-RXEDGE` | Each read nibble launched from a falling edge is captured exactly once on the documented following rising edge | L0, selected L1 | M3 | todo |
 
 Every AC value in this catalog is sourced through the parameter table above from `../05-qspi-psram.md` and APS6404L Rev 2.3 Table 10. Status uses the vocabulary in `00-index.md`.
+
+### M1 behavioral evidence (2026-08-03)
+
+M1 `pass` rows above are under `TIMING_PROFILE=ideal`, `SEED=1`, `DMA_BUF_DEPTH=1`, Icarus 14.0 and Verilator 5.051 agreeing on the directed set. Logs: `test/runs/m1_t10_icarus_matrix.log`, `test/runs/m1_t10_verilator_matrix.log` (may be wiped by `make clean`).
+
+| ID | Evidence module(s) | Level | Notes |
+|---|---|---|---|
+| `Q-CEM`, `Q-CPH` | `tests.test_qspi_timing` | L1 | Coarse directed thresholds; delay-annotated rerun remains M3 |
+| `Q-MUX`, `Q-SIO-OWN`, `Q-SCKIDLE` | `tests.test_qspi_ownership` | L1 | Shared-bus monitor negatives + clean baseline |
+| `Q-RST` | `tests.test_qspi_reset_protocol` | L1 (and L0 subset) | Dispose + `RESET-TRUNCATED` classification |
+| `Q-LAUNCH`, `Q-RXEDGE`, `Q-CSP`, `Q-CHD`, `Q-TERM` | - | - | Still `todo` until M3 harness runs |
+
+Cross-sim REPRO (per module; both sims exit 0 in the matrix logs):
+
+```sh
+source test/env.sh
+test/scripts/run_test.sh LEVEL=top SIM=icarus SEED=1 COCOTB_TEST_MODULES=tests.test_qspi_ownership
+test/scripts/run_test.sh LEVEL=top SIM=verilator SEED=1 COCOTB_TEST_MODULES=tests.test_qspi_ownership
+# likewise: test_qspi_timing, test_qspi_reset_protocol, test_qspi_negative,
+#           test_qspi_pin_disposition; LEVEL=engine: tests.test_qspi, tests.test_engine_attach
+```
 
 ## Reset-interrupted timing checks
 

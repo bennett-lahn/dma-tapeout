@@ -17,7 +17,7 @@ V1 target: **bulk mover** between PSRAM A and B (learning / resume demo). ADC te
 1. **Scatter-gather** via linked Transfer Control Descriptors (TCDs) in PSRAM
 2. **Dual PSRAM** (RAM A + RAM B): read/write either device, including cross-device copies
 3. **Host pass-through** (`BUS_REQ`/`BUS_GNT`; ASIC releases `uio_oe` while granted, parks CS/SCK while not) so the MCU can program both PSRAMs **and** flash; START hands execution to the ASIC
-4. **Abort** path (pin encoding TBD) so a bad/long run can release the bus
+4. **`rst_n` kill** path (D23; no soft-abort pin) so a bad/long run returns the ASIC to idle and releases shared OE
 
 ## Explicit non-goals / post-V1
 

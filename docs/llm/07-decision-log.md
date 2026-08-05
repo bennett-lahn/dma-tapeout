@@ -100,8 +100,8 @@ Obsidian vault notes remain handwritten and external; agents may read, must not 
 - Idle = ASIC `uio_oe=0` + MCU master; DMA = MCU GPIO Hi-Z + ASIC master with phase-accurate SIO OE.
 - Contends if both enable; protocol must release-before-seize.
 
-**Superseded for restore timing by D14 / drive legality by D22:** OE clears on idle or yield; MCU drives only under `BUS_GNT`.
-**Superseded for idle OE by D26:** ASIC is the bus keeper whenever `~BUS_GNT` (parks CS high / SCK low); OE clears only for grant / reset.
+**Superseded for restore timing by D14 / drive legality by D22:** OE clears on idle or yield; MCU drives under `BUS_GNT` (and under `rst_n=0` per D26 amend).
+**Superseded for idle OE by D26:** ASIC is the bus keeper whenever `rst_n=1` and `~BUS_GNT` (parks CS high / SCK low); OE clears for grant or while `rst_n=0`.
 
 Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-architecture.md`.
 
@@ -187,7 +187,7 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 | START while busy | Pulse is **ignored and not queued**; a later command requires a new rising edge after IDLE returns |
 | End of chain | ~~`NEXT_TCD == 0`.~~ ~~Both-devices stop (D18).~~ **Superseded by D19:** `CTRL_FLAGS.QUIT=1` after fetch → **IDLE** (no execute). **D23:** next START always refetches fixed head at `0x000000` / PSRAM 0 |
 | DONE | Asserted **whenever** the ASIC is IDLE (including after reset / before first START) |
-| Pass-through | ~~Enabled iff DONE (idle); disabled while not idle (DMA active).~~ **Superseded by D22:** MCU may drive `uio` only while `BUS_GNT` is high (request/grant). |
+| Pass-through | ~~Enabled iff DONE (idle); disabled while not idle (DMA active).~~ **Superseded by D22 / amended D26:** MCU may drive `uio` while `BUS_GNT` is high **or** `rst_n` is low. |
 | Abort | ~~If **ABORT** asserted while active: finish the **current QPI transaction**, then transition to IDLE~~ **Superseded by D23:** no ABORT pin; use **`rst_n`** to stop a runaway DMA |
 
 ~~Pin indices open for ABORT / head.~~ **Superseded by D18:** `ui_in[0]=START`, ~~`ui_in[1]=ABORT`~~, `uo_out[0]=DONE`; no head-pointer pins. **D23:** ABORT removed; `ui_in[1]` reserved. **D22:** `ui_in[2]=BUS_REQ`, `uo_out[1]=BUS_GNT`; `ui_in[7:3]` / `uo_out[7:2]` still open for status/DFT.
@@ -306,7 +306,7 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 1. **Pins:**
    - `ui_in[2]` = **`BUS_REQ`** (MCU → ASIC): MCU wants the shared bidirectional QSPI `uio` bus.
    - `uo_out[1]` = **`BUS_GNT`** (ASIC → MCU): MCU has been given control of that bus (ASIC drivers released).
-2. **MCU drive rule:** MCU keeps its QSPI GPIOs Hi-Z unless **`BUS_GNT` is high**. While `BUS_GNT` is low, MCU lets the ASIC drive (or float) the bidirectional nets.
+2. **MCU drive rule:** MCU keeps its QSPI GPIOs Hi-Z unless **`BUS_GNT` is high** or **`rst_n` is low** (D26). While `rst_n=1` and `BUS_GNT` is low, MCU lets the ASIC drive as bus keeper.
 3. **ASIC priority:** MCU bus request has priority over DMA. While `BUS_REQ` is high, the descriptor FSM must **not start a new QPI transaction**. If a QPI transaction is already in flight, it completes atomically (`busy` → 0), then ASIC **releases** `uio_oe` and asserts `BUS_GNT`. Single QPI operations remain atomic (no mid-command tear).
 4. **Grant / release sequence (release before seize):**
    1. MCU asserts `BUS_REQ` (drivers still Hi-Z).
@@ -330,7 +330,7 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 **Decision:**
 
 1. **Remove host ABORT.** There is no `ui_in` ABORT strobe and no `dma_abort` / soft-abort path in V1. ~~D14/D18 abort behavior~~ revoked.
-2. **Kill a runaway DMA with `rst_n`.** Asserting active-low reset (`rst_n=0`) returns the ASIC to IDLE (`DONE` high) and the top level forces every shared `uio_oe` bit low. Board CS pull-ups (D26) keep CE# high while reset holds. After `rst_n` deasserts with `~BUS_GNT`, ASIC resumes bus-keeper parking. Firmware must re-establish PSRAM QPI mode after reset if needed (D17).
+2. **Kill a runaway DMA with `rst_n`.** Asserting active-low reset (`rst_n=0`) returns the ASIC to IDLE (`DONE` high) and the top level forces every shared `uio_oe` bit low. Board CS pull-ups (D26) keep CE# high while reset holds unless the MCU selects a device. While `rst_n=0`, MCU drive of the shared QSPI nets is legal (D26 MCU-safe window; not a soft-abort). After `rst_n` deasserts with `~BUS_GNT`, ASIC resumes bus-keeper parking. Firmware must re-establish PSRAM QPI mode after reset if needed (D17).
 3. **`ui_in[1]`** (formerly ABORT) is **reserved** / open with `ui_in[7:3]`. **BUS_REQ** stays at **`ui_in[2]`** (D22).
 4. **`QUIT` end-of-chain (clarifies D19):** when the FSM fetches a TCD with **`CTRL_FLAGS.QUIT=1`**, it returns to **IDLE** / asserts **DONE** without executing that TCD. The next accepted **START** always begins a new run by fetching from **address `0x000000` on PSRAM 0** again (fixed head; D18) - it does not resume from a saved `NEXT_TCD` or mid-chain pointer.
 5. Mid-run bus yield remains **BUS_REQ** / **BUS_GNT** only (D22).
@@ -376,26 +376,27 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 **DFF / tile impact:** none. This freezes the existing RTL interpretation and places byte-order handling in firmware.
 
-## D26 - ASIC bus keeper; board CS pull-ups
+## D26 - ASIC bus keeper; board CS pull-ups; MCU-safe drive while reset
 
 **Decision:**
 
-1. **ASIC is the shared-bus keeper whenever it has not granted the bus.** While `~BUS_GNT` (and outside hard reset), the ASIC actively drives:
+1. **ASIC is the shared-bus keeper whenever it is out of reset and has not granted the bus.** While `rst_n=1` and `~BUS_GNT`, the ASIC actively drives:
    - **Flash CS**, **RAM A CS**, and **RAM B CS** high (deselected)
    - **SCK** low
    - **SIO0..3** according to QPI phase when a transaction is live: drive on cmd / addr / write; **float only on dummy/wait and read-data** (listen / sample `uio_in`). ~~Between transactions and in IDLE, SIO may float or drive a don't-care~~ **Resolved in RTL:** SIO drives a don't-care (`0`) between transactions and in IDLE rather than floating, so no shared `uio` pin is ever left undriven while the ASIC is bus keeper; CS and SCK stay driven throughout.
-2. **Release for grant or reset.** On `BUS_GNT`, ASIC forces **all** shared `uio_oe` bits off so the MCU can master the bus. While active-low reset is asserted (`rst_n=0`), the top level also forces every shared output enable low, but reset does not itself grant MCU ownership. Resume parking after grant falls or reset deasserts when `~BUS_GNT`.
-3. **Flash never selected by ASIC.** Parking flash CS high is not flash DMA; the ASIC never drives flash CS low and emits no flash opcodes (D11 still binding for flash-out-of-V1).
-4. **Inter-transaction OE:** do **not** release CS/SCK between DMA transactions. That preserves CE# high and avoids floating selects without depending on firmware latency.
-5. **Board hardware:** the QSPI PMOD / demoboard path in use has a **10 kΩ pull-up on each CS** (flash, RAM A, RAM B). Those resistors are the keeper while `rst_n=0`, during power-up, and in any window before the TT mux enables this design. They are a backup, not a substitute for ASIC parking while the design is live and `~BUS_GNT`.
-6. **Handoff:** release-before-seize remains required. Overlap on CS-high / SCK-low idle levels is benign if it occurs briefly; firmware must still Hi-Z before dropping `BUS_REQ` and before START.
-7. Supersedes D8/D11/D22 language that idle or between-txn means full `uio_oe=0`, and the D11 claim that flash CS OE stays off for the whole DMA run.
+2. **MCU-safe drive windows.** MCU may enable its QSPI drivers while **`BUS_GNT=1`** (D22) **or** while **`rst_n=0`**. While `rst_n=0`, ASIC shared OEs are forced off, and this **is** an MCU-safe drive window for the shared QSPI nets (alongside grant). Rationale: on the TT demoboard, `rst_n` is held low by default when this design is disconnected / another design is active on the mux, so the MCU must still be able to talk to PSRAM/flash on those nets. This is not a soft-abort and does not assert `BUS_GNT`.
+3. **Release for grant or reset.** On `BUS_GNT`, ASIC forces **all** shared `uio_oe` bits off so the MCU can master the bus. While active-low reset is asserted (`rst_n=0`), the top level also forces every shared output enable low (MCU-safe window per item 2). Resume parking after grant falls or after `rst_n` deasserts when `~BUS_GNT`.
+4. **Flash never selected by ASIC.** Parking flash CS high is not flash DMA; the ASIC never drives flash CS low and emits no flash opcodes (D11 still binding for flash-out-of-V1).
+5. **Inter-transaction OE:** do **not** release CS/SCK between DMA transactions. That preserves CE# high and avoids floating selects without depending on firmware latency.
+6. **Board hardware:** the QSPI PMOD / demoboard path in use has a **10 kΩ pull-up on each CS** (flash, RAM A, RAM B). Those resistors keep CE# high while `rst_n=0` unless the MCU selects a device, during power-up, and in any window before the TT mux enables this design. They are a backup, not a substitute for ASIC parking while the design is live (`rst_n=1`) and `~BUS_GNT`.
+7. **Handoff:** release-before-seize remains required when leaving a drive window (grant or reset). Overlap on CS-high / SCK-low idle levels is benign if it occurs briefly; firmware must still Hi-Z before dropping `BUS_REQ` and before START.
+8. Supersedes D8/D11/D22 language that idle or between-txn means full `uio_oe=0`, the D11 claim that flash CS OE stays off for the whole DMA run, and earlier D26 wording that reset is not an MCU-safe drive window.
 
-**Why:** Without continuous ASIC drive of CS/SCK while not granted, CE# can float into the low region long enough to approach `tCEM` and block PSRAM refresh, and a floating flash CS while SCK toggles is unsafe. Board 10 kΩ pull-ups cover reset-scale gaps; ASIC parking covers run-time gaps at zero extra DFFs.
+**Why:** Without continuous ASIC drive of CS/SCK while live and not granted, CE# can float into the low region long enough to approach `tCEM` and block PSRAM refresh, and a floating flash CS while SCK toggles is unsafe. Board 10 kΩ pull-ups cover reset-scale gaps when the MCU is not driving CS; ASIC parking covers run-time gaps at zero extra DFFs. Allowing MCU drive while `rst_n=0` matches demoboard mux reality (deselected design held in reset).
 
 **DFF / tile impact:** none beyond existing OE mux logic (combinational park vs grant).
 
-Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/human/architecture/firmware.md`, `docs/human/architecture/blocks/descriptor-fsm.md`.
+Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/human/architecture/firmware.md`, `docs/llm/12-firmware.md`, `docs/human/architecture/blocks/descriptor-fsm.md`.
 
 ## D27 - Target IHP SG13G2 shuttle (TTIHP26b); retire sky130 GPIO ceilings
 
@@ -441,3 +442,18 @@ Detail: `02-constraints.md`, `11-timing-analysis.md`, human `architecture/limita
 **Why:** The datasheet only defines SCK behavior while CE# is low; treating an idle-time SCK toggle as benign would hide a real firmware or arbitration bug on real hardware even though the current architecture's own padding never produces one.
 
 **DFF / tile impact:** none; verification-catalog decision only. No RTL change is implied because `qspi_engine`'s existing padding already satisfies the stricter check.
+
+## D30 - MicroPython demoboard firmware under `firmware/`
+
+**Decision:**
+
+1. Demoboard MCU software for this project lives under **`firmware/`** (MicroPython on the Tiny Tapeout **ETR** demoboard / RP2350B via the local [`tt-micropython-firmware/`](../../tt-micropython-firmware/) SDK / `DemoBoard`). It is not under cocotb `test/`.
+2. MCU access to PSRAM (and flash pass-through) is **basic SPI** only (1-bit cmd/addr/data on SIO0/SIO1). MCU-side QPI / quad I/O is not required for V1 firmware.
+3. **SPI transport** follows the Tiny Tapeout QSPI PMOD guide ([PDF](../datasheets/pdfs/Using_QSPI_TinyTapeout.pdf), [extracted notes + code catalog](../datasheets/md/Using_QSPI_TinyTapeout.md)): primary master is the guide's **PIO SPI** (`PIOSPI` / `rp2.StateMachine` / `spi_cpha0`) on ETR `uio` GPIOs **25..32**. SoftSPI and hardware `machine.SPI` are not the guide's working path and are not primary for this project.
+4. Host-side **pytest** of pure firmware logic under `firmware/tests/` is required (no demoboard hardware). Demoboard HIL remains Phase 3 / M7 (D28). Firmware library + demoboard bring-up must be ready once the cocotb/RTL sim gate for M7 entry is met (see roadmap / `12-firmware.md`).
+
+**Why:** Locks the MicroPython / ETR / `firmware/` workstream to the published PMOD SPI approach (reusable `PIOSPI` catalog) and keeps unit-testable logic separate from M7 HIL.
+
+**DFF / tile impact:** none; firmware / process decision only.
+
+Detail: `docs/human/architecture/firmware.md`, `docs/llm/12-firmware.md`.

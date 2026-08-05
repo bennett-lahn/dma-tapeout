@@ -89,21 +89,24 @@ For every `pass`, retain the simulator or formal engine, level, seed where appli
 ## Status roll-up
 
 
-| Area                     | IDs or gate              | Current status | Planned milestone                           |
-| ------------------------ | ------------------------ | -------------- | ------------------------------------------- |
-| Platform smoke           | M0 exit                  | todo           | M0                                          |
-| QPI protocol             | `Q-*`                    | todo           | M1 and M3                                   |
-| Directed behavior        | `TC-*`, `CHK-*`          | todo           | M2                                          |
-| Delay-annotated timing   | `Q-LAUNCH`, `Q-RXEDGE`   | todo           | M3                                          |
-| Formal                   | `FP-*`                   | todo           | M4                                          |
-| Random and coverage      | `COV-*`                  | todo           | M5                                          |
-| Buffer-depth sweep       | `TC-DEPTH`, `COV-DEPTH*` | blocked        | M5, after sim harness wires `DMA_BUF_DEPTH` |
-| Gate-level and X         | M6 exit                  | todo           | M6                                          |
-| FPGA hardware validation | M7 exit                  | todo           | M7                                          |
-| Physical timing          | `T-*`                    | todo           | Post-M6/M7 closure                          |
+| Area                     | IDs or gate              | Current status | Planned milestone                                                                 |
+| ------------------------ | ------------------------ | -------------- | --------------------------------------------------------------------------------- |
+| Platform / toolchain     | `env.sh`, doctor, hooks  | pass           | M0 (complete)                                                                     |
+| Platform smoke           | M0 exit / `TC-SMOKE`     | pass           | M0 (complete); CI job still open                                                  |
+| PSRAM behavioral model   | SCK/CE# agent + policing | pass           | M1 exit met; model-plane Z→0 idealization remains; see `03-psram-model.md`      |
+| QPI protocol (M1 rows)   | `Q-CEM/CPH/MUX/SIO-OWN/RST/SCKIDLE` | pass | M1 (complete under `ideal`); delay rerun of CEM/CPH/SIO-OWN at M3          |
+| QPI protocol (M3 rows)   | `Q-LAUNCH`, `Q-RXEDGE`, `Q-CSP/CHD/TERM` | todo | M3                                                                    |
+| Directed behavior        | `TC-*`, `CHK-*`          | todo           | M2 (`TC-SMOKE` + M1 `TC-QPI-*` / negatives already pass); independent `QspiPinMonitor` still stub |
+| Delay-annotated timing   | `Q-LAUNCH`, `Q-RXEDGE`   | todo           | M3                                                                                |
+| Formal                   | `FP-*`                   | todo           | M4                                                                                |
+| Random and coverage      | `COV-*`                  | todo           | M5                                                                                |
+| Buffer-depth sweep       | `TC-DEPTH`, `COV-DEPTH*` | blocked        | M5, after sim harness wires `DMA_BUF_DEPTH`                                       |
+| Gate-level and X         | M6 exit                  | todo           | M6                                                                                |
+| FPGA hardware validation | M7 exit                  | todo           | M7                                                                                |
+| Physical timing          | `T-*`                    | todo           | Post-M6/M7 closure                                                                |
 
 
-This table is a planning roll-up, not evidence of implementation. Update the owning catalog first, then this summary.
+This table is a planning roll-up, not evidence of implementation. Update the owning catalog first, then this summary. M1 matrix evidence: `test/runs/m1_t10_icarus_matrix.log` and `test/runs/m1_t10_verilator_matrix.log` (Icarus ≡ Verilator; may be wiped by `make clean`). Detail in `04-timing-in-sim.md` (M1 behavioral evidence).
 
 ## Architecture anchors
 

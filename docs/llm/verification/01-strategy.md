@@ -236,7 +236,7 @@ M3 supplies pre-STA evidence. It does not close a `T-*` row.
 
 ### M7 - FPGA hardware validation
 
-**Entry:** M0 through M5 complete. M6 may proceed independently since it requires a different artifact, the synthesized ASIC netlist, while M7 requires only an FPGA-synthesizable build of the same RTL.
+**Entry:** M0 through M5 complete. Once that cocotb/RTL sim gate is met, FPGA testing must be ready to run: demoboard/FPGA bring-up including MicroPython firmware under `firmware/` (D30; see [`12-firmware.md`](../12-firmware.md) and human roadmap) is allowed and needed before or as M7 starts, not deferred until after M7. Host-side `firmware/tests` unit logic may start earlier; demoboard HIL is this milestone. M6 may proceed independently since it requires a different artifact, the synthesized ASIC netlist, while M7 requires only an FPGA-synthesizable build of the same RTL.
 
 **Exit:**
 

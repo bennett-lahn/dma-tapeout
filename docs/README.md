@@ -4,11 +4,18 @@ Split into two audiences:
 
 | Tree | Audience | Style |
 |---|---|---|
-| `human/` | Humans | Condensed summaries |
-| `llm/` | AI agents / future sessions | Verbose, organized context |
+| `human/` | Humans | Condensed, complete summaries (not stubs) |
+| `llm/` | AI agents / future sessions | Verbose elaboration of the same topics |
 | `datasheets/` | Both | Manufacturer PDFs plus converted markdown (`pdfs/`, `md/`) |
 
 Architecture and verification are parallel documentation sets under both `human/` and `llm/`.
+
+### Human / llm parity
+
+- `human/` stays **condensed**, but it must still carry every durable requirement, decision, and architectural choice in some form (short section, table, or bullets).
+- `llm/` may expand rationale, catalogs, edge cases, sequences, and implementation detail. It must **not** be the only place a fact exists.
+- Prefer expanding an existing human doc over adding an llm-only dump with a human pointer.
+- **Anti-pattern:** human verification naming `CHK-*` and linking to [`llm/verification/06-checkers.md`](llm/verification/06-checkers.md) without summarizing the invariants. That catalog is currently llm-heavy debt; do not copy that shape for new docs.
 
 ## Start here
 

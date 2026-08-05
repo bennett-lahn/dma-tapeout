@@ -64,11 +64,13 @@ Minimum persuasive demo:
 Stretch demo (still V1):
 
 - Long transfer that proves CE# slicing did not corrupt PSRAM
-- Abort mid-transfer restores pass-through cleanly
+- Mid-transfer **`rst_n` kill** (D23) returns idle / releases shared OE so the MCU can reclaim the bus (no soft-abort pin)
 
 ## Post-V1 use cases (not V1)
 
 Telemetry-shaped behaviors (ring last-*N*, in-flight calibrate/mask, until-threshold loops, ASIC flash) are sketched in [`10-post-v1-features.md`](10-post-v1-features.md). They are optional later additions if a sensor workload returns.
+
+Firmware programming contract (MicroPython / SPI / TCD install): [`12-firmware.md`](12-firmware.md), human [`../human/architecture/firmware.md`](../human/architecture/firmware.md) (D30).
 
 ## Interview framing (V1)
 

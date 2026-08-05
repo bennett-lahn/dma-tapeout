@@ -52,7 +52,7 @@ Only one PSRAM CE# low per transaction (shared SIO). Cross-device = read then wr
 
 The ASIC and MCU cannot both freely drive the same QSPI pins.
 
-Pass-through is **shared-bus OE arbitration** on `uio` with an explicit **request/grant** (`BUS_REQ` / `BUS_GNT`, D22): MCU drives only while `BUS_GNT`; ASIC yields after the current QPI txn (atomic) when requested. Not a separate MCU-to-PSRAM pin proxy. Protocol detail: [`blocks/host-interface.md`](blocks/host-interface.md).
+Pass-through is **shared-bus OE arbitration** on `uio` with an explicit **request/grant** (`BUS_REQ` / `BUS_GNT`, D22): MCU drives while `BUS_GNT=1` or `rst_n=0` (D26); ASIC yields after the current QPI txn (atomic) when requested. Not a separate MCU-to-PSRAM pin proxy. Protocol detail: [`blocks/host-interface.md`](blocks/host-interface.md); firmware: [`firmware.md`](firmware.md).
 
 ### Mode A - MCU pass-through (programming)
 
@@ -129,10 +129,10 @@ Post-V1 (ALU / cond-stop / ring / flash): [`post-v1.md`](post-v1.md).
 PSRAM A/B --QPI--> RX hold --------> TX stage --QPI--> PSRAM A/B
                          ^
                          |
-              SRC_PTR[23] / DEST_PTR[23]
+         CTRL_FLAGS SRC_DEVICE / DEST_DEVICE
 ```
 
-Same-device or cross-device. Pure memcpy in V1. Devices from `SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`. RX hold is **1 byte** for V1; engine correctness must not assume that depth (D20).
+Same-device or cross-device. Pure memcpy in V1. Devices from `SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE` (D24; not pointer MSBs). RX hold is **1 byte** for V1; engine correctness must not assume that depth (D20).
 
 ## MCU setup flow
 
@@ -151,7 +151,7 @@ Tracked in detail at [`../../llm/08-open-questions.md`](../../llm/08-open-questi
 - Status / DFT packing on `uo_out[7:2]` (and optional `ui_in[7:3]` / `ui_in[1]`)
 - Self-pointing descriptor policy vs `rst_n`
 
-Settled for V1: **24-bit** address pointers; device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24); **11-byte** TCD with **`QUIT`** flag; fixed head at 0/PSRAM0; zero-length no-op; idle/START/DONE (D14/D18/D19); **no ABORT** (D23: `rst_n`); **BUS_REQ/BUS_GNT** pass-through (D22); **ASIC bus keeper** while `~BUS_GNT` (D26; board 10 kΩ CS pull-ups); QPI data `0xEB`/`0x02` (D15/D17); **MCU** enter/exit QPI (D17); **66 MHz `clk`**, **SCK = clk/2**, rising-edge RX (D16); D21 handshake; **1-byte** data buffer (D20); `ui_in[0]=START`, `ui_in[2]=BUS_REQ`, `uo_out[0]=DONE`, `uo_out[1]=BUS_GNT`; QSPI on `uio`; **dual PSRAM** DMA; **ASIC flash unsupported**. Post-V1 ladder: [`post-v1.md`](post-v1.md).
+Settled for V1: **24-bit** address pointers; device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24); **11-byte** TCD with **`QUIT`** flag; fixed head at 0/PSRAM0; zero-length no-op; idle/START/DONE (D14/D18/D19); **no ABORT** (D23: `rst_n`); **BUS_REQ/BUS_GNT** pass-through (D22); **ASIC bus keeper** while `rst_n=1` and `~BUS_GNT` (D26; MCU may also drive while `rst_n=0`; board 10 kΩ CS pull-ups); QPI data `0xEB`/`0x02` (D15/D17); **MCU** enter/exit QPI (D17); **66 MHz `clk`**, **SCK = clk/2**, rising-edge RX (D16); D21 handshake; **1-byte** data buffer (D20); `ui_in[0]=START`, `ui_in[2]=BUS_REQ`, `uo_out[0]=DONE`, `uo_out[1]=BUS_GNT`; QSPI on `uio`; **dual PSRAM** DMA; **ASIC flash unsupported**. Post-V1 ladder: [`post-v1.md`](post-v1.md).
 
 ## See also
 

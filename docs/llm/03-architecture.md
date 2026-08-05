@@ -59,7 +59,7 @@ Shared SIO/SCK: only **one** PSRAM CE# may be low per transaction. Cross-device 
 | `uo_out[1]` | **BUS_GNT** (MCU may drive `uio`; D22) |
 | `ui_in[7:3]`, `uo_out[7:2]` | Reserved (status/DFT - packing open) |
 
-Protocol: DONE ⇔ idle; MCU drives `uio` only while `BUS_GNT`; START ignored while busy; no ABORT - use `rst_n` to stop a run (D23); `BUS_REQ` pauses DMA after atomic QPI txn (D22); fixed head (D18) + `QUIT` → IDLE, next START from addr 0 (D19/D23). Human summary: `docs/human/architecture/system.md` (I/O section). Bidirectional ownership matrix: this file (below) and `docs/human/architecture/blocks/host-interface.md`.
+Protocol: DONE ⇔ idle; MCU drives `uio` while `BUS_GNT=1` or `rst_n=0` (D22/D26); START ignored while busy; no ABORT - use `rst_n` to stop a run (D23); `BUS_REQ` pauses DMA after atomic QPI txn (D22); fixed head (D18) + `QUIT` → IDLE, next START from addr 0 (D19/D23). Human summary: `docs/human/architecture/system.md` (I/O section). Bidirectional ownership matrix: this file (below) and `docs/human/architecture/blocks/host-interface.md`. Firmware: `docs/llm/12-firmware.md` / human `firmware.md` (D30).
 
 ## Memory layout and interfacing
 
@@ -97,7 +97,7 @@ Dedicated ports: `ui_in[7:0]` (input only), `uo_out[7:0]` (output only). Bidirec
 
 `uio_oe = 0` disables the ASIC output driver only; the pad is not removed from the net (input path and parasitics remain).
 
-On the demoboard, RP2040 GPIOs, ASIC `uio`, and the QSPI PMOD share those nets. **Pass-through is OE arbitration on a shared bus**, not a gate-level proxy that copies MCU QSPI from `ui_in` onto a separate PSRAM port. The MCU has its own GPIO OE; TT `uio_oe` does not control the RP2040. Both masters enabled on one net is contention (undefined levels, pad stress). Handoffs must **release before seize**.
+On the demoboard, RP2 MCU GPIOs, ASIC `uio`, and the QSPI PMOD share those nets. **Pass-through is OE arbitration on a shared bus**, not a gate-level proxy that copies MCU QSPI from `ui_in` onto a separate PSRAM port. The MCU has its own GPIO OE; TT `uio_oe` does not control the MCU. Both masters enabled on one net is contention (undefined levels, pad stress). Handoffs must **release before seize**.
 
 Human-facing phase tables and conceptual RTL: `docs/human/architecture/blocks/host-interface.md`.
 
@@ -110,10 +110,10 @@ This matrix is the V1 source of truth for who may drive each shared `uio` net. V
 | Actor | What it can drive |
 |---|---|
 | **ASIC** | TT `uio_out` when the matching `uio_oe` bit is 1 |
-| **MCU** | RP2040 GPIO outputs when firmware enables them (legal only while `BUS_GNT=1`) |
+| **MCU** | RP2 GPIO outputs when firmware enables them (legal while `BUS_GNT=1` or `rst_n=0`; D22/D26) |
 | **PSRAM A / B** | Device SIO outputs while that device's CE# is low and the protocol phase is a device-output window (and briefly after CE# rises through `tHZ`) |
 | **Flash** | Device SIO only when flash CS is low under MCU grant (ASIC never selects flash) |
-| **Board** | 10 kΩ pull-ups on flash CS, RAM A CS, and RAM B CS (keepers during reset / pre-enable only) |
+| **Board** | 10 kΩ pull-ups on flash CS, RAM A CS, and RAM B CS (keepers during reset / pre-enable unless MCU drives CS) |
 
 **Legend for the tables below**
 
@@ -138,12 +138,12 @@ This matrix is the V1 source of truth for who may drive each shared `uio` net. V
 
 | Phase | Condition | Flash CS | RAM A CS | RAM B CS | SCK | SIO[3:0] |
 |---|---|---|---|---|---|---|
-| **Reset** | `rst_n=0` | ASIC Hi-Z; board **Pull-up**; MCU Hi-Z | same | same | ASIC Hi-Z; MCU Hi-Z (**Float** unless MCU illegally drives) | ASIC Hi-Z; MCU Hi-Z; devices Hi-Z (**Float**) |
+| **Reset** | `rst_n=0` | ASIC Hi-Z; board **Pull-up** unless MCU drives CS | same | same | ASIC Hi-Z; **MCU may Drive** (MCU-safe window, D26) | ASIC Hi-Z; **MCU** or selected memory per host SPI phase |
 | **ASIC park** | `rst_n=1`, `~BUS_GNT`, no live QPI txn | **ASIC Drive** high | **ASIC Drive** high | **ASIC Drive** high | **ASIC Drive** low | **ASIC Drive** don't-care; MCU Hi-Z; both PSRAM Hi-Z |
 | **MCU grant** | `BUS_GNT=1` | **ASIC Hi-Z**; **MCU** owns per host txn (else rely on pull-up when MCU leaves CS undriven) | same pattern for each CS MCU uses | same | **ASIC Hi-Z**; **MCU Drive** when mastering | **ASIC Hi-Z**; **MCU** or selected memory per host QSPI/SPI phase (see below) |
 | **ASIC live txn** | `rst_n=1`, `~BUS_GNT`, CE# window active | **ASIC Drive** high | **ASIC Drive** (one low / one high per `device_sel`) | same | **ASIC Drive** (clk/2 toggle) | See QPI sub-phases below |
 
-Reset does **not** grant the MCU the bus. MCU drivers stay Hi-Z until `BUS_GNT=1`.
+Reset does **not** assert `BUS_GNT`, but while `rst_n=0` MCU drive of the shared QSPI nets is legal (D26). While `rst_n=1`, MCU drivers stay Hi-Z until `BUS_GNT=1`.
 
 #### ASIC-master QPI sub-phases (SIO ownership)
 
@@ -161,7 +161,7 @@ Applies only while ASIC is master (`~BUS_GNT`) and a RAM CE# is in its transacti
 
 Write transactions have no dummy/read window: SIO stays ASIC-driven for command, address, and data, then enters the post-CE# turnaround rule before park reclaim.
 
-#### MCU-master phases (while `BUS_GNT=1`)
+#### MCU-master phases (while `BUS_GNT=1` or `rst_n=0`)
 
 ASIC `uio_oe` is all 0. Firmware is the only legal external master.
 
@@ -176,7 +176,7 @@ ASIC `uio_oe` is all 0. Firmware is the only legal external master.
 | Condition | Why |
 |---|---|
 | ASIC SIO OE=1 while any PSRAM/flash model drives SIO | Pad contention (`CHK-PIN-SIO-OWN` / `Q-SIO-OWN`) |
-| MCU drives any `uio` while `BUS_GNT=0` | Fights ASIC bus keeper |
+| MCU drives any `uio` while `rst_n=1` and `BUS_GNT=0` | Fights ASIC bus keeper |
 | ASIC `uio_oe!=0` while `BUS_GNT=1` | Grant broken (`CHK-ARB-GNT-OE`) |
 | Both RAM CE# low | Shared SIO multiplex violation |
 | ASIC drives flash CS low | Flash is MCU pass-through only in V1 |
@@ -186,7 +186,7 @@ ASIC `uio_oe` is all 0. Firmware is the only legal external master.
 
 - MCU asserts **BUS_REQ**, waits for **BUS_GNT**; ASIC **releases** `uio_oe = 0` on all QSPI pins.
 - MCU firmware drives the shared `uio` nets as QSPI master to **PSRAM A, PSRAM B, and/or flash**.
-- Works in IDLE or as a mid-DMA yield after the current QPI txn completes atomically. Idle/`DONE` alone is not a drive permit (D22).
+- Works in IDLE or as a mid-DMA yield after the current QPI txn completes atomically. Idle/`DONE` alone is not a drive permit (D22). MCU may also drive while `rst_n=0` without grant (D26).
 
 ### Mode B - DMA master (execution)
 
@@ -220,7 +220,7 @@ Responsibilities:
 - Consume the post-sync one-`clk` START pulse and synchronized BUS_REQ level (not raw pad levels)
 - Drive status: DONE, BUS_GNT, error, debug mux on remaining `uo_out`
 - Fetch and execute descriptor chains through the QSPI engine
-- Own the mode switch between pass-through and DMA master via internal FSM `uio_oe` arbitration + D22 request/grant + D26 bus keeper (park CS/SCK while `~BUS_GNT`; release OE only on grant; SIO phase-accurate during live txns)
+- Own the mode switch between pass-through and DMA master via internal FSM `uio_oe` arbitration + D22 request/grant + D26 bus keeper (park CS/SCK while `rst_n=1` and `~BUS_GNT`; release OE on grant or while `rst_n=0`; SIO phase-accurate during live txns)
 
 `sys_controller.sv` intentionally combines host/mode control and descriptor sequencing. "Host interface" and "descriptor FSM" name two behavioral views of this module, not an RTL port boundary. The QSPI engine remains separate.
 
@@ -230,8 +230,8 @@ I/O principles (still binding):
 
 1. Serialize host interfaces; do not assume wide parallel buses
 2. Reserve at least one muxed DFT/debug output for FSM observation after tapeout
-3. Verification must cover edge cases that cannot be probed on silicon (including double-drive / host drives without `BUS_GNT`)
-4. While `~BUS_GNT`, ASIC parks the bus (D26); release all shared OE only under `BUS_GNT` / reset; never enable MCU and ASIC drivers with disagreeing levels
+3. Verification must cover edge cases that cannot be probed on silicon (including double-drive / host drives without `BUS_GNT` while out of reset)
+4. While `rst_n=1` and `~BUS_GNT`, ASIC parks the bus (D26); release all shared OE under `BUS_GNT` or while `rst_n=0`; never enable MCU and ASIC drivers with disagreeing levels
 5. Sample host control only after top-level sync into `clk`
 
 ### 3. Working-state register file (explicit, DFF-critical)
@@ -274,7 +274,7 @@ Notes from planning:
 - Abort: finish current QPI txn, then IDLE.
 - **BUS_REQ (D22):** MCU priority; do not start a new QPI txn while REQ; finish in-flight txn atomically, assert `BUS_GNT`, resume when REQ drops (unless IDLE).
 - No `STATE_PROCESS` in V1 (ALU / cond-stop are post-V1).
-- **`uio_oe` arbitration (D26):** ASIC is bus keeper while `rst_n && ~BUS_GNT` (park all CS high / SCK low; SIO per the bidirectional ownership matrix: drive don't-care in park; float only on dummy/read and through post-CE# `tHZ`). Force every shared output enable low while active-low reset is asserted (`rst_n=0`) or under `BUS_GNT`. Do not float CS/SCK, or SIO in idle / between transactions outside reset and outside the `tHZ` window. Board 10 kΩ CS pull-ups cover reset / pre-enable.
+- **`uio_oe` arbitration (D26):** ASIC is bus keeper while `rst_n=1 && ~BUS_GNT` (park all CS high / SCK low; SIO per the bidirectional ownership matrix: drive don't-care in park; float only on dummy/read and through post-CE# `tHZ`). Force every shared output enable low while active-low reset is asserted (`rst_n=0`) or under `BUS_GNT`; MCU drive while `rst_n=0` is legal. Do not float CS/SCK, or SIO in idle / between transactions outside reset and outside the `tHZ` window. Board 10 kΩ CS pull-ups cover reset / pre-enable when MCU is not driving CS.
 
 ### 5. Post-V1 blocks (not in V1 silicon plan)
 

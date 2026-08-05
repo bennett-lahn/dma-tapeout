@@ -190,6 +190,14 @@ M1 model acceptance requires:
 - transaction logs reconstruct exact addresses and bytes, and
 - Icarus and Verilator agree on the directed protocol cases.
 
+**M1 acceptance status:** `pass` (2026-08-03). Evidence: `test/runs/m1_t10_icarus_matrix.log` and `test/runs/m1_t10_verilator_matrix.log` (`TIMING_PROFILE=ideal`, `SEED=1`; both sims exit 0 on smoke, `test_qspi_negative`, `test_qspi_ownership`, `test_qspi_timing`, `test_qspi_reset_protocol`, `test_qspi_pin_disposition` at L1; `test_qspi` / `test_engine_attach` at L0). Catalog `Q-*` detail and REPROs: `04-timing-in-sim.md`.
+
+Residual limitations (do not reopen the M1 behavioral gate, but stay honest):
+
+- `tb_top` / `tb_engine` model plane still maps floating SIO `z` to idle `0` (Z→0 idealization); `CHK-PIN-KNOWN` float-as-X coverage waits on removing that idealization.
+- Independent `QspiPinMonitor` transaction export remains a stub; `CHK-PIN-ADDR23-ZERO` / `CHK-PIN-KNOWN` dispose via model `Q-ADDR23` / `Q-SIO-X` until M2.
+- Delay-annotated policing and `Q-LAUNCH` / `Q-RXEDGE` remain M3.
+
 M3 adds the delay behavior and timing checks in `04-timing-in-sim.md`. Passing either milestone does not close a physical `T-*` item.
 
 ## Repository sources

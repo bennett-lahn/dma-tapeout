@@ -10,12 +10,14 @@ Manufacturer source PDFs and LLM-searchable markdown conversions for devices thi
 | `md/` | Text/markdown extracted for search and agent context |
 | `_convert_pdf_to_md.py` | Helper that wraps `pdftotext` output into page-fenced markdown |
 
-Current devices:
+Current devices / guides:
 
 - `pdfs/APS6404L_3SQR.pdf` - AP Memory APS6404L-3SQR QSPI PSRAM (Rev 2.3)
 - `md/APS6404L_3SQR.md` - converted text dump
 - `pdfs/W25Q128JV.pdf` - Winbond W25Q128JV 128 M-bit Serial Flash (Rev I, 2021-08-23; renamed from vendor `W25Q128JV RevI 08232021 Plus.pdf`)
 - `md/W25Q128JV.md` - converted text dump
+- `pdfs/Using_QSPI_TinyTapeout.pdf` - Tiny Tapeout "Configuring and flashing the QSPI Pmod" guide (may be image-only)
+- `md/Using_QSPI_TinyTapeout.md` - transcribed notes + **code catalog** (ETR pin map, `PIOSPI`, PSRAM/flash SPI patterns) for firmware groundwork
 
 Prefer the PDF when a table or timing diagram must be exact. Prefer the markdown when grepping opcodes, limits, or section text in agent workflows.
 

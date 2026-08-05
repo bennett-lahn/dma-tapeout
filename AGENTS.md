@@ -23,8 +23,9 @@ Planning / architecture. Early RTL under `src/rtl/`. Resolve items in `docs/llm/
 ## Do / don't
 
 - Do update `docs/llm/` when architectural decisions change
-- Do keep `docs/human/` short
+- Do keep `docs/human/` condensed **and complete**: every durable fact in `docs/llm/` must appear in `docs/human/` in some form (summary, table, or bullets). llm elaborates; it is not a private second source of truth
 - Do cite TinyDMA-2C explicitly when using that file
+- Don't leave new requirements, catalogs, or architecture choices llm-only with a human stub/pointer (see `docs/README.md` parity rule; `CHK-*` checkers are a known bad example)
 - Don't edit Obsidian vault files
 - Don't copy TinyDMA-2C architecture or RTL
 - Don't expand scope past the 2-tile / shuttle reality without an explicit cut plan

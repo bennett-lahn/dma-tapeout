@@ -26,8 +26,9 @@ Do not modify these files from the repo agent workflow. If notes and repo docs d
 
 - PCB specs: https://tinytapeout.com/specs/pcb/
 - Demo PCB repo: https://github.com/TinyTapeout/tt-demo-pcb
-- Demoboard MicroPython firmware: https://github.com/TinyTapeout/tt-micropython-firmware
+- Demoboard MicroPython firmware: https://github.com/TinyTapeout/tt-micropython-firmware (local clone: `tt-micropython-firmware/`; project firmware contract: [`12-firmware.md`](12-firmware.md), D30)
 - QSPI Flash/PSRAM PMOD reference: https://github.com/mole99/qspi-pmod
+- TT QSPI PMOD configure/flash guide (in-repo): [`../datasheets/pdfs/Using_QSPI_TinyTapeout.pdf`](../datasheets/pdfs/Using_QSPI_TinyTapeout.pdf); ETR pin map + **`PIOSPI` / PSRAM SPI code catalog**: [`../datasheets/md/Using_QSPI_TinyTapeout.md`](../datasheets/md/Using_QSPI_TinyTapeout.md)
 - **Shuttle / PDK (D27):** Tiny Tapeout **TTIHP26b**, PDK **`ihp-sg13g2`**
   - Project template: https://github.com/TinyTapeout/ttihp-verilog-template (local clone: `ttihp-verilog-template/`)
   - IHP Open PDK: https://github.com/IHP-GmbH/IHP-Open-PDK (local clone: `IHP-Open-PDK/`)
