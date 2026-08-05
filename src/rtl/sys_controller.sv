@@ -301,8 +301,8 @@ always_ff @(posedge clk) begin
             if (stalled_state != UPDATE) begin
                if (task_ctrl_desc.transfer_len > DMA_BUF_DEPTH_VALUE) begin
                   task_ctrl_desc.transfer_len <= task_ctrl_desc.transfer_len - DMA_BUF_DEPTH_VALUE;
-                  task_ctrl_desc.src_ptr <= task_ctrl_desc.src_ptr + DMA_BUF_DEPTH_VALUE;
-                  task_ctrl_desc.dest_ptr <= task_ctrl_desc.dest_ptr + DMA_BUF_DEPTH_VALUE;
+                  task_ctrl_desc.src_ptr <= task_ctrl_desc.src_ptr + 24'(DMA_BUF_DEPTH_VALUE);
+                  task_ctrl_desc.dest_ptr <= task_ctrl_desc.dest_ptr + 24'(DMA_BUF_DEPTH_VALUE);
                end else begin
                   task_ctrl_desc.transfer_len <= '0;
                   // Do not update src_ptr / dest_ptr. The transfer is complete, so updated values

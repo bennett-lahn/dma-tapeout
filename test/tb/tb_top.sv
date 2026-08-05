@@ -1,5 +1,7 @@
-// L1 cocotb wrapper: tt_um_lahnb_sgdma + dual-PSRAM shared uio bus placeholders.
-// Contract: docs/llm/verification/02-platform.md, 03-psram-model.md (L1 section).
+// L1 cocotb wrapper: tt_um_lahnb_sgdma on a wired-tristate dual-PSRAM uio bus.
+// Contract: docs/llm/verification/02-platform.md, 03-psram-model.md (L1 section),
+// 04-timing-in-sim.md (bus resolution), ../../docs/llm/03-architecture.md
+// (Bidirectional I/O ownership specification).
 // No protocol logic here; host and PSRAM models are Python-side.
 
 `default_nettype none
@@ -37,96 +39,85 @@ module tb_top #(
    logic  [3:0] psram1_sio_drive;
    logic  [3:0] psram1_sio_oe;
 
-   // Resolved shared-bus values presented to DUT uio_in and cocotb monitors.
-   logic  [7:0] uio_in;
-   logic  [7:0] resolved_uio;
+   // -------------------------------------------------------------------------
+   // Fault-injection driver (negative ownership tests only; inert at 0)
+   // A set fault_uio_oe bit takes that pin away from the ASIC driver and drives
+   // fault_uio_drive in its place, so a test can emulate ASIC misbehavior (both
+   // RAM CE# low, flash CS low, SCK clocked while every device is deselected)
+   // as a clean single-driver level instead of a wired X against the DUT.
+   // On SIO the injector is an additional ASIC-side driver, which is how the
+   // CHK-PIN-SIO-OWN negative case reproduces ASIC-versus-device dual drive
+   // (including the equal-value case) during read data.
+   // -------------------------------------------------------------------------
+   logic  [7:0] fault_uio_drive;
+   logic  [7:0] fault_uio_oe;
+
+   initial begin
+      host_uio_drive  = '0;
+      host_uio_oe     = '0;
+      fault_uio_drive = '0;
+      fault_uio_oe    = '0;
+   end
 
    // -------------------------------------------------------------------------
-   // Shared uio bus resolution (ASIC uio_oe vs host vs PSRAM SIO models)
+   // Shared uio bus (physical plane): one wired net per pin, every actor driving
+   // z while its output enable is clear. Undriven SIO/SCK therefore float, dual
+   // drive of disagreeing levels resolves to x, and the three CS nets keep the
+   // demoboard 10k pull-ups as their only keeper (docs/llm/03-architecture.md,
+   // Bidirectional I/O ownership specification).
    // Pin map per src/rtl/top.v:
    //   uio[0] flash CS, [1:2]/[4:5] SIO0-3, [3] SCK, [6] RAM A CS, [7] RAM B CS
-   // TODO(M1): complete turnaround / high-Z handling on SIO listen phases.
    // -------------------------------------------------------------------------
-   function automatic logic resolve_uio_bit(
-      input logic        asic_oe
-      ,input logic        asic_out
-      ,input logic        host_oe
-      ,input logic        host_drv
-      ,input logic        psram0_oe
-      ,input logic        psram0_drv
-      ,input logic        psram1_oe
-      ,input logic        psram1_drv
-      ,input logic        idle_default
-   );
-      if (asic_oe)
-         return asic_out;
-      if (host_oe)
-         return host_drv;
-      if (psram0_oe)
-         return psram0_drv;
-      if (psram1_oe)
-         return psram1_drv;
-      return idle_default;
-   endfunction
+   wire   [7:0] uio_bus;
+   wire   [7:0] asic_uio_oe = uio_oe & ~fault_uio_oe;
 
-   assign resolved_uio[0] = resolve_uio_bit(
-      uio_oe[0], uio_out[0],
-      host_uio_oe[0], host_uio_drive[0],
-      1'b0, 1'b0,
-      1'b0, 1'b0,
-      1'b1 // flash CS parked high when undriven
-   );
-   assign resolved_uio[1] = resolve_uio_bit(
-      uio_oe[1], uio_out[1],
-      host_uio_oe[1], host_uio_drive[1],
-      psram0_sio_oe[0], psram0_sio_drive[0],
-      psram1_sio_oe[0], psram1_sio_drive[0],
-      1'b0
-   );
-   assign resolved_uio[2] = resolve_uio_bit(
-      uio_oe[2], uio_out[2],
-      host_uio_oe[2], host_uio_drive[2],
-      psram0_sio_oe[1], psram0_sio_drive[1],
-      psram1_sio_oe[1], psram1_sio_drive[1],
-      1'b0
-   );
-   assign resolved_uio[3] = resolve_uio_bit(
-      uio_oe[3], uio_out[3],
-      host_uio_oe[3], host_uio_drive[3],
-      1'b0, 1'b0,
-      1'b0, 1'b0,
-      1'b0 // SCK low when undriven
-   );
-   assign resolved_uio[4] = resolve_uio_bit(
-      uio_oe[4], uio_out[4],
-      host_uio_oe[4], host_uio_drive[4],
-      psram0_sio_oe[2], psram0_sio_drive[2],
-      psram1_sio_oe[2], psram1_sio_drive[2],
-      1'b0
-   );
-   assign resolved_uio[5] = resolve_uio_bit(
-      uio_oe[5], uio_out[5],
-      host_uio_oe[5], host_uio_drive[5],
-      psram0_sio_oe[3], psram0_sio_drive[3],
-      psram1_sio_oe[3], psram1_sio_drive[3],
-      1'b0
-   );
-   assign resolved_uio[6] = resolve_uio_bit(
-      uio_oe[6], uio_out[6],
-      host_uio_oe[6], host_uio_drive[6],
-      1'b0, 1'b0,
-      1'b0, 1'b0,
-      1'b1 // RAM A CE# parked high when undriven
-   );
-   assign resolved_uio[7] = resolve_uio_bit(
-      uio_oe[7], uio_out[7],
-      host_uio_oe[7], host_uio_drive[7],
-      1'b0, 1'b0,
-      1'b0, 1'b0,
-      1'b1 // RAM B CE# parked high when undriven
-   );
+   genvar gi;
+   generate
+      for (gi = 0; gi < 8; gi = gi + 1) begin : gen_uio_drivers
+         assign uio_bus[gi] = asic_uio_oe[gi]  ? uio_out[gi]         : 1'bz;
+         assign uio_bus[gi] = fault_uio_oe[gi] ? fault_uio_drive[gi] : 1'bz;
+         assign uio_bus[gi] = host_uio_oe[gi]  ? host_uio_drive[gi]  : 1'bz;
+      end
+   endgenerate
 
-   assign uio_in = resolved_uio;
+   assign uio_bus[1] = psram0_sio_oe[0] ? psram0_sio_drive[0] : 1'bz;
+   assign uio_bus[2] = psram0_sio_oe[1] ? psram0_sio_drive[1] : 1'bz;
+   assign uio_bus[4] = psram0_sio_oe[2] ? psram0_sio_drive[2] : 1'bz;
+   assign uio_bus[5] = psram0_sio_oe[3] ? psram0_sio_drive[3] : 1'bz;
+
+   assign uio_bus[1] = psram1_sio_oe[0] ? psram1_sio_drive[0] : 1'bz;
+   assign uio_bus[2] = psram1_sio_oe[1] ? psram1_sio_drive[1] : 1'bz;
+   assign uio_bus[4] = psram1_sio_oe[2] ? psram1_sio_drive[2] : 1'bz;
+   assign uio_bus[5] = psram1_sio_oe[3] ? psram1_sio_drive[3] : 1'bz;
+
+   // Board keepers: 10k pull-ups exist on the three CS nets only. SIO and SCK
+   // have no keeper, so their listen windows are genuinely floating.
+   pullup pu_flash_cs (uio_bus[0]);
+   pullup pu_ram_a_cs (uio_bus[6]);
+   pullup pu_ram_b_cs (uio_bus[7]);
+
+   // DUT sees the physical plane, including z during its own listen windows.
+   wire   [7:0] uio_in = uio_bus;
+
+   // -------------------------------------------------------------------------
+   // Model plane: the wrapper's explicit idle value, allowed by
+   // docs/llm/verification/04-timing-in-sim.md (bus resolution). Only z is
+   // replaced; x from dual drive stays x so the parser still sees contention in
+   // phases that require a value.
+   // Idealization: a floating SIO listen window reads as 0 here, so the PSRAM
+   // parser does not need to know which phases may float.
+   // TODO(M1, slice 1): make the parser phase-aware about required SIO
+   //   resolution so models can read uio_bus directly and this plane can go.
+   // -------------------------------------------------------------------------
+   localparam logic [7:0] BUS_IDLE_LEVEL = 8'b1100_0001; // CS high, SIO/SCK low
+
+   wire   [7:0] resolved_uio;
+   generate
+      for (gi = 0; gi < 8; gi = gi + 1) begin : gen_model_plane
+         assign resolved_uio[gi] = (uio_bus[gi] === 1'bz) ? BUS_IDLE_LEVEL[gi]
+                                                          : uio_bus[gi];
+      end
+   endgenerate
 
    // -------------------------------------------------------------------------
    // Scalar pin aliases for the Python PSRAM models. The models are clocked by
@@ -135,6 +126,39 @@ module tb_top #(
    wire psram_sck   = resolved_uio[3];
    wire psram0_ce_n = resolved_uio[6];
    wire psram1_ce_n = resolved_uio[7];
+
+   // -------------------------------------------------------------------------
+   // Ownership view for test/monitors/qspi.py (SharedBusMonitor). These alias
+   // names are the level-independent contract shared with tb_engine/tb_gl: the
+   // uio pin map lives here, not in the Python monitor. Ownership is judged
+   // from the OE aliases; bus_* is evidence, never the ownership source.
+   // -------------------------------------------------------------------------
+   wire       bus_flash_cs_n  = uio_bus[0];
+   wire       bus_sck         = uio_bus[3];
+   wire       bus_ram_a_cs_n  = uio_bus[6];
+   wire       bus_ram_b_cs_n  = uio_bus[7];
+   wire [3:0] bus_sio         = {uio_bus[5], uio_bus[4], uio_bus[2], uio_bus[1]};
+
+   wire [3:0] asic_sio_oe     = {asic_uio_oe[5], asic_uio_oe[4],
+                                 asic_uio_oe[2], asic_uio_oe[1]};
+   wire [3:0] asic_sio_out    = {uio_out[5], uio_out[4], uio_out[2], uio_out[1]};
+   wire       asic_flash_cs_oe  = asic_uio_oe[0];
+   wire       asic_flash_cs_out = uio_out[0];
+   wire       asic_sck_oe       = asic_uio_oe[3];
+
+   wire [3:0] host_sio_oe     = {host_uio_oe[5], host_uio_oe[4],
+                                 host_uio_oe[2], host_uio_oe[1]};
+   wire [3:0] host_sio_drive  = {host_uio_drive[5], host_uio_drive[4],
+                                 host_uio_drive[2], host_uio_drive[1]};
+   wire       host_sck_oe     = host_uio_oe[3];
+
+   wire [3:0] fault_sio_oe    = {fault_uio_oe[5], fault_uio_oe[4],
+                                 fault_uio_oe[2], fault_uio_oe[1]};
+   wire [3:0] fault_sio_drive = {fault_uio_drive[5], fault_uio_drive[4],
+                                 fault_uio_drive[2], fault_uio_drive[1]};
+   wire       fault_sck_oe    = fault_uio_oe[3];
+
+   wire       bus_gnt         = uo_out[1];
 
    // -------------------------------------------------------------------------
    // DUT

@@ -43,28 +43,80 @@ module tb_engine;
    logic    [3:0] sio_oe;
 
    // -------------------------------------------------------------------------
-   // PSRAM model hooks (cocotb drives; one selected device per transaction)
-   // TODO(M1): tie psram_sio_* from models/psram.py via timing layer return plane.
+   // Dual PSRAM model SIO hooks (cocotb drives via models/psram.py
+   // attach_engine_psram). Per-device OE/drive matches tb_top so SharedBusMonitor
+   // can judge ownership from distinct handles; only the CE#-selected device
+   // may enable drive. Timing-layer return plane is still M1+ / M3.
    // -------------------------------------------------------------------------
-   logic    [3:0] psram_sio_drive;
-   logic    [3:0] psram_sio_oe;
+   logic    [3:0] psram0_sio_drive;
+   logic    [3:0] psram0_sio_oe;
+   logic    [3:0] psram1_sio_drive;
+   logic    [3:0] psram1_sio_oe;
 
-   // Resolved SIO sample presented to DUT sio_in.
-   logic    [3:0] sio_in;
-   logic    [3:0] resolved_sio;
+   // Fault-injection driver for negative ownership tests. A set fault_sio_oe bit
+   // takes SIO away from the engine driver and drives fault_sio_drive in its
+   // place; on a device-driven bit it is an extra ASIC-side driver, which is how
+   // the CHK-PIN-SIO-OWN negative case reproduces dual drive at L0.
+   logic    [3:0] fault_sio_drive;
+   logic    [3:0] fault_sio_oe;
+
+   initial begin
+      psram0_sio_drive = '0;
+      psram0_sio_oe    = '0;
+      psram1_sio_drive = '0;
+      psram1_sio_oe    = '0;
+      fault_sio_drive  = '0;
+      fault_sio_oe     = '0;
+   end
 
    // -------------------------------------------------------------------------
    // Shared-bus resolution (L0: ASIC SIO OE vs PSRAM model drive)
-   // TODO(M1): high-Z / listen-phase behavior when neither side drives.
+   // Wired tristate: an undriven listen window floats, and dual drive of
+   // disagreeing levels resolves to x. L0 has no board keeper on SIO.
    // -------------------------------------------------------------------------
+   wire     [3:0] sio_bus;
+   wire     [3:0] asic_sio_oe = sio_oe & ~fault_sio_oe;
+
    genvar gi;
    generate
-      for (gi = 0; gi < 4; gi = gi + 1) begin : gen_sio_resolve
-         assign resolved_sio[gi] = sio_oe[gi] ? sio_out[gi]
-                                 : (psram_sio_oe[gi] ? psram_sio_drive[gi] : 1'b0);
-         assign sio_in[gi] = resolved_sio[gi];
+      for (gi = 0; gi < 4; gi = gi + 1) begin : gen_sio_drivers
+         assign sio_bus[gi] = (asic_sio_oe[gi])    ? sio_out[gi]          : 1'bz;
+         assign sio_bus[gi] = (fault_sio_oe[gi])   ? fault_sio_drive[gi]  : 1'bz;
+         assign sio_bus[gi] = (psram0_sio_oe[gi])  ? psram0_sio_drive[gi] : 1'bz;
+         assign sio_bus[gi] = (psram1_sio_oe[gi])  ? psram1_sio_drive[gi] : 1'bz;
       end
    endgenerate
+
+   // DUT sees the physical plane, including z during its own listen windows.
+   wire     [3:0] sio_in = sio_bus;
+
+   // Model plane: wrapper idle value for z only, mirroring tb_top. x from dual
+   // drive stays x so the parser still sees contention where a value is needed.
+   wire     [3:0] resolved_sio;
+   generate
+      for (gi = 0; gi < 4; gi = gi + 1) begin : gen_model_plane
+         assign resolved_sio[gi] = (sio_bus[gi] === 1'bz) ? 1'b0 : sio_bus[gi];
+      end
+   endgenerate
+
+   // -------------------------------------------------------------------------
+   // Scalar pin aliases for the Python PSRAM models (same names as tb_top).
+   // Engine always drives SCK/CE#, so these are direct wires, not resolved_uio.
+   // -------------------------------------------------------------------------
+   wire psram_sck   = sclk;
+   wire psram0_ce_n = ram_a_cs_n;
+   wire psram1_ce_n = ram_b_cs_n;
+
+   // -------------------------------------------------------------------------
+   // Ownership view for test/monitors/qspi.py (SharedBusMonitor). Same alias
+   // names as tb_top/tb_gl so one monitor serves L0, L1, and L2. Flash CS and
+   // BUS_GNT are not engine ports, so those aliases do not exist here.
+   // -------------------------------------------------------------------------
+   wire     [3:0] bus_sio        = sio_bus;
+   wire           bus_sck        = sclk;
+   wire           bus_ram_a_cs_n = ram_a_cs_n;
+   wire           bus_ram_b_cs_n = ram_b_cs_n;
+   wire     [3:0] asic_sio_out   = sio_out;
 
    // -------------------------------------------------------------------------
    // DUT

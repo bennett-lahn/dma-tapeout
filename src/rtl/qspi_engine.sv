@@ -99,7 +99,7 @@ always_comb begin
          end
       end
       WAIT: begin
-         if (cycle_cnt == qspi_wait_cycles(cmd))
+         if (cycle_cnt == QPI_CYCLE_CNT_W'(qspi_wait_cycles(cmd)))
             next_state = qspi_state_t'((cmd == QSPI_CMD_WRITE) ? WRITE_DATA : READ_DATA);
          else
             next_state = WAIT;

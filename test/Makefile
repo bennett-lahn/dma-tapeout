@@ -146,14 +146,17 @@ COCOTB_TEST_MODULES ?= tests.test_smoke
 # ---------------------------------------------------------------------------
 
 COMPILE_ARGS        += -I$(SRC_RTL)
+COMPILE_ARGS        += -I$(TB_DIR)
 
 # Module parameter override for future depth sweep (M5). Syntax is
 # simulator-specific: Verilator uses -G, Icarus uses -P<top>.<param>=<value>.
 # tb_engine (L0) has no DMA_BUF_DEPTH parameter, so only pass it for L1/L2 tops.
-ifeq ($(SIM),verilator)
-  COMPILE_ARGS      += -GDMA_BUF_DEPTH=$(DMA_BUF_DEPTH)
-else ifneq ($(LEVEL),engine)
-  COMPILE_ARGS      += -P$(TOPLEVEL).DMA_BUF_DEPTH=$(DMA_BUF_DEPTH)
+ifneq ($(LEVEL),engine)
+  ifeq ($(SIM),verilator)
+    COMPILE_ARGS    += -GDMA_BUF_DEPTH=$(DMA_BUF_DEPTH)
+  else
+    COMPILE_ARGS    += -P$(TOPLEVEL).DMA_BUF_DEPTH=$(DMA_BUF_DEPTH)
+  endif
 endif
 
 VERILOG_SOURCES     :=

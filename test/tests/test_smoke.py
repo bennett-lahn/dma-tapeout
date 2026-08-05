@@ -11,7 +11,9 @@ from cocotb.triggers import SimTimeoutError
 from common.clocks import apply_reset, start_clock
 from common.config import parse_run_config
 from common.host import pulse_start
-from models.psram import attach_dual_psram
+from models.psram import attach_dual_psram, format_violations
+from monitors.qspi import assert_model_pin_disposition, start_shared_bus_monitor
+from monitors.timing import start_ce_timing_monitor
 
 TCD_HEAD_ADDR = 0x000000
 NEXT_TCD_ADDR = 0x000020
@@ -98,6 +100,11 @@ async def smoke_same_device_copy(dut):
     dut._log.info(repro)
 
     psram0, psram1 = attach_dual_psram(dut)
+    # Non-strict: collect ownership and coarse CE# timing findings and dispose
+    # them with the PSRAM violation lists below, so one failure prints the
+    # whole picture. Defaults: tCEM=4 us (extended), tCPH=18 ns.
+    bus = start_shared_bus_monitor(dut, psram0.agent, psram1.agent, strict=False)
+    ce = start_ce_timing_monitor(dut, strict=False)
 
     tcd_head = _build_tcd(SRC_ADDR, DST_ADDR, 1, NEXT_TCD_ADDR, quit=False)
     tcd_quit = _build_tcd(0, 0, 0, 0, quit=True)
@@ -127,11 +134,29 @@ async def smoke_same_device_copy(dut):
     )
 
     violations = psram0.agent.violations + psram1.agent.violations
-    assert not violations, "TC-SMOKE: PSRAM protocol violations: " + "; ".join(violations) + ". " + repro
+    assert not violations, (
+        "TC-SMOKE: PSRAM protocol violations: " + format_violations(violations) + ". " + repro
+    )
+    assert not bus.violations, (
+        "TC-SMOKE: shared-bus ownership violations: "
+        + "; ".join(bus.violations)
+        + ". "
+        + repro
+    )
+    assert not ce.violations, (
+        "TC-SMOKE: CE# timing violations (Q-CEM/Q-CPH): "
+        + "; ".join(ce.violations)
+        + ". "
+        + repro
+    )
 
+    assert_model_pin_disposition(
+        psram0, psram1, log=dut._log, test="TC-SMOKE"
+    )
     dut._log.info(
-        "TC-SMOKE passed: dest[0x%06X]=0x%02X after %d PSRAM0 transactions",
+        "TC-SMOKE passed: dest[0x%06X]=0x%02X after %d PSRAM0 transactions (%s)",
         DST_ADDR,
         observed,
         len(psram0.agent.transactions),
+        ce.summary(),
     )
