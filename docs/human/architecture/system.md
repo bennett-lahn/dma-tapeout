@@ -35,7 +35,7 @@ Only one PSRAM CE# low per transaction (shared SIO). Cross-device = read then wr
 |---|---|
 | `clk` | Design clock **66 MHz** target (RP2040-generated on demoboard; D16); QSPI engine SCK = clk/2 |
 | `rst_n` | Active-low reset |
-| `ui_in[0]` | **START** - synchronized and rising-edge detected by the top level; resulting one-`clk` pulse accepted only while IDLE/`DONE` and `~BUS_REQ`; otherwise ignored and not queued |
+| `ui_in[0]` | **START** - synchronized and rising-edge detected by the top level; resulting one-`clk` pulse accepted only while IDLE/`DONE` and `~BUS_REQ`; otherwise ignored and not queued (resent after `BUS_GNT` low). After START, wait for DONE low before raising `BUS_REQ` again |
 | `ui_in[1]` | Reserved (ABORT removed; D23 - kill with `rst_n`) |
 | `ui_in[2]` | **BUS_REQ** - MCU wants bidirectional `uio` (D22) |
 | `ui_in[7:3]` | Reserved (config / DFT - packing open) |

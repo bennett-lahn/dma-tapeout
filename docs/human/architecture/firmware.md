@@ -61,9 +61,10 @@ Ordered demoboard sequence (ASIC or M7 FPGA stand-in):
 2. To access either PSRAM or flash while this design is live, assert `BUS_REQ`, wait for `BUS_GNT=1`, then enable the MCU QSPI drivers. While `rst_n=0` (including another design selected on the TT mux), MCU drive is also legal without `BUS_GNT`.
 3. Before releasing the bus, finish the current transaction, drive every CE# high, make the MCU QSPI pins high-Z, then deassert `BUS_REQ`. Wait for `BUS_GNT=0` before asserting `START`.
 4. Initialize both PSRAMs and leave them in QPI mode before `START`. The ASIC does not issue reset, Enter Quad, or Exit Quad commands (D17).
-5. Assert `START` only while `DONE=1` and `BUS_REQ=0`. Hold it long enough to cross the input synchronizer, then deassert it. A START edge while busy or while `BUS_REQ=1` is ignored and not queued.
-6. `DONE=1` means the ASIC is idle. It does not grant MCU ownership of `uio`; firmware must still request and receive `BUS_GNT` (unless already in `rst_n=0`).
-7. A mid-run `BUS_REQ` pauses the DMA only after its current QPI transaction. To stop a runaway chain, assert `rst_n`; V1 has no soft abort (D23).
+5. Assert `START` only while `DONE=1` and `BUS_REQ=0`. Hold it long enough to cross the input synchronizer, then deassert it. A START edge while busy or while `BUS_REQ=1` is ignored and not queued; firmware must drop request (if any), see `BUS_GNT=0`, and issue a **new** START rising edge.
+6. After pulsing `START`, do **not** assert `BUS_REQ` again until `DONE` has fallen. Raising `BUS_REQ` with or after `START` while `DONE` is still high can make the post-sync START pulse lose to `BUS_REQ` in IDLE (ignored, not queued) or accept START and stall immediately at `NEW_FETCH`. `DONE` falling is the firmware ACK that START was accepted.
+7. `DONE=1` means the ASIC is idle. It does not grant MCU ownership of `uio`; firmware must still request and receive `BUS_GNT` (unless already in `rst_n=0`).
+8. A mid-run `BUS_REQ` pauses the DMA only after its current QPI transaction (at most one in-flight QPI txn of grant latency). To stop a runaway chain, assert `rst_n`; V1 has no soft abort (D23).
 
 ### ASIC bus keeper (D26)
 
@@ -96,6 +97,8 @@ Firmware is a **basic SPI** master to **both** PSRAM devices (cmd/addr/data on S
 | Reuse | Adapt catalogued `PIOSPI`, CS framing, and PSRAM `0x02`/`0x03` patterns from [`Using_QSPI_TinyTapeout.md`](../../datasheets/md/Using_QSPI_TinyTapeout.md); do not invent a parallel bitbang stack |
 
 The TT SDK exposes ports/OE but does not ship a PSRAM driver. Guide PSRAM tests stay in SPI mode; this project still issues APS6404L reset / Enter Quad (`0x35`) before START (D17). MCU-side QPI / quad I/O for payload is not required (D30).
+
+**Flash QSPI mode:** first-party QSPI Pmods ship with flash Quad Enable already set. V1 firmware does **not** enable or disable flash QSPI (D30). Optional flash access under grant is data/ID/program only; skip QE activation scripts in normal bring-up.
 
 | Opcode | Role (MCU SPI path) |
 |---|---|

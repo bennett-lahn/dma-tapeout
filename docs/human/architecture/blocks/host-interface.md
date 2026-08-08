@@ -21,8 +21,9 @@ MCU host pins (`ui_in`) are **asynchronous** to the design `clk`. The **top-leve
 
 - Prefer a **two-flop** synchronizer per bit before qualification.
 - `sys_controller` sees a one-cycle START pulse and a synchronized BUS_REQ level; it never samples raw `ui_in`.
-- A START edge presented while busy or while `BUS_REQ` is high is ignored and is not queued. Firmware must deassert and reassert START to issue another command.
+- A START edge presented while busy or while `BUS_REQ` is high is ignored and is not queued. Firmware must deassert and reassert START to issue another command (drop `BUS_REQ` / wait `BUS_GNT=0` first if a request was held).
 - Firmware must hold raw START long enough for the level synchronizer to capture it, then deassert it before issuing a later START.
+- After pulsing START, do not assert `BUS_REQ` until `DONE` falls. That ACK closes the START/`BUS_REQ` sync race in IDLE (discarded START vs accept-then-stall at `NEW_FETCH`).
 - **DFF cost:** ~2 per synchronized bit plus one delayed-START flop for edge detection (START/BUS_REQ ≈ 5 DFFs total).
 
 ## How Tiny Tapeout pins work
@@ -99,7 +100,8 @@ Control plane:
 | ---------------- | ------------------------------------------------------------------------------------------------------------- |
 | Idle             | Wait for START; **DONE** asserted; ASIC **parks** bus while `~BUS_GNT` (CS high / SCK low; D26)              |
 | START from idle  | One-`clk` post-sync rising-edge pulse accepted only if **`~BUS_REQ`** (and thus `~BUS_GNT`); leave idle; deassert DONE; keep bus; fetch head TCD |
-| START while busy | Pulse is **ignored and not queued**; a later command requires a new rising edge after IDLE returns             |
+| START while busy / REQ | Pulse is **ignored and not queued**; a later command requires a new rising edge after IDLE returns (and after `BUS_GNT` low if REQ was held) |
+| START then BUS_REQ | Firmware must not raise `BUS_REQ` after/with START until **DONE has fallen** (START-accept ACK); avoids IDLE priority discarding START |
 | Quit TCD         | `CTRL_FLAGS.QUIT=1` after fetch → return to idle (no execute); next START fetches `0x000000` / PSRAM 0 again |
 | DONE             | High whenever idle (including after reset, before first run)                                                  |
 | Pass-through     | MCU may drive `uio` while **`BUS_GNT=1`** or **`rst_n=0`** (D22/D26); idle alone is not a drive permit |
@@ -179,6 +181,7 @@ Ordered sequence:
 3. MCU deasserts **BUS_REQ**; waits for **BUS_GNT** low.
 4. MCU asserts **START** on `ui_in[0]` long enough to cross the synchronizer while DONE is high and `~BUS_REQ`; the top level converts its rising edge to one `clk` pulse.
 5. ASIC samples START, leaves idle (DONE low), and continues as bus keeper / DMA master (already parking while `~BUS_GNT`).
+6. MCU must see **DONE low** before asserting `BUS_REQ` again (START-accept ACK; closes the IDLE START/`BUS_REQ` sync race).
 
 
 

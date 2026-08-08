@@ -220,12 +220,13 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 **Decision:**
 
-1. **MCU** (via pass-through while DONE) owns PSRAM reset / Enter Quad (`0x35`) / Exit Quad (`0xF5`) for **each device** DMA will touch. ASIC does **not** emit `0x35`, `0xF5`, `0x66`, or `0x99`.
-2. Before START, ASIC **expects** both devices already in **QPI mode**. After DONE, MCU may Exit Quad (or reset) if firmware needs SPI again.
+1. **MCU** (via pass-through while DONE) owns PSRAM reset / Enter Quad (`0x35`) / Exit Quad (`0xF5`) for **each APS6404L** DMA will touch. ASIC does **not** emit `0x35`, `0xF5`, `0x66`, or `0x99`.
+2. Before START, ASIC **expects** both PSRAMs already in **QPI mode**. After DONE, MCU may Exit Quad (or reset) if firmware needs SPI again.
 3. ASIC QPI data opcodes only: Fast Read Quad **`0xEB`** (sole read; 6 wait cycles) and Write **`0x02`**. No `0x0B` path.
 4. Closes Q2 and Q8.
+5. **Clarified (flash QE):** this decision is **PSRAM SPI↔QPI** only. It does **not** require programming the PMOD flash Winbond **QUAD ENABLE** bit. Shipping first-party QSPI Pmods already have flash QE set (D30 / TT guide); V1 firmware does not enable or disable flash QSPI mode.
 
-**Why:** Cuts SPI config FSM and dual wait-length read paths from the 2-tile budget; mode bring-up is already natural MCU firmware work during pass-through.
+**Why:** Cuts SPI config FSM and dual wait-length read paths from the 2-tile budget; PSRAM mode bring-up remains MCU firmware work during pass-through. Flash QE is a board/PMOD factory default, not an ASIC or V1 firmware obligation.
 
 ## D18 - Fixed head; ABORT pin; both-devices stop TCD
 
@@ -315,8 +316,8 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
    4. MCU finishes, Hi-Zs its QSPI GPIOs, then deasserts `BUS_REQ`.
    5. ASIC deasserts `BUS_GNT` and **resumes bus-keeper drive** (D26). If not IDLE, DMA may resume (next txn after grant falls).
 5. **Idle:** when IDLE/`DONE`, grant follows request promptly (`BUS_GNT` tracks `BUS_REQ` once OE is clear). Idle alone does **not** authorize MCU drive without grant. While idle and `~BUS_GNT`, ASIC still parks the bus (D26).
-6. **START:** the top level synchronizes the raw level and rising-edge detects it into a one-`clk` pulse. The pulse is accepted only in IDLE with **`~BUS_REQ`** (hence `~BUS_GNT`); otherwise it is ignored and not queued. MCU must drop request, see grant low, and issue a new START rising edge.
-7. **`BUS_REQ` vs kill:** `BUS_REQ` **pauses** an active run between atomic txns and yields the bus; DMA resumes when request is released (unless quit / `rst_n` also applies). ~~ABORT~~ removed by **D23**; use **`rst_n`** to stop a runaway chain.
+6. **START:** the top level synchronizes the raw level and rising-edge detects it into a one-`clk` pulse. The pulse is accepted only in IDLE with **`~BUS_REQ`** (hence `~BUS_GNT`); otherwise it is ignored and not queued. MCU must drop request, see grant low, and issue a new START rising edge. **Firmware invariant (V1, no sticky START latch):** after pulsing START, do not assert `BUS_REQ` until **DONE has fallen**; that ACK means START was accepted and closes the IDLE `BUS_REQ`-vs-START sync race (discarded pulse vs accept-then-stall). V1 does not queue a missed START in hardware.
+7. **`BUS_REQ` vs kill:** `BUS_REQ` **pauses** an active run between atomic txns and yields the bus (grant latency ≤ one in-flight QPI txn plus host-input sync); DMA resumes when request is released (unless quit / `rst_n` also applies). ~~ABORT~~ removed by **D23**; use **`rst_n`** to stop a runaway chain.
 8. Supersedes D14 "pass-through iff DONE" for drive legality. Closes Q3/Q4 remainder for this handshake.
 
 **Why:** Explicit request/grant removes the race of MCU assuming DONE ≡ safe to drive, and lets firmware reclaim flash/PSRAM mid-DMA without ending the whole chain, while keeping QPI CE# windows intact.
@@ -450,9 +451,10 @@ Detail: `02-constraints.md`, `11-timing-analysis.md`, human `architecture/limita
 1. Demoboard MCU software for this project lives under **`firmware/`** (MicroPython on the Tiny Tapeout **ETR** demoboard / RP2350B via the local [`tt-micropython-firmware/`](../../tt-micropython-firmware/) SDK / `DemoBoard`). It is not under cocotb `test/`.
 2. MCU access to PSRAM (and flash pass-through) is **basic SPI** only (1-bit cmd/addr/data on SIO0/SIO1). MCU-side QPI / quad I/O is not required for V1 firmware.
 3. **SPI transport** follows the Tiny Tapeout QSPI PMOD guide ([PDF](../datasheets/pdfs/Using_QSPI_TinyTapeout.pdf), [extracted notes + code catalog](../datasheets/md/Using_QSPI_TinyTapeout.md)): primary master is the guide's **PIO SPI** (`PIOSPI` / `rp2.StateMachine` / `spi_cpha0`) on ETR `uio` GPIOs **25..32**. SoftSPI and hardware `machine.SPI` are not the guide's working path and are not primary for this project.
-4. Host-side **pytest** of pure firmware logic under `firmware/tests/` is required (no demoboard hardware). Demoboard HIL remains Phase 3 / M7 (D28). Firmware library + demoboard bring-up must be ready once the cocotb/RTL sim gate for M7 entry is met (see roadmap / `12-firmware.md`).
+4. **Flash Quad Enable:** the shipping **first-party** Tiny Tapeout QSPI Pmod already has the flash **QUAD ENABLE** bit set. V1 firmware and the ASIC do **not** need to enable or disable flash QSPI mode. The guide's QE activation script is for third-party / recovery only; do not make it part of the normal bring-up path. (APS6404L Enter Quad `0x35` remains separate and still MCU-owned per D17.)
+5. Host-side **pytest** of pure firmware logic under `firmware/tests/` is required (no demoboard hardware). Demoboard HIL remains Phase 3 / M7 (D28). Firmware library + demoboard bring-up must be ready once the cocotb/RTL sim gate for M7 entry is met (see roadmap / `12-firmware.md`).
 
-**Why:** Locks the MicroPython / ETR / `firmware/` workstream to the published PMOD SPI approach (reusable `PIOSPI` catalog) and keeps unit-testable logic separate from M7 HIL.
+**Why:** Locks the MicroPython / ETR / `firmware/` workstream to the published PMOD SPI approach (reusable `PIOSPI` catalog), avoids unnecessary flash QE programming on store Pmods, and keeps unit-testable logic separate from M7 HIL.
 
 **DFF / tile impact:** none; firmware / process decision only.
 

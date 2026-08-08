@@ -51,7 +51,7 @@ System Python is `python3`. Prefer suite Verilator 5.051 over older `/usr/local`
 | M7 FPGA hardware validation | `todo` | Not started; requires an FPGA-synthesizable build and carrier-board bring-up with real MCU firmware |
 | `T-*` closure | `todo` | STA and demoboard evidence follow M6 |
 | CI smoke job | `todo` | Local smoke green; CI job still open |
-| Independent `QspiPinMonitor` | stub | `CHK-PIN-ADDR23-ZERO` / `CHK-PIN-KNOWN` dispose via model IDs until M2 |
+| Independent `QspiPinMonitor` | live | CE#-framed decode; `CHK-PIN-ADDR23-ZERO` / `CHK-PIN-KNOWN` dispose `via=pin` when monitor ran; model fallback retained |
 | Model-plane Z→0 idealization | open | Floating SIO still forced to 0 for the parser; float-as-known remains limited |
 
 **Roadblocks already hit:** nix Icarus vs OSS CAD Suite / cocotb GPI; suite `bin/vvp` `PYTHONHOME` vs `dma-venv`; early PSRAM clk-polling + 5-dummy hack (fixed). Avoid by always using `source test/env.sh` and keeping the PSRAM model SCK-edge driven. See the verification execution plan.

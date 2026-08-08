@@ -170,7 +170,7 @@ def release_bus(tt) -> None:
     """Finish txn, CE# high, OE=0, drop BUS_REQ; wait BUS_GNT=0."""
 
 def pulse_start(tt, hold_cycles_hint=4) -> None:
-    """Require DONE=1 and BUS_REQ=0; assert START, hold, deassert."""
+    """Require DONE=1 and BUS_REQ=0; assert START, hold, deassert; wait DONE=0 before any BUS_REQ."""
 
 def kill_dma(tt) -> None:
     """Assert rst_n; leave MCU OE Hi-Z; caller re-QPI after deassert."""
@@ -182,9 +182,10 @@ def kill_dma(tt) -> None:
 2. Access PSRAM/flash under grant while the design is live; while `rst_n=0` (deselected design / kill hold), MCU drive is also legal without `BUS_GNT`.
 3. Before release: finish txn, CE# high, Hi-Z, drop `BUS_REQ`, wait `BUS_GNT=0` before START.
 4. Both PSRAMs in QPI before START (MCU Enter Quad; ASIC emits no `0x35`/`0xF5`/`0x66`/`0x99` - D17).
-5. START only while `DONE=1` and `BUS_REQ=0`; hold across sync; busy/`BUS_REQ` edges ignored and not queued.
-6. `DONE` ≠ drive permit.
-7. Mid-run `BUS_REQ` pauses after current QPI txn; runaway kill = `rst_n` only (no soft abort).
+5. START only while `DONE=1` and `BUS_REQ=0`; hold across sync; a START edge while busy or while `BUS_REQ=1` is **ignored and not queued** - drop REQ if held, wait `BUS_GNT=0`, then a **new** START rising edge (D14/D22).
+6. After pulsing START, do **not** assert `BUS_REQ` until `DONE` has fallen. Overlapping `BUS_REQ` with the START hold window (before DONE drops) is a host race: post-sync IDLE priority can discard the START pulse (must resent) or accept START and stall at `NEW_FETCH`. `DONE` falling is the ACK that START was accepted. Idle-only grants (no START) are unchanged.
+7. `DONE` ≠ drive permit.
+8. Mid-run `BUS_REQ` pauses after the current QPI txn (at most one in-flight txn of grant latency); runaway kill = `rst_n` only (no soft abort).
 
 Board **10 kΩ** CS pull-ups cover reset / pre-enable when MCU is not driving CS; do not rely on them alone while the design is live (`rst_n=1`) and `~BUS_GNT`.
 
@@ -200,11 +201,16 @@ Board **10 kΩ** CS pull-ups cover reset / pre-enable when MCU is not driving CS
 | Data width | Basic SPI only (1-bit cmd/addr/data) for V1 firmware |
 | Not required | MCU QPI, MCU flash quad path, `0xEB` from the MCU |
 | Not primary | SoftSPI or HW `machine.SPI` (guide does not use them as master) |
-| Groundwork | Reuse catalogued patterns in [`Using_QSPI_TinyTapeout.md`](../datasheets/md/Using_QSPI_TinyTapeout.md) (`PIOSPI`, `spi_cmd` / `spi_cmd2`, PSRAM `0x02`/`0x03`, flash SR/QE helpers) |
+| Groundwork | Reuse catalogued patterns in [`Using_QSPI_TinyTapeout.md`](../datasheets/md/Using_QSPI_TinyTapeout.md) (`PIOSPI`, `spi_cmd` / `spi_cmd2`, PSRAM `0x02`/`0x03`; flash helpers without QE programming) |
+| Flash QE | **Not required.** First-party PMOD ships with flash Quad Enable set (D30). Do not run the guide QE activation script in normal bring-up |
 
 ETR scripts also call `machine.freq(150_000_000)` so PIO dividers are deterministic. Optional guide flag `DISABLE_TT_ASIC` selects chip ROM so bidirs are inputs for MCU SPI when no design is driving - consistent with D26 MCU-safe drive while `rst_n=0`.
 
-**Guide vs project APS6404L mode:** guide `test_psram` stays in SPI (`0x02`/`0x03` only). Project firmware must still run `0x66`/`0x99` then `0x35` before START (D17). The guide's flash `qspi_read` PIO is a **reference only** for MCU flash quad tooling; do not confuse it with PSRAM Enter Quad.
+**Guide vs project device modes:**
+
+- **Flash QE:** shipping first-party hardware already has Quad SPI enabled; no firmware/ASIC intervention to enable or disable flash QSPI mode (D30).
+- **APS6404L:** guide `test_psram` stays in SPI (`0x02`/`0x03` only). Project firmware must still run `0x66`/`0x99` then `0x35` before START (D17). Do not confuse flash QE with PSRAM Enter Quad.
+- Guide flash `qspi_read` PIO is **reference only** for optional MCU flash quad tooling.
 
 ### Reference snippets (adapt into `firmware/psram_spi.py`)
 
@@ -495,7 +501,7 @@ Shared **intent** only: grant before drive, big-endian TCD, fixed head, `QUIT`, 
 ## Non-goals (V1 firmware)
 
 - MCU QPI / quad I/O not required (basic SPI only)
-- No ASIC flash DMA; flash is MCU pass-through under grant (D11/D26)
+- No ASIC flash DMA; flash is MCU pass-through under grant (D11/D26); no flash QE enable/disable in V1 bring-up (D30)
 - No ALU / cond-stop / ring / soft abort (post-V1: [`10-post-v1-features.md`](10-post-v1-features.md); kill = `rst_n`, D23)
 - No copying TinyDMA-2C prior-art firmware
 - No llm-only requirements: if a durable rule is needed, it must also appear in [`../human/architecture/firmware.md`](../human/architecture/firmware.md)

@@ -96,7 +96,7 @@ For every `pass`, retain the simulator or formal engine, level, seed where appli
 | PSRAM behavioral model   | SCK/CE# agent + policing | pass           | M1 exit met; model-plane Z→0 idealization remains; see `03-psram-model.md`      |
 | QPI protocol (M1 rows)   | `Q-CEM/CPH/MUX/SIO-OWN/RST/SCKIDLE` | pass | M1 (complete under `ideal`); delay rerun of CEM/CPH/SIO-OWN at M3          |
 | QPI protocol (M3 rows)   | `Q-LAUNCH`, `Q-RXEDGE`, `Q-CSP/CHD/TERM` | todo | M3                                                                    |
-| Directed behavior        | `TC-*`, `CHK-*`          | todo           | M2 (`TC-SMOKE` + M1 `TC-QPI-*` / negatives already pass); independent `QspiPinMonitor` still stub |
+| Directed behavior        | `TC-*`, `CHK-*`          | todo           | M2 (`TC-SMOKE` + M1 `TC-QPI-*` / negatives already pass); independent `QspiPinMonitor` live (`via=pin`) |
 | Delay-annotated timing   | `Q-LAUNCH`, `Q-RXEDGE`   | todo           | M3                                                                                |
 | Formal                   | `FP-*`                   | todo           | M4                                                                                |
 | Random and coverage      | `COV-*`                  | todo           | M5                                                                                |

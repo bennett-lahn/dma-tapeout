@@ -37,7 +37,7 @@ QSPI PMOD-class inventory:
 
 | Part | Size | Role for this project |
 |---|---|---|
-| Winbond **W25Q128JV** | 128 M-bit QSPI Flash | On PMOD; **MCU pass-through only** in V1. ASIC never asserts flash CS. Super-stretch: ASIC flash read (maybe write). Datasheet: `docs/datasheets/` (JV is Dual/Quad SPI; true QPI is JV-M). |
+| Winbond **W25Q128JV** | 128 M-bit QSPI Flash | On PMOD; **MCU pass-through only** in V1. ASIC never asserts flash CS. First-party TT QSPI Pmods **ship with Quad Enable already set** (D30); V1 firmware does not program flash QE. Super-stretch: ASIC flash read (maybe write). Datasheet: `docs/datasheets/` (JV is Dual/Quad SPI; true QPI is JV-M). |
 | AP Memory **APS6404L-3SQR** ×2 | 64 M-bit QSPI PSRAM each | **Both** are first-class DMA working memory (TCDs, buffers, rings, logs; cross-device A↔B supported) |
 
 Prefer PSRAM for descriptor DMA (byte writes, no erase). Flash remains available to firmware via idle pass-through without ASIC flash support.

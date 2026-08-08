@@ -195,7 +195,7 @@ M1 model acceptance requires:
 Residual limitations (do not reopen the M1 behavioral gate, but stay honest):
 
 - `tb_top` / `tb_engine` model plane still maps floating SIO `z` to idle `0` (Z→0 idealization); `CHK-PIN-KNOWN` float-as-X coverage waits on removing that idealization.
-- Independent `QspiPinMonitor` transaction export remains a stub; `CHK-PIN-ADDR23-ZERO` / `CHK-PIN-KNOWN` dispose via model `Q-ADDR23` / `Q-SIO-X` until M2.
+- Independent `QspiPinMonitor` is live: CE#-framed pin decode exports the ordered transaction log; `CHK-PIN-ADDR23-ZERO` / `CHK-PIN-KNOWN` dispose with `via=pin` when the monitor ran. Model `Q-ADDR23` / `Q-SIO-X` remain the fallback when the pin monitor is absent or blocked (and for legacy M1 model-dispose call-sites).
 - Delay-annotated policing and `Q-LAUNCH` / `Q-RXEDGE` remain M3.
 
 M3 adds the delay behavior and timing checks in `04-timing-in-sim.md`. Passing either milestone does not close a physical `T-*` item.

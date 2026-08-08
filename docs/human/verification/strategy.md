@@ -40,7 +40,7 @@ Milestones are cumulative. A required child ID in `fail`, `wip`, or `blocked` pr
 
 - `Q-LAUNCH` and `Q-RXEDGE` remain `todo`: the M3 harness has not yet executed them against current RTL.
 - M3 also owns delay-annotated reruns of `Q-CEM` / `Q-CPH` / `Q-SIO-OWN` and `Q-CSP` / `Q-CHD` / `Q-TERM`.
-- Independent `QspiPinMonitor` is still a stub; pin ADDR23/KNOWN dispose via model IDs for now (M2 path).
+- Independent `QspiPinMonitor` is live; pin ADDR23/KNOWN dispose with `via=pin` when the monitor ran (model `Q-*` twins remain the fallback).
 - Model-plane Z→0 idealization remains (`tb_top` / `tb_engine` float→0).
 - CI L1 Icarus smoke job is still open (local smoke is green).
 - SDF remains `blocked` until hardening produces a compatible netlist-matched artifact and annotation is qualified.

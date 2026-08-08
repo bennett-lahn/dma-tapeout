@@ -10,21 +10,26 @@ Project firmware policy that consumes this guide: D30 / [`../../human/architectu
 
 ## What the guide covers
 
-1. **Configure Quad SPI mode on third-party QSPI Pmods** by setting the Winbond W25Q128JV **QUAD ENABLE** bit in status register 2 (first-party store Pmods ship with QE already set).
+1. **Configure Quad SPI mode on third-party QSPI Pmods** by setting the Winbond W25Q128JV **QUAD ENABLE** bit in status register 2.
 2. **Flash** a `.bin` image onto the PMOD flash via Tiny Tapeout Flasher (same flash steps for first- and third-party Pmods).
 3. Appendix MicroPython scripts that prove BIDIR SPI access to flash and both PSRAMs on the demoboard.
 
+### Project policy: flash QE already shipped (D30)
+
+**First-party / Tiny Tapeout store QSPI Pmods ship with flash Quad SPI (QE) already enabled.** This project assumes that default. V1 firmware and the ASIC do **not** enable or disable flash QSPI mode as part of normal bring-up. Skip the guide's "Configuring Quad SPI mode" / QE activation script unless recovering a third-party board or a cleared QE bit.
+
+This is **not** the same as APS6404L PSRAM Enter Quad (`0x35`), which remains MCU-owned before DMA START (D17).
+
 First-party QSPI Pmod is compatible with **TT04 and later** demoboards. Plug the Pmod into the **BIDIR** (`uio`) header.
 
-After flash configure, expected Flash ID changes from `000000` to **`ef7018`** (Flasher UI). Guide notes the memory may be used as a **1-bit or 4-bit** interface depending on design requirements.
+On a healthy first-party board, Flasher Flash ID should already report **`ef7018`** (not `000000`). Guide notes the memory may be used as a **1-bit or 4-bit** interface depending on design requirements.
 
 ## Demoboard workflow (Commander / Flasher)
 
 1. Connect demoboard USB; open Tiny Tapeout Commander; CONNECT TO BOARD (WebSerial; Chromium-based browser).
 2. Select chip ROM (address 0), open **REPL** tab.
-3. Paste-mode (`Ctrl+E` / paste / `Ctrl+D`) the **ETR** appendix script (this project) or the Legacy script.
-4. ETR script calls `run_test()` on load; Legacy requires typing `run_test()` at the prompt.
-5. Flasher: CONNECT TO BOARD, pick `.bin` or provided image, program flash.
+3. Optional: paste the **ETR** appendix script to smoke-test SPI to flash/PSRAM (code catalog below). **Not required** to enable flash QSPI on a first-party Pmod (D30).
+4. Flasher: CONNECT TO BOARD, pick `.bin` or provided image, program flash. Expected Flash ID on first-party boards: **`ef7018`**.
 
 REPL paste tips from the guide: `Ctrl+E` enter paste mode, `Ctrl+Shift+V` paste, `Ctrl+D` exit paste mode.
 
@@ -76,7 +81,7 @@ machine.freq(150_000_000)
 | Idle CS | All three CS pins driven high when idle; only one CE# low per transaction |
 | SD2/SD3 in 1-bit mode | Inputs with pull-ups so flash is not write-protected / held |
 
-**Implication for this project's V1 firmware:** reuse `PIOSPI` + ETR pin constants for MCU PSRAM (and optional flash) under D26 drive windows. Do not treat SoftSPI or HW `machine.SPI` as primary. MCU-side APS6404L Enter Quad (`0x35`) remains a project requirement (D17); the guide's PSRAM test stays in SPI mode and does not issue Enter Quad.
+**Implication for this project's V1 firmware:** reuse `PIOSPI` + ETR pin constants for MCU PSRAM (and optional flash) under D26 drive windows. Do not treat SoftSPI or HW `machine.SPI` as primary. Do **not** require flash QE programming (D30). MCU-side APS6404L Enter Quad (`0x35`) remains a project requirement (D17); the guide's PSRAM test stays in SPI mode and does not issue Enter Quad.
 
 ## Bus / ASIC interaction in the guide
 
@@ -206,9 +211,9 @@ spi_cmd2([CMD_WRITE, addr >> 16, (addr >> 8) & 0xFF, addr & 0xFF], buf, ram)
 data = spi_cmd([CMD_READ, addr >> 16, (addr >> 8) & 0xFF, addr & 0xFF], ram, 0, 8)
 ```
 
-### 4. Flash SPI bring-up snippets (pass-through / diagnostics)
+### 4. Flash SPI snippets (optional pass-through / diagnostics)
 
-Useful if firmware exercises flash under grant. Not ASIC DMA.
+Useful if firmware exercises flash under grant. Not ASIC DMA. **QE write (`0x31`) is not part of V1 bring-up** on first-party Pmods (D30); keep only for third-party recovery.
 
 | Opcode | Role in guide |
 |---|---|
@@ -216,7 +221,7 @@ Useful if firmware exercises flash under grant. Not ASIC DMA.
 | `0x90` | Read ID (expect manufacturer `0xef`, device `0x17` in script check) |
 | `0x05` / `0x35` | Read SR1 / SR2 |
 | `0x06` | Write enable |
-| `0x31` | Write SR2 (QE bit = 2) |
+| `0x31` | Write SR2 (QE bit = 2) - **third-party / recovery only** |
 | `0x20` | Sector erase |
 | `0x02` / `0x03` | Page program / read |
 
@@ -246,6 +251,7 @@ When implementing `firmware/psram_spi.py` on ETR:
 1. Copy / adapt `PIOSPI` + `spi_cpha0` and the ETR `QSPI_BASE` constants above.
 2. Hold flash + RAM A + RAM B CS high when idle.
 3. Use basic SPI `0x02`/`0x03` for staging; add project `0x66`/`0x99`/`0x35`/`0xF5` for APS6404L mode control (D17).
-4. Chunk long transfers for `tCEM` ([`../../llm/05-qspi-psram.md`](../../llm/05-qspi-psram.md)).
-5. Respect D22/D26 drive windows (`BUS_GNT` or `rst_n=0`); release-before-seize with ASIC.
-6. Prefer guide patterns over inventing SoftSPI/`machine.SPI` as the first path.
+4. Do **not** make flash QE activation part of normal bring-up (D30; first-party ships QE set).
+5. Chunk long transfers for `tCEM` ([`../../llm/05-qspi-psram.md`](../../llm/05-qspi-psram.md)).
+6. Respect D22/D26 drive windows (`BUS_GNT` or `rst_n=0`); release-before-seize with ASIC.
+7. Prefer guide patterns over inventing SoftSPI/`machine.SPI` as the first path.
