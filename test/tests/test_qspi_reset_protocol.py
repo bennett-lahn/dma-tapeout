@@ -19,13 +19,12 @@ from cocotb.triggers import SimTimeoutError
 
 from common.clocks import apply_engine_reset, apply_reset, start_clock
 from common.config import parse_run_config
+from common.dispose import REQUIRE, clear_sources, dispose_run
 from common.host import pulse_start
 from models.psram import (
-    CLASS_RESET_TRUNCATED,
     QSPI_CMD_WRITE,
     attach_dual_psram,
     attach_engine_psram,
-    format_violations,
 )
 from monitors.qspi import sck_is_parked, start_shared_bus_monitor
 from monitors.timing import start_ce_timing_monitor
@@ -113,62 +112,21 @@ def _bytes_to_nibbles(data: bytes) -> list:
     return nibbles
 
 
-def _dispose_bus_reset_truncated(bus, *, test: str, log) -> list:
-    """Explicitly review SharedBusMonitor RESET-TRUNCATED events (not silent)."""
-    events = bus.review_reset_truncated()
-    for event in events:
-        assert event.reset_truncated, f"{test}: non-truncated event in reset log: {event}"
-        log.info("%s dispose ownership RESET-TRUNCATED: %s", test, event)
-    assert not bus.violations, (
-        f"{test}: ordinary ownership fails after legal reset: "
-        + "; ".join(bus.violations)
-    )
-    log.info(
-        "%s ownership RESET-TRUNCATED disposed count=%d (%s)",
-        test,
-        len(events),
-        bus.summary(),
-    )
-    return events
+def _dispose_reset_window(*sources, test: str, log, repro: str) -> list:
+    """Review every ``RESET-TRUNCATED`` finding from the abort window.
 
-
-def _dispose_ce_reset_truncated(ce, *, test: str, log) -> list:
-    """Review CE timing RESET-TRUNCATED the same way as ownership."""
-    events = list(ce.reset_truncated)
-    for event in events:
-        assert event.reset_truncated, f"{test}: non-truncated CE event: {event}"
-        log.info("%s dispose CE timing RESET-TRUNCATED: %s", test, event)
-    assert not ce.violations, (
-        f"{test}: ordinary CE timing fails after legal reset: "
-        + "; ".join(ce.violations)
+    Shared contract via :func:`common.dispose.dispose_run`: ordinary fails must
+    be empty, and the reset window must produce at least one truncated finding,
+    so a silently clean abort cannot pass as a disposed one.
+    """
+    report = dispose_run(
+        *sources,
+        test=test,
+        log=log,
+        reset_truncated=REQUIRE,
+        repro=repro,
     )
-    log.info(
-        "%s CE timing RESET-TRUNCATED disposed count=%d (%s)",
-        test,
-        len(events),
-        ce.summary(),
-    )
-    return events
-
-
-def _dispose_agent_reset_truncated(agents, *, test: str, log) -> list:
-    """Require every model finding from the abort is RESET-TRUNCATED, then clear."""
-    truncated = []
-    ordinary = []
-    for agent in agents:
-        for violation in agent.violations:
-            if violation.classification == CLASS_RESET_TRUNCATED:
-                truncated.append(violation)
-            else:
-                ordinary.append(violation)
-    for violation in truncated:
-        log.info("%s dispose model RESET-TRUNCATED: %s", test, violation)
-    assert not ordinary, (
-        f"{test}: ordinary PSRAM fails around reset: " + format_violations(ordinary)
-    )
-    for agent in agents:
-        agent.violations.clear()
-    return truncated
+    return report.reset_truncated
 
 
 def _load_smoke_chain(psram0, *, src_byte: int) -> None:
@@ -251,10 +209,7 @@ async def _q_rst_top(dut, config: dict) -> None:
     _load_smoke_chain(psram0, src_byte=SRC_BYTE)
     await start_clock(dut)
     await apply_reset(dut)
-    bus.events.clear()
-    bus.violations.clear()
-    bus.reset_truncated.clear()
-    ce.clear()
+    clear_sources(bus, ce)
 
     await pulse_start(dut)
     await _await_mid_txn_top(dut, repro=repro)
@@ -267,15 +222,15 @@ async def _q_rst_top(dut, config: dict) -> None:
     await _assert_rst_n_clears_top_oe(dut, test=test)
     await _assert_sampled_reset_status_top(dut, test=test)
 
-    _dispose_bus_reset_truncated(bus, test=test, log=dut._log)
-    _dispose_ce_reset_truncated(ce, test=test, log=dut._log)
-    truncated = _dispose_agent_reset_truncated(
-        (psram0.agent, psram1.agent), test=test, log=dut._log
+    truncated = _dispose_reset_window(
+        psram0, psram1, bus, ce, test=test, log=dut._log, repro=repro
     )
-    assert truncated, (
-        f"{test}: expected at least one model RESET-TRUNCATED from mid-txn abort. "
-        + repro
+    assert any(finding.source.startswith("PSRAM") for finding in truncated), (
+        f"{test}: expected at least one model RESET-TRUNCATED from mid-txn abort, "
+        f"observed {[str(finding) for finding in truncated]}. " + repro
     )
+    for agent in (psram0.agent, psram1.agent):
+        agent.violations.clear()
 
     # Release reset and prove a fresh legal chain can complete.
     dut.ui_in.value = 0
@@ -284,11 +239,7 @@ async def _q_rst_top(dut, config: dict) -> None:
     dut.rst_n.value = 1
     await RisingEdge(dut.clk)
 
-    bus.events.clear()
-    bus.violations.clear()
-    bus.reset_truncated.clear()
-    bus._condition_active.clear()
-    ce.clear()
+    clear_sources(bus, ce)
     psram0.agent.transactions.clear()
     psram1.agent.transactions.clear()
 
@@ -307,19 +258,16 @@ async def _q_rst_top(dut, config: dict) -> None:
         f"{test}: post-reset dest mismatch at 0x{DST_ADDR:06X}: "
         f"expected 0x{POST_SRC_BYTE:02X}, got 0x{observed:02X}. " + repro
     )
-    assert not bus.violations, (
-        f"{test}: post-reset ownership fails: " + "; ".join(bus.violations)
-    )
-    assert not ce.violations, (
-        f"{test}: post-reset CE timing fails: " + "; ".join(ce.violations)
-    )
-    assert not bus.reset_truncated, (
-        f"{test}: unexpected RESET-TRUNCATED after clean post-reset chain: "
-        + "; ".join(str(e) for e in bus.reset_truncated)
-    )
-    violations = psram0.agent.violations + psram1.agent.violations
-    assert not violations, (
-        f"{test}: post-reset PSRAM fails: " + format_violations(violations)
+    # Default policy: the post-reset chain is ordinary traffic, so neither an
+    # ordinary fail nor a further RESET-TRUNCATED finding is allowed.
+    dispose_run(
+        psram0,
+        psram1,
+        bus,
+        ce,
+        test=f"{test} post-reset",
+        log=dut._log,
+        repro=repro,
     )
 
     dut._log.info(
@@ -392,20 +340,19 @@ async def _q_rst_engine(dut, config: dict) -> None:
         assert _level(dut.psram_sck) == 0
     await NextTimeStep()
 
-    _dispose_bus_reset_truncated(bus, test=test, log=dut._log)
-    truncated = _dispose_agent_reset_truncated(
-        (psram0.agent, psram1.agent), test=test, log=dut._log
+    truncated = _dispose_reset_window(
+        psram0, psram1, bus, test=test, log=dut._log, repro=repro
     )
-    assert truncated, (
-        f"{test}: expected model RESET-TRUNCATED from mid-txn engine abort. {repro}"
+    assert any(finding.source.startswith("PSRAM") for finding in truncated), (
+        f"{test}: expected model RESET-TRUNCATED from mid-txn engine abort, "
+        f"observed {[str(finding) for finding in truncated]}. {repro}"
     )
+    for agent in (psram0.agent, psram1.agent):
+        agent.violations.clear()
 
     dut.rst_n.value = 1
     await RisingEdge(dut.clk)
-    bus.events.clear()
-    bus.violations.clear()
-    bus.reset_truncated.clear()
-    bus._condition_active.clear()
+    clear_sources(bus)
     psram0.agent.transactions.clear()
     psram1.agent.transactions.clear()
 
@@ -443,16 +390,13 @@ async def _q_rst_engine(dut, config: dict) -> None:
     assert psram0.read(0x000500, 1) == payload, (
         f"{test}: post-reset engine write mismatch. {repro}"
     )
-    assert not bus.violations, (
-        f"{test}: post-reset ownership fails: " + "; ".join(bus.violations)
-    )
-    assert not bus.reset_truncated, (
-        f"{test}: unexpected RESET-TRUNCATED after clean post-reset write: "
-        + "; ".join(str(e) for e in bus.reset_truncated)
-    )
-    violations = psram0.agent.violations + psram1.agent.violations
-    assert not violations, (
-        f"{test}: post-reset PSRAM fails: " + format_violations(violations)
+    dispose_run(
+        psram0,
+        psram1,
+        bus,
+        test=f"{test} post-reset",
+        log=dut._log,
+        repro=repro,
     )
 
     dut._log.info(

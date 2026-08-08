@@ -114,6 +114,11 @@ module tb_gl #(
    wire       asic_flash_cs_oe  = asic_uio_oe[0];
    wire       asic_flash_cs_out = uio_out[0];
    wire       asic_sck_oe       = asic_uio_oe[3];
+   wire       asic_sck_out      = uio_out[3];
+   wire       asic_ram_a_cs_oe  = asic_uio_oe[6];
+   wire       asic_ram_a_cs_out = uio_out[6];
+   wire       asic_ram_b_cs_oe  = asic_uio_oe[7];
+   wire       asic_ram_b_cs_out = uio_out[7];
 
    wire [3:0] host_sio_oe     = {host_uio_oe[5], host_uio_oe[4],
                                  host_uio_oe[2], host_uio_oe[1]};
@@ -127,6 +132,8 @@ module tb_gl #(
                                  fault_uio_drive[2], fault_uio_drive[1]};
    wire       fault_sck_oe    = fault_uio_oe[3];
 
+   // Host status view (identical to tb_top).
+   wire       done            = uo_out[0];
    wire       bus_gnt         = uo_out[1];
 
    // -------------------------------------------------------------------------

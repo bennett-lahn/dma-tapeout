@@ -8,12 +8,13 @@ import cocotb
 from cocotb.triggers import RisingEdge, with_timeout
 from cocotb.triggers import SimTimeoutError
 
-from common.clocks import apply_reset, start_clock
+from common.bringup import bring_up_top
 from common.config import parse_run_config
+from common.dispose import dispose_run
 from common.host import pulse_start
-from models.psram import attach_dual_psram, format_violations
-from monitors.qspi import assert_model_pin_disposition, start_shared_bus_monitor
-from monitors.timing import start_ce_timing_monitor
+from reference.chain import MemoryImage, interpret_chain
+from reference.scoreboard import RunContext, Scoreboard
+from reference.tcd import Tcd, encode_tcd
 
 TCD_HEAD_ADDR = 0x000000
 NEXT_TCD_ADDR = 0x000020
@@ -24,47 +25,6 @@ DST_SENTINEL = 0x00
 
 DONE_BIT = 0x1
 DONE_TIMEOUT_NS = 100_000
-
-
-def _build_tcd(
-    src_ptr: int,
-    dest_ptr: int,
-    transfer_len: int,
-    next_tcd: int,
-    *,
-    src_device: int = 0,
-    dest_device: int = 0,
-    next_device: int = 0,
-    quit: bool = False,
-    reserved: int = 0,
-) -> bytes:
-    """Serialize one 11-byte TCD: big-endian pointers, CTRL_FLAGS last byte.
-
-    CTRL_FLAGS (byte 10): bits[7:4]=reserved, [3]=NEXT, [2]=DEST, [1]=SRC,
-    [0]=QUIT, matching ``src/rtl/types.svh`` ``tcd_t`` bit order.
-    """
-    ctrl_flags = (
-        ((reserved & 0xF) << 4)
-        | ((next_device & 1) << 3)
-        | ((dest_device & 1) << 2)
-        | ((src_device & 1) << 1)
-        | (1 if quit else 0)
-    )
-    return bytes(
-        [
-            (src_ptr >> 16) & 0xFF,
-            (src_ptr >> 8) & 0xFF,
-            src_ptr & 0xFF,
-            (dest_ptr >> 16) & 0xFF,
-            (dest_ptr >> 8) & 0xFF,
-            dest_ptr & 0xFF,
-            transfer_len & 0xFF,
-            (next_tcd >> 16) & 0xFF,
-            (next_tcd >> 8) & 0xFF,
-            next_tcd & 0xFF,
-            ctrl_flags,
-        ]
-    )
 
 
 def _repro(config: dict) -> str:
@@ -99,22 +59,32 @@ async def smoke_same_device_copy(dut):
     dut._log.info("SEED=%d LEVEL=%s SIM=%s DUT_LEVEL=%s", config["seed"], config["level"], config["sim"], config["dut_level"])
     dut._log.info(repro)
 
-    psram0, psram1 = attach_dual_psram(dut)
-    # Non-strict: collect ownership and coarse CE# timing findings and dispose
-    # them with the PSRAM violation lists below, so one failure prints the
-    # whole picture. Defaults: tCEM=4 us (extended), tCPH=18 ns.
-    bus = start_shared_bus_monitor(dut, psram0.agent, psram1.agent, strict=False)
-    ce = start_ce_timing_monitor(dut, strict=False)
+    # Shared bring-up: stop prior agents, park host/fault injectors, attach both
+    # models, start the non-strict ownership / CE# / handshake / pin monitors
+    # before reset release, then clock and release rst_n.
+    bringup = await bring_up_top(dut)
+    psram0 = bringup.psram0
 
-    tcd_head = _build_tcd(SRC_ADDR, DST_ADDR, 1, NEXT_TCD_ADDR, quit=False)
-    tcd_quit = _build_tcd(0, 0, 0, 0, quit=True)
-    psram0.write(TCD_HEAD_ADDR, tcd_head)
-    psram0.write(NEXT_TCD_ADDR, tcd_quit)
+    head = Tcd(
+        src_ptr=SRC_ADDR,
+        dest_ptr=DST_ADDR,
+        transfer_len=1,
+        next_tcd=NEXT_TCD_ADDR,
+    )
+    psram0.write(TCD_HEAD_ADDR, encode_tcd(head))
+    psram0.write(NEXT_TCD_ADDR, encode_tcd(Tcd(quit=True)))
     psram0.write(SRC_ADDR, bytes([SRC_BYTE]))
     psram0.write(DST_ADDR, bytes([DST_SENTINEL]))
 
-    await start_clock(dut)
-    await apply_reset(dut)
+    # Golden oracle for the same layout, used below for the dual-axis
+    # scoreboard; the backdoor writes above never touch the bus so this mirrors
+    # them independently rather than reading them back.
+    initial_memory = MemoryImage(fill=0x00)
+    initial_memory.write(0, TCD_HEAD_ADDR, encode_tcd(head))
+    initial_memory.write(0, NEXT_TCD_ADDR, encode_tcd(Tcd(quit=True)))
+    initial_memory.write(0, SRC_ADDR, bytes([SRC_BYTE]))
+    initial_memory.write(0, DST_ADDR, bytes([DST_SENTINEL]))
+    golden = interpret_chain(initial_memory, dma_buf_depth=config["dma_buf_depth"])
 
     await pulse_start(dut)
 
@@ -133,30 +103,48 @@ async def smoke_same_device_copy(dut):
         f"expected 0x{SRC_BYTE:02X}, got 0x{observed:02X}. " + repro
     )
 
-    violations = psram0.agent.violations + psram1.agent.violations
-    assert not violations, (
-        "TC-SMOKE: PSRAM protocol violations: " + format_violations(violations) + ". " + repro
-    )
-    assert not bus.violations, (
-        "TC-SMOKE: shared-bus ownership violations: "
-        + "; ".join(bus.violations)
-        + ". "
-        + repro
-    )
-    assert not ce.violations, (
-        "TC-SMOKE: CE# timing violations (Q-CEM/Q-CPH): "
-        + "; ".join(ce.violations)
-        + ". "
-        + repro
+    # L1 smoke requires a live pin axis: missing/blocked is a hard fail, not a
+    # soft skip of the transaction compare.
+    if bringup.pin is None or bringup.pin.blocked:
+        reason = (
+            "missing"
+            if bringup.pin is None
+            else f"blocked ({bringup.pin.blocked_reason})"
+        )
+        raise AssertionError(
+            f"TC-SMOKE: pin monitor {reason}; L1 smoke requires a live "
+            f"pin axis for dual-axis scoreboard compare. " + repro
+        )
+
+    Scoreboard.from_result(
+        golden,
+        context=RunContext(
+            level=config["level"],
+            sim=config["sim"],
+            seed=config["seed"],
+            depth=config["dma_buf_depth"],
+            timing=config["timing_profile"],
+            test="TC-SMOKE",
+            repro=repro,
+        ),
+        log=dut._log,
+    ).compare(
+        bringup.pin.transactions(),
+        observed_memory={device.device_id: device for device in bringup.devices},
     )
 
-    assert_model_pin_disposition(
-        psram0, psram1, log=dut._log, test="TC-SMOKE"
-    )
+    report = dispose_run(bringup, test="TC-SMOKE", log=dut._log, repro=repro)
+    dut._log.info("TC-SMOKE pin txn log:\n%s", bringup.pin.log_text())
     dut._log.info(
-        "TC-SMOKE passed: dest[0x%06X]=0x%02X after %d PSRAM0 transactions (%s)",
+        "TC-SMOKE passed: dest[0x%06X]=0x%02X after %d PSRAM0 transactions "
+        "(%s | %s | %s | %s | %s | %s)",
         DST_ADDR,
         observed,
         len(psram0.agent.transactions),
-        ce.summary(),
+        bringup.ce.summary(),
+        bringup.handshake.summary(),
+        bringup.arbitration.summary(),
+        bringup.controller.summary(),
+        bringup.pin.summary(),
+        report.summary(),
     )
