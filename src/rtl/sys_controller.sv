@@ -88,8 +88,7 @@ assign qspi_txn_valid = (curr_state == NEW_OP || curr_state == NEW_FETCH) && (ne
 
 // Drive SPI device select
 always_comb begin
-   qspi_device_sel = QSPI_PSRAM0;
-   unique case (curr_state)
+   case (curr_state)
       NEW_FETCH:           qspi_device_sel = task_ctrl_desc.next_tcd_device;
       FETCH:               qspi_device_sel = active_fetch_device;
       NEW_OP: begin
@@ -101,13 +100,13 @@ always_comb begin
       READ:                qspi_device_sel = task_ctrl_desc.src_device;
       WRITE:               qspi_device_sel = task_ctrl_desc.dest_device;
       SYS_CTRL_IDLE, UPDATE, STALL: qspi_device_sel = QSPI_PSRAM0;
+      default: qspi_device_sel = QSPI_PSRAM0;
    endcase
 end
 
 // Drive SPI transaction length
 always_comb begin
-   qspi_byte_len = '0;
-   unique case (curr_state)
+   case (curr_state)
       NEW_FETCH, FETCH:
          qspi_byte_len = qpi_byte_len_t'(QPI_TCD_BYTES);
       NEW_OP, READ, WRITE: begin
@@ -117,6 +116,7 @@ always_comb begin
             qspi_byte_len = qpi_byte_len_t'(task_ctrl_desc.transfer_len);
       end
       SYS_CTRL_IDLE, UPDATE, STALL: qspi_byte_len = '0;
+      default: qspi_byte_len = '0;
    endcase
 end
 
@@ -130,8 +130,7 @@ end
 
 // Drive current address
 always_comb begin
-   qspi_addr = '0;
-   unique case (curr_state)
+   case (curr_state)
       NEW_FETCH: qspi_addr = task_ctrl_desc.next_tcd;
       FETCH: qspi_addr = active_fetch_addr;
       NEW_OP: begin
@@ -143,6 +142,7 @@ always_comb begin
       READ: qspi_addr = task_ctrl_desc.src_ptr;
       WRITE: qspi_addr = task_ctrl_desc.dest_ptr;
       SYS_CTRL_IDLE, UPDATE, STALL: qspi_addr = '0;
+      default: qspi_addr = '0;
    endcase
 end
 
@@ -177,7 +177,7 @@ end
 
 // State control
 always_comb begin
-   unique case (curr_state)
+   case (curr_state)
       SYS_CTRL_IDLE: begin
          if (bus_req)
             next_state = STALL;
@@ -243,6 +243,7 @@ always_comb begin
          else
             next_state = stalled_state;
       end
+      default: next_state = SYS_CTRL_IDLE;
    endcase
 end
 

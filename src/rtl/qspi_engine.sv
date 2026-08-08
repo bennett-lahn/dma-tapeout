@@ -65,8 +65,7 @@ logic sclk_en;
 
 // Next state control
 always_comb begin
-   next_state = QSPI_IDLE;
-   unique case (curr_state)
+   case (curr_state)
       QSPI_IDLE: begin
          if (txn_valid)
             next_state = CS_ON;
@@ -123,6 +122,7 @@ always_comb begin
       CS_OFF: begin
          next_state = QSPI_IDLE;
       end
+      default: next_state = QSPI_IDLE;
    endcase
 end
 
