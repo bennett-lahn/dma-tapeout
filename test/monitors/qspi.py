@@ -16,23 +16,29 @@ the timing-venue IDs mirroring it in ``04-timing-in-sim.md``:
 ``CHK-PIN-SCK-PARK``  ``Q-SCKIDLE``   SCK not parked low while all deselected
 ===================== =============== ===================================
 
-Two further pin catalog rows are disposed by the per-device PSRAM model until
-:class:`QspiPinMonitor` independently pin-decodes them (M2 transaction log):
+:class:`QspiPinMonitor` owns the other two pin catalog rows from its own
+CE#/SCK/SIO decode, and exports the ordered observed transaction log the
+scoreboard compares against the reference oracle:
 
 ======================= ============ =====================================
-``CHK-*``               model ``Q-*`` Condition disposed
+``CHK-*``               twin ``Q-*``  Condition
 ======================= ============ =====================================
-``CHK-PIN-ADDR23-ZERO`` ``Q-ADDR23`` wire address had ``A[23]`` set
-``CHK-PIN-KNOWN``       ``Q-SIO-X``  SIO unresolved in a host-driven phase
+``CHK-PIN-ADDR23-ZERO`` ``Q-ADDR23`` decoded wire address had ``A[23]`` set
+``CHK-PIN-KNOWN``       ``Q-SIO-X``  CE#, SCK, or SIO unresolved where the
+                                     protocol requires a value
 ======================= ============ =====================================
 
-Use :func:`dispose_model_pin_checks` / :func:`assert_model_pin_disposition` so
-every applicable L0/L1 run prints an explicit disposition (never a silent
-skip). ``CHK-PIN-KNOWN`` via ``Q-SIO-X`` covers unresolved SIO (X, and Z once
-the ``tb_top`` model plane stops replacing float with idle 0) during
-host-driven phases. CE#/SCK known-value edges and float-during-drive remain
-residuals for the full pin monitor (partially overlapped by
-``CHK-PIN-SCK-PARK`` float-while-keeper).
+The pin decode is deliberately independent of the PSRAM models: it reads the
+physical bus aliases (``bus_sck``, ``bus_ram_*_cs_n``, ``bus_sio``) and never
+consults a model's access log, so agreement between the two is evidence rather
+than a tautology (``05-reference-model.md``, "Independence and review rules").
+
+:func:`common.dispose.dispose_run` / :func:`dispose_pin_checks` prefer the pin
+monitor when one ran (``via=pin``). :func:`dispose_model_pin_checks` /
+:func:`assert_model_pin_disposition` remain the model-evidence fallback for
+runs that do not start a pin monitor, via ``Q-ADDR23`` / ``Q-SIO-X``. Either
+way every applicable L0/L1 run prints an explicit disposition, never a silent
+skip.
 
 Coarse ``Q-CEM`` / ``Q-CPH`` CE# pulse and gap checks live in
 :mod:`monitors.timing` (:func:`monitors.timing.start_ce_timing_monitor`), not
@@ -50,11 +56,19 @@ not exist at a level - flash CS and ``BUS_GNT`` at L0 - are simply absent and
 their checks report ``na``.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cocotb
 from cocotb.simtime import get_sim_time
 from cocotb.triggers import First, ReadOnly
+
+from reference.chain import (
+    OBSERVED_READ,
+    OBSERVED_WRITE,
+    OPCODE_READ,
+    OPCODE_WRITE,
+    transaction,
+)
 
 CHK_PIN_CS_MUTEX = "CHK-PIN-CS-MUTEX"
 CHK_PIN_FLASH_HIGH = "CHK-PIN-FLASH-HIGH"
@@ -70,13 +84,17 @@ SHARED_BUS_CHECK_IDS = (
     CHK_PIN_SCK_PARK,
 )
 
-# Catalog rows disposed by models.psram pin decode until QspiPinMonitor owns them.
-MODEL_PIN_CHECK_IDS = (
+# Catalog rows QspiPinMonitor decodes from the pins on its own.
+PIN_MONITOR_CHECK_IDS = (
     CHK_PIN_ADDR23_ZERO,
     CHK_PIN_KNOWN,
 )
 
-# Same pattern as SharedBusMonitor: a model or wrapper may report either ID.
+# Same rows, as reported by models.psram pin decode (fallback evidence).
+MODEL_PIN_CHECK_IDS = PIN_MONITOR_CHECK_IDS
+
+# Twin per-device model ID for the same condition. Same pattern as
+# SharedBusMonitor: a run may report either name, so both are always printed.
 MODEL_DISPOSE_VIA = {
     CHK_PIN_ADDR23_ZERO: "Q-ADDR23",
     CHK_PIN_KNOWN: "Q-SIO-X",
@@ -99,6 +117,7 @@ DRIVER_MCU = "mcu"
 RESULT_PASS = "pass"
 RESULT_FAIL = "fail"
 RESULT_NA = "na"
+RESULT_BLOCKED = "blocked"
 
 _KNOWN_LEVEL = {"0": 0, "1": 1}
 
@@ -112,6 +131,16 @@ def _bits(handle) -> "list[int | None]":
 def _level(handle) -> "int | None":
     """Return the level of a 1-bit *handle*, or ``None`` while it holds x/z."""
     return _bits(handle)[0]
+
+
+def _word(handle) -> "int | None":
+    """Return the integer value of *handle*, or ``None`` if any bit is x/z."""
+    value = 0
+    for index, bit in enumerate(_bits(handle)):
+        if bit is None:
+            return None
+        value |= bit << index
+    return value
 
 
 def _show(value: "int | None") -> str:
@@ -231,6 +260,20 @@ class SharedBusMonitor:
         without cancelling a background task into the next test's outcome."""
         self._active = False
 
+    def clear(self) -> None:
+        """Drop findings and latched condition state for a fresh window.
+
+        Condition latches are dropped too, so a condition that was active
+        before the clear is reported again on its next entry instead of being
+        swallowed by the pre-clear edge.
+        """
+        self.events.clear()
+        self.violations.clear()
+        self.reset_truncated.clear()
+        self.notes.clear()
+        self._condition_active.clear()
+        self._suppressed = 0
+
     async def _run(self) -> None:
         watched = self._watched_handles()
         while True:
@@ -342,10 +385,10 @@ class SharedBusMonitor:
         """``CHK-PIN-SIO-OWN`` / ``Q-SIO-OWN``: one enabled SIO driver per net.
 
         Judged from output enables, so an overlap where both drivers hold the
-        same level still fails. MCU-versus-ASIC overlap belongs to the
-        ``CHK-ARB-*`` grant rows and is only noted here.
-        TODO(M2): move the MCU/ASIC note into monitors/arbitration.py once the
-          grant and park checkers exist.
+        same level still fails. MCU-versus-ASIC overlap is only noted here; that
+        row is owned by ``CHK-ARB-GNT-OE`` in
+        :class:`monitors.arbitration.ArbitrationMonitor`, which judges the ASIC's
+        whole ``uio_oe`` against ``BUS_GNT``.
         """
         oe_by_driver = [(driver, driver.oe_bits(), driver.value_bits()) for driver in self._drivers]
         bus_levels = [None] * 4 if self._sio_bus is None else _bits(self._sio_bus)
@@ -383,7 +426,7 @@ class SharedBusMonitor:
             names = " + ".join(driver.name for driver, _ in enabled)
             self.notes.append(
                 f"{self.name} SIO{index} driven by {names} at {_now_ns():.3f}ns "
-                "(CHK-ARB-* scope, not CHK-PIN-SIO-OWN)"
+                "(CHK-ARB-GNT-OE scope, not CHK-PIN-SIO-OWN)"
             )
 
     def _sck_has_driver(self) -> bool:
@@ -685,34 +728,699 @@ def assert_model_pin_disposition(
     return results
 
 
-class QspiPinMonitor:
-    """Decode resolved CE#, SCK, SIO into normalized transaction records.
+# -- Independent pin decode (QspiPinMonitor) -------------------------------
 
-    M1 leaves full transaction export as a stub. ``CHK-PIN-ADDR23-ZERO`` and
-    ``CHK-PIN-KNOWN`` are disposed through the PSRAM model's pin-decoded
-    ``Q-ADDR23`` / ``Q-SIO-X`` records via :func:`dispose_model_pin_checks`
-    until this class owns an independent decoder (M2 scoreboard path).
+CMD_NIBBLES = 2
+ADDR_NIBBLES = 6
+READ_DUMMY_CYCLES = 6
+ADDR23_BIT = 1 << 23
+
+PIN_PHASE_IDLE = "IDLE"
+PIN_PHASE_CMD = "CMD"
+PIN_PHASE_ADDR = "ADDR"
+PIN_PHASE_DUMMY = "DUMMY"
+PIN_PHASE_DATA = "DATA"
+PIN_PHASE_IGNORE = "IGNORE"
+
+DIR_READ = "read"
+DIR_WRITE = "write"
+DIR_UNKNOWN = "unknown"
+
+# Decode faults. They keep an interval out of the normal transaction log; the
+# per-device model owns the matching Q-* catalog rows, so only the two rows
+# this monitor owns (ADDR23 / KNOWN) also raise a CHK-PIN-* event here.
+FAULT_CMD_TRUNCATED = "truncated-command"
+FAULT_ADDR_TRUNCATED = "truncated-address"
+FAULT_OPCODE = "unsupported-opcode"
+FAULT_DUMMY = "dummy-count"
+FAULT_ODD_NIBBLE = "odd-data-nibble"
+FAULT_ADDR23 = "addr23-set"
+FAULT_SIO_X = "sio-unresolved"
+FAULT_RESET = "reset-aborted"
+FAULT_REFRAME = "ce-refell-while-active"
+
+# Wrapper aliases the decoder needs; a missing name blocks both owned rows.
+REQUIRED_PIN_SIGNALS = ("bus_sck", "bus_ram_a_cs_n", "bus_ram_b_cs_n", "bus_sio")
+
+DEFAULT_NIBBLE_TRACE = 64
+
+
+@dataclass
+class PinTransaction:
+    """One CE#-framed interval decoded from the resolved pins.
+
+    Only wire facts: opcode, address, and payload come from SIO nibbles clocked
+    by SCK, never from a request bus or a model access log. ``complete`` is true
+    only for a well-formed interval, which is what :meth:`QspiPinMonitor.transactions`
+    exports; every other interval stays a diagnostic event per
+    ``05-reference-model.md`` ("Observed transaction completion").
     """
 
-    def __init__(self, dut) -> None:
-        self.dut = dut
+    device: int
+    ce_fall_ns: float
+    opcode: int = 0
+    direction: str = DIR_UNKNOWN
+    address: int = 0
+    cmd_nibbles: int = 0
+    addr_nibbles: int = 0
+    dummy_cycles: int = 0
+    data_nibbles: int = 0
+    data: bytearray = field(default_factory=bytearray)
+    nibbles: "list[int | None]" = field(default_factory=list)
+    ce_rise_ns: "float | None" = None
+    faults: "list[str]" = field(default_factory=list)
+    aborted: bool = False
+    complete: bool = False
 
-    async def run(self) -> None:
-        """Background monitor coroutine; start before reset release.
+    @property
+    def kind(self) -> "str | None":
+        """Neutral observed kind; ordered comparison resolves fetch versus data."""
+        if self.direction == DIR_READ:
+            return OBSERVED_READ
+        if self.direction == DIR_WRITE:
+            return OBSERVED_WRITE
+        return None
 
-        Raises:
-            NotImplementedError: Full pin decode deferred to M2; see model dispose.
+    @property
+    def length(self) -> int:
+        return len(self.data)
+
+    def nibble_trace(self) -> str:
+        return " ".join("x" if value is None else f"{value:X}" for value in self.nibbles)
+
+    def canonical(self) -> str:
+        end = "?" if self.ce_rise_ns is None else f"{self.ce_rise_ns:.3f}"
+        line = (
+            f"dev={self.device} op={self.opcode:02X} {self.direction} "
+            f"addr=0x{self.address:06X} len={self.length} "
+            f"phases=cmd{self.cmd_nibbles}/addr{self.addr_nibbles}/"
+            f"dummy{self.dummy_cycles}/data{self.data_nibbles} "
+            f"ce={self.ce_fall_ns:.3f}..{end}ns"
+        )
+        if self.faults:
+            line += f" faults={','.join(self.faults)}"
+        return line
+
+    def to_transaction(self, index: int):
+        """Return the normalized :class:`reference.chain.Transaction` record.
+
+        The kind stays neutral (``READ`` / ``WRITE``); ``Scoreboard.classify_observed``
+        resolves it into ``FETCH_READ`` / ``DATA_READ`` / ``DATA_WRITE`` during
+        ordered comparison, so no expected field ever leaks into the observed log.
         """
-        raise NotImplementedError(
-            "QspiPinMonitor transaction decode is M2; "
-            "CHK-PIN-ADDR23-ZERO / CHK-PIN-KNOWN dispose via "
-            "dispose_model_pin_checks (Q-ADDR23 / Q-SIO-X)"
+        if self.kind is None:
+            raise ValueError(
+                f"pin interval {self.canonical()} has no decoded direction and "
+                "cannot become a normalized transaction record"
+            )
+        return transaction(
+            index,
+            self.kind,
+            self.device,
+            self.address,
+            bytes(self.data),
+            opcode=self.opcode,
+            start_time_ns=self.ce_fall_ns,
+            end_time_ns=self.ce_rise_ns,
+            meta={
+                "source": "pin",
+                "dummy_cycles": self.dummy_cycles,
+                "data_nibbles": self.data_nibbles,
+                "nibbles": self.nibble_trace(),
+            },
         )
 
-    def transactions(self) -> list:
-        """Return completed normalized records for scoreboard compare.
 
-        Raises:
-            NotImplementedError: Full pin decode deferred to M2.
+class _PinDecoder:
+    """CE#-framed QPI decoder for one device, driven by resolved-pin edges.
+
+    Command, address, and write-data nibbles are sampled on rising SCK. Read
+    data is sampled on rising SCK too: the device launches each nibble on the
+    preceding falling edge, so the rising edge is the value the host actually
+    captures, and the payload length matches what the host clocked in
+    (``03-psram-model.md``, pin-level QPI grammar).
+    """
+
+    def __init__(self, monitor: "QspiPinMonitor", device: int, *, max_trace: int) -> None:
+        self._monitor = monitor
+        self._max_trace = max_trace
+        self._high: "int | None" = None
+        self.device = device
+        self.phase = PIN_PHASE_IDLE
+        self.txn: "PinTransaction | None" = None
+
+    # -- framing -----------------------------------------------------------
+
+    def begin(self) -> None:
+        """Start an interval on CE# falling."""
+        if self.txn is not None:
+            self._monitor._finish(self.abort(FAULT_REFRAME))
+        self.txn = PinTransaction(device=self.device, ce_fall_ns=_now_ns())
+        self.phase = PIN_PHASE_CMD
+        self._high = None
+
+    def end(self) -> "PinTransaction | None":
+        """Close an interval on CE# rising and apply the termination rules."""
+        txn = self._take()
+        if txn is None:
+            return None
+        txn.ce_rise_ns = _now_ns()
+
+        if txn.cmd_nibbles < CMD_NIBBLES:
+            txn.faults.append(FAULT_CMD_TRUNCATED)
+        elif txn.direction != DIR_UNKNOWN and txn.addr_nibbles < ADDR_NIBBLES:
+            txn.faults.append(FAULT_ADDR_TRUNCATED)
+        elif txn.direction == DIR_READ and FAULT_ADDR23 not in txn.faults:
+            if txn.dummy_cycles != READ_DUMMY_CYCLES:
+                txn.faults.append(FAULT_DUMMY)
+        if txn.data_nibbles % 2:
+            txn.faults.append(FAULT_ODD_NIBBLE)
+
+        txn.complete = not txn.faults
+        return txn
+
+    def abort(self, reason: str) -> "PinTransaction | None":
+        """Close an interval as an aborted diagnostic event, never a record."""
+        txn = self._take()
+        if txn is None:
+            return None
+        txn.ce_rise_ns = _now_ns()
+        txn.aborted = True
+        txn.faults.append(reason)
+        txn.complete = False
+        return txn
+
+    def _take(self) -> "PinTransaction | None":
+        txn = self.txn
+        self.txn = None
+        self.phase = PIN_PHASE_IDLE
+        self._high = None
+        return txn
+
+    # -- nibble decode -----------------------------------------------------
+
+    def on_sck_rise(self, raw: "int | None") -> None:
+        """Consume one SCK rising edge while this device's CE# is low."""
+        txn = self.txn
+        if txn is None or self.phase == PIN_PHASE_IGNORE:
+            return
+
+        if self.phase == PIN_PHASE_DUMMY:
+            txn.dummy_cycles += 1
+            if txn.dummy_cycles >= READ_DUMMY_CYCLES:
+                self.phase = PIN_PHASE_DATA
+            return
+
+        if len(txn.nibbles) < self._max_trace:
+            txn.nibbles.append(raw)
+        nibble = raw
+        if nibble is None:
+            self._note_unresolved()
+            nibble = 0
+
+        if self.phase == PIN_PHASE_CMD:
+            txn.opcode = ((txn.opcode << 4) | nibble) & 0xFF
+            txn.cmd_nibbles += 1
+            if txn.cmd_nibbles >= CMD_NIBBLES:
+                self._decode_opcode()
+        elif self.phase == PIN_PHASE_ADDR:
+            txn.address = ((txn.address << 4) | nibble) & 0xFFFFFF
+            txn.addr_nibbles += 1
+            if txn.addr_nibbles >= ADDR_NIBBLES:
+                self._decode_address()
+        elif self.phase == PIN_PHASE_DATA:
+            txn.data_nibbles += 1
+            if self._high is None:
+                self._high = nibble  # upper nibble first, SIO3 is the nibble MSB
+            else:
+                txn.data.append(((self._high << 4) | nibble) & 0xFF)
+                self._high = None
+
+    def _decode_opcode(self) -> None:
+        txn = self.txn
+        if txn.opcode == OPCODE_READ:
+            txn.direction = DIR_READ
+        elif txn.opcode == OPCODE_WRITE:
+            txn.direction = DIR_WRITE
+        else:
+            # Q-OPCODE is the model's row; here it only voids the record.
+            txn.faults.append(FAULT_OPCODE)
+            self.phase = PIN_PHASE_IGNORE
+            return
+        self.phase = PIN_PHASE_ADDR
+
+    def _decode_address(self) -> None:
+        """``CHK-PIN-ADDR23-ZERO`` on the six address nibbles, not a request field."""
+        txn = self.txn
+        if txn.address & ADDR23_BIT:
+            txn.faults.append(FAULT_ADDR23)
+            self._monitor._record(
+                CHK_PIN_ADDR23_ZERO,
+                f"PSRAM{self.device} op=0x{txn.opcode:02X}: A[23] set in the decoded "
+                f"wire address 0x{txn.address:06X}; device selection is CE#, not A[23]",
+            )
+            self.phase = PIN_PHASE_IGNORE
+            return
+        self.phase = PIN_PHASE_DUMMY if txn.direction == DIR_READ else PIN_PHASE_DATA
+
+    def _note_unresolved(self) -> None:
+        """``CHK-PIN-KNOWN``: once per interval, on the first unresolved nibble."""
+        txn = self.txn
+        if FAULT_SIO_X in txn.faults:
+            return
+        txn.faults.append(FAULT_SIO_X)
+        self._monitor._record(
+            CHK_PIN_KNOWN,
+            f"PSRAM{self.device}: SIO unresolved (x/z) on a rising SCK in the "
+            f"{self.phase} phase, where the protocol requires a value "
+            f"(nibbles so far: {txn.nibble_trace()})",
+        )
+
+
+class QspiPinMonitor:
+    """Decode resolved CE#, SCK, and SIO into normalized transaction records.
+
+    Two jobs, both from pins only:
+
+    1. export the ordered observed transaction log the dual-axis scoreboard
+       compares against the reference oracle, and
+    2. dispose ``CHK-PIN-ADDR23-ZERO`` and ``CHK-PIN-KNOWN``.
+
+    The monitor wakes on any watched pin change and samples in the read-only
+    phase, so a settled timestep is decoded rather than an intermediate delta.
+    One external CE# assertion is one interval. A malformed or reset-aborted
+    interval is retained as a diagnostic event in :attr:`intervals` and is never
+    rewritten into a normal record.
+
+    Findings observed while ``rst_n`` is low are classified ``RESET-TRUNCATED``
+    exactly as in :class:`SharedBusMonitor`, and the interval live at that point
+    is closed as aborted. The decoder re-arms once ``rst_n`` is high again and
+    both CE# levels are resolved, so pre-reset X on the engine's CS registers is
+    not reported as a protocol failure.
+
+    Ownership stays with :class:`SharedBusMonitor`: this monitor judges decoded
+    values, not who drove them.
+    """
+
+    def __init__(
+        self,
+        *,
+        sck=None,
+        ram_ce_n=(),
+        sio=None,
+        rst_n=None,
+        level: str = "L1",
+        name: str = "qspi-pins",
+        visibility: str = "top-observable",
+        strict: bool = False,
+        max_events: int = 64,
+        max_nibble_trace: int = DEFAULT_NIBBLE_TRACE,
+        missing: "tuple[str, ...]" = (),
+        blocked_reason: str = "",
+        log=None,
+    ) -> None:
+        self._sck = sck
+        self._ram_ce_n = tuple(ram_ce_n)
+        self._sio = sio
+        self._rst_n = rst_n
+        self._strict = strict
+        self._max_events = max_events
+        self._log = log
+
+        self.level = level
+        self.name = name
+        self.visibility = visibility
+        self.missing = tuple(missing)
+        self.blocked_reason = blocked_reason or (
+            f"missing handles: {', '.join(self.missing)}" if self.missing else ""
+        )
+
+        self.violations: "list[str]" = []
+        self.events: "list[BusViolation]" = []
+        self.reset_truncated: "list[BusViolation]" = []
+        self.intervals: "list[PinTransaction]" = []
+
+        self._decoders = {
+            device: _PinDecoder(self, device, max_trace=max_nibble_trace)
+            for device, _ in self._ram_ce_n
+        }
+        self._condition_active: "dict[object, bool]" = {}
+        self._prev_ce: "dict[int, int | None]" = {}
+        self._prev_sck: "int | None" = None
+        self._in_reset = False
+        self._armed = False
+        self._samples = 0
+        self._suppressed = 0
+        self._active = False
+        self._task = None
+
+    # -- lifecycle ---------------------------------------------------------
+
+    @property
+    def blocked(self) -> bool:
+        """True when a required alias was absent, so no row could be judged."""
+        return bool(self.missing)
+
+    def start(self):
+        """Launch the background decoder. Call before reset release."""
+        if self.blocked:
+            if self._log is not None:
+                self._log.warning(
+                    "CHECKER BLOCKED ids=%s level=%s reason=%s",
+                    ",".join(PIN_MONITOR_CHECK_IDS),
+                    self.level,
+                    self.blocked_reason,
+                )
+            return None
+        self._active = True
+        self._task = cocotb.start_soon(self._run())
+        return self._task
+
+    def stop(self) -> None:
+        """Soft-stop so a later test in the same module can re-attach."""
+        self._active = False
+
+    def clear(self) -> None:
+        """Drop findings, decoded intervals, and latched condition state.
+
+        A directed test that opens a fresh scoreboard epoch calls this first, so
+        the exported log holds only that epoch's transactions.
         """
-        raise NotImplementedError("M2 implements QSPI transaction log export")
+        self.events.clear()
+        self.violations.clear()
+        self.reset_truncated.clear()
+        self.intervals.clear()
+        self._condition_active.clear()
+        self._suppressed = 0
+        for decoder in self._decoders.values():
+            decoder.abort(FAULT_REFRAME)
+
+    async def _run(self) -> None:
+        watched = self._watched_handles()
+        while True:
+            await First(*[handle.value_change for handle in watched])
+            await ReadOnly()
+            if self._active:
+                self._evaluate()
+
+    def _watched_handles(self) -> list:
+        handles = [self._sck, self._sio]
+        handles += [handle for _, handle in self._ram_ce_n]
+        if self._rst_n is not None:
+            handles.append(self._rst_n)
+        return handles
+
+    # -- reporting ---------------------------------------------------------
+
+    def _record(self, check_id: str, detail: str) -> None:
+        """Record one finding, classifying it ``RESET-TRUNCATED`` while in reset."""
+        event = BusViolation(
+            check_id=check_id,
+            timing_id=MODEL_DISPOSE_VIA[check_id],
+            time_ns=_now_ns(),
+            detail=detail,
+            reset_truncated=self._in_reset,
+        )
+        if self._in_reset:
+            self.reset_truncated.append(event)
+            return
+
+        if len(self.events) >= self._max_events:
+            self._suppressed += 1
+            return
+
+        self.events.append(event)
+        self.violations.append(f"{self.name} {event}")
+        if self._log is not None:
+            self._log.error("CHECKER FAIL id=%s level=%s %s", check_id, self.level, event)
+        if self._strict:
+            raise AssertionError(str(event))
+
+    def _latch(self, check_id: str, key, active: bool, detail: str) -> None:
+        """Record a level condition once per false-to-true transition."""
+        was_active = self._condition_active.get(key, False)
+        self._condition_active[key] = active
+        if active and not was_active:
+            self._record(check_id, detail)
+
+    def _finish(self, interval: "PinTransaction | None") -> None:
+        if interval is not None:
+            self.intervals.append(interval)
+
+    # -- decode ------------------------------------------------------------
+
+    def _evaluate(self) -> None:
+        self._samples += 1
+
+        rst_n = 1 if self._rst_n is None else _level(self._rst_n)
+        self._in_reset = rst_n != 1
+        ce_levels = {device: _level(handle) for device, handle in self._ram_ce_n}
+        sck = _level(self._sck)
+
+        if self._in_reset:
+            self._abort_active(FAULT_RESET)
+            self._armed = False
+            self._condition_active.clear()
+        elif not self._armed:
+            # Re-arm only once every CE# is resolved: reset releases the shared
+            # OEs combinationally and the engine's CS registers settle high on
+            # the first sampled reset edge, so an X here is bring-up, not fault.
+            self._armed = all(level is not None for level in ce_levels.values())
+        else:
+            self._check_known_levels(ce_levels, sck)
+            self._track_frames(ce_levels)
+            self._track_clock(ce_levels, sck)
+
+        self._prev_ce = ce_levels
+        self._prev_sck = sck
+
+    def _abort_active(self, reason: str) -> None:
+        for decoder in self._decoders.values():
+            self._finish(decoder.abort(reason))
+
+    def _check_known_levels(self, ce_levels, sck) -> None:
+        """``CHK-PIN-KNOWN`` for the framing pins the protocol always needs."""
+        for device, level in ce_levels.items():
+            self._latch(
+                CHK_PIN_KNOWN,
+                ("ce", device),
+                level is None,
+                f"PSRAM{device} CE# unresolved (x/z) while rst_n=1; CE# frames every "
+                "transaction and must always hold a value",
+            )
+
+        selected = sorted(device for device, level in ce_levels.items() if level == 0)
+        names = ", ".join(f"PSRAM{device}" for device in selected)
+        self._latch(
+            CHK_PIN_KNOWN,
+            "sck",
+            bool(selected) and sck is None,
+            f"SCK unresolved (x/z) while {names} is selected; the clock must hold a "
+            "value for the whole CE#-low interval",
+        )
+
+    def _track_frames(self, ce_levels) -> None:
+        for device, level in ce_levels.items():
+            previous = self._prev_ce.get(device)
+            decoder = self._decoders[device]
+            if previous != 0 and level == 0:
+                decoder.begin()
+            elif previous == 0 and level != 0:
+                self._finish(decoder.end())
+
+    def _track_clock(self, ce_levels, sck) -> None:
+        if sck is None or self._prev_sck is None or sck == self._prev_sck:
+            return
+        if sck != 1:
+            return  # falling edge launches read data; the host captures on rising
+        selected = [device for device, level in ce_levels.items() if level == 0]
+        if not selected:
+            return  # CHK-PIN-SCK-PARK owns clocking while every device is high
+        nibble = _word(self._sio)
+        for device in selected:
+            self._decoders[device].on_sck_rise(nibble)
+
+    # -- results -----------------------------------------------------------
+
+    def transactions(self) -> tuple:
+        """Return the ordered observed log for :class:`reference.scoreboard.Scoreboard`.
+
+        Only well-formed completed intervals appear, re-indexed from zero, with
+        neutral ``READ`` / ``WRITE`` kinds. Malformed and aborted intervals stay
+        in :attr:`intervals` as diagnostic events.
+        """
+        records = []
+        for interval in self.intervals:
+            if interval.complete and interval.kind is not None:
+                records.append(interval.to_transaction(len(records)))
+        return tuple(records)
+
+    def completed(self) -> "list[PinTransaction]":
+        """Return the raw pin intervals behind :meth:`transactions`."""
+        return [
+            interval
+            for interval in self.intervals
+            if interval.complete and interval.kind is not None
+        ]
+
+    def malformed(self) -> "list[PinTransaction]":
+        """Return decoded intervals kept out of the log, aborted ones included."""
+        return [interval for interval in self.intervals if not interval.complete]
+
+    def completed_before(self, time_ns: float) -> int:
+        """Return how many exported records closed at or before *time_ns*.
+
+        ``TC-RESET-ACTIVE`` passes this as ``reset_index`` to
+        :meth:`reference.scoreboard.Scoreboard.compare_reset_prefix`, using the
+        timestamp of the first rising ``clk`` sampled with ``rst_n=0``.
+        """
+        return sum(
+            1
+            for interval in self.completed()
+            if interval.ce_rise_ns is not None and interval.ce_rise_ns <= time_ns
+        )
+
+    def counts(self) -> "dict[str, int]":
+        """Return the ordinary violation count for every ID this monitor owns."""
+        counts = {check_id: 0 for check_id in PIN_MONITOR_CHECK_IDS}
+        for event in self.events:
+            counts[event.check_id] += 1
+        return counts
+
+    def results(self) -> "dict[str, str]":
+        """Return per-ID ``pass`` / ``fail`` / ``blocked`` disposition."""
+        if self.blocked:
+            return {check_id: RESULT_BLOCKED for check_id in PIN_MONITOR_CHECK_IDS}
+        counts = self.counts()
+        return {
+            check_id: RESULT_FAIL if counts[check_id] else RESULT_PASS
+            for check_id in PIN_MONITOR_CHECK_IDS
+        }
+
+    def blocked_reasons(self) -> "dict[str, str]":
+        """Return the reason string behind every ``blocked`` row."""
+        if not self.blocked:
+            return {}
+        return {check_id: self.blocked_reason for check_id in PIN_MONITOR_CHECK_IDS}
+
+    def violations_for(self, check_id: str) -> "list[BusViolation]":
+        """Return recorded events for one catalog ID (negative-test helper)."""
+        return [event for event in self.events if event.check_id == check_id]
+
+    def review_reset_truncated(self) -> "list[BusViolation]":
+        """Return ``RESET-TRUNCATED`` findings for explicit test dispose."""
+        return list(self.reset_truncated)
+
+    def log_text(self) -> str:
+        """Render every decoded interval, one canonical line each."""
+        return "\n".join(interval.canonical() for interval in self.intervals)
+
+    def summary(self) -> str:
+        parts = [f"{check_id}={result}" for check_id, result in self.results().items()]
+        malformed = len(self.malformed())
+        if malformed:
+            parts.append(f"malformed={malformed}")
+        if self.reset_truncated:
+            parts.append(f"reset_truncated={len(self.reset_truncated)}")
+        if self._suppressed:
+            parts.append(f"suppressed={self._suppressed}")
+        return (
+            f"{self.name} ({self.level}, {self.visibility}, {self._samples} samples, "
+            f"{len(self.completed())} txn): " + " ".join(parts)
+        )
+
+
+def start_qspi_pin_monitor(
+    dut,
+    *,
+    strict: bool = False,
+    level: "str | None" = None,
+    name: str = "qspi-pins",
+    log=None,
+    **kwargs,
+) -> QspiPinMonitor:
+    """Create and start the independent pin decoder for *dut*.
+
+    Uses the same wrapper alias set as :func:`start_shared_bus_monitor`, so one
+    implementation serves L0, L1, and L2. Decoding reads the physical bus nets
+    (``bus_*``), not the models' resolved plane, so a floating SIO in a phase
+    that requires a value is visible as ``CHK-PIN-KNOWN``.
+
+    Returns the monitor even when an alias is missing; the returned object then
+    reports both owned rows ``blocked`` with a reason instead of vanishing from
+    the run's disposition table.
+    """
+    log = dut._log if log is None else log
+    handles = {name_: _optional(dut, name_) for name_ in REQUIRED_PIN_SIGNALS}
+    if handles["bus_sck"] is None:
+        handles["bus_sck"] = _optional(dut, "sclk")
+    missing = tuple(name_ for name_, handle in handles.items() if handle is None)
+
+    if level is None:
+        level = "L0" if _optional(dut, "bus_flash_cs_n") is None else "L1"
+
+    ram_ce_n = (
+        ()
+        if missing
+        else ((0, handles["bus_ram_a_cs_n"]), (1, handles["bus_ram_b_cs_n"]))
+    )
+
+    monitor = QspiPinMonitor(
+        sck=handles["bus_sck"],
+        ram_ce_n=ram_ce_n,
+        sio=handles["bus_sio"],
+        rst_n=_optional(dut, "rst_n"),
+        level=level,
+        name=name,
+        visibility="L0-port" if level == "L0" else "top-observable",
+        strict=strict,
+        missing=missing,
+        log=log,
+        **kwargs,
+    )
+    monitor.start()
+    return monitor
+
+
+def dispose_pin_checks(*sources, log=None) -> "dict[str, str]":
+    """Dispose ``CHK-PIN-ADDR23-ZERO`` / ``CHK-PIN-KNOWN`` from the best evidence.
+
+    *sources* may mix :class:`QspiPinMonitor` instances with PSRAM devices or
+    agents. A started pin monitor is authoritative because it decodes the pins
+    independently; the per-device model ``Q-ADDR23`` / ``Q-SIO-X`` records are
+    the fallback for a run that started no pin monitor (or whose monitor is
+    ``blocked``). The printed line always names which evidence was used.
+
+    Raises:
+        ValueError: no usable evidence source was supplied, which would
+            otherwise report a silent pass.
+    """
+    monitors = [item for item in sources if isinstance(item, QspiPinMonitor)]
+    usable = [monitor for monitor in monitors if not monitor.blocked]
+    others = [item for item in sources if not isinstance(item, QspiPinMonitor)]
+    records = _agent_violation_records(*others)
+
+    if not usable and not others:
+        raise ValueError(
+            "dispose_pin_checks needs a started QspiPinMonitor or a PSRAM "
+            "device/agent; with no evidence source both rows would report a "
+            "silent pass"
+        )
+
+    codes = [record.code for record in records]
+    results = {}
+    parts = []
+    for check_id in PIN_MONITOR_CHECK_IDS:
+        if usable:
+            count = sum(monitor.counts()[check_id] for monitor in usable)
+            via = "pin"
+        else:
+            via = MODEL_DISPOSE_VIA[check_id]
+            count = sum(1 for code in codes if code == via)
+        result = RESULT_FAIL if count else RESULT_PASS
+        results[check_id] = result
+        parts.append(f"{check_id}={result} via={via} count={count}")
+
+    if log is not None:
+        log.info("PIN-DISPOSE %s", " ".join(parts))
+    return results
