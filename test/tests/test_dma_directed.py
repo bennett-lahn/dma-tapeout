@@ -23,16 +23,14 @@ Test-case IDs:
     TC-RESTART
     TC-ADDR-WIDE
     TC-OVERLAP
-    TC-DEPTH (blocked until harness wires DMA_BUF_DEPTH sweep)
+    TC-DEPTH (skipped for M5 / harness depth)
 """
 
 import cocotb
-from cocotb.triggers import RisingEdge, SimTimeoutError, with_timeout
 
 from common.bringup import bring_up_top
 from common.config import parse_run_config
-from common.dispose import dispose_run
-from common.host import pulse_start
+from common.directed import run_directed_window as _run_directed_window
 from reference.chain import DATA_READ, DATA_WRITE, FETCH_READ, HEAD_ADDRESS, HEAD_DEVICE
 from reference.generator import (
     ADDR_BOUNDARY_64K,
@@ -44,7 +42,6 @@ from reference.generator import (
     TcdSpec,
     build_directed_chain,
 )
-from reference.scoreboard import RunContext, Scoreboard
 from reference.tcd import (
     PTR_BIT23,
     PTR_MAX,
@@ -54,9 +51,6 @@ from reference.tcd import (
     decode_tcd,
     encode_tcd,
 )
-
-DONE_BIT = 0x1
-DONE_TIMEOUT_NS = 100_000
 
 
 def _repro(config: dict, test_filter: str) -> str:
@@ -75,149 +69,11 @@ def _repro(config: dict, test_filter: str) -> str:
     )
 
 
-async def _wait_for_done_pulse(dut) -> None:
-    """DONE (uo_out[0]) is high in IDLE; wait for it to drop then return high."""
-    while int(dut.uo_out.value) & DONE_BIT:
-        await RisingEdge(dut.clk)
-    while not (int(dut.uo_out.value) & DONE_BIT):
-        await RisingEdge(dut.clk)
-
-
-def _contiguous_runs(values: dict):
-    """Yield ``(start_address, bytes)`` for maximal contiguous runs in *values*."""
-    runs = []
-    start = None
-    run = bytearray()
-    previous = None
-    for address in sorted(values):
-        if previous is not None and address == previous + 1:
-            run.append(values[address])
-        else:
-            if start is not None:
-                runs.append((start, bytes(run)))
-            start = address
-            run = bytearray([values[address]])
-        previous = address
-    if start is not None:
-        runs.append((start, bytes(run)))
-    return runs
-
-
-def _install_chain(bringup, chain) -> None:
-    """Backdoor-install a generated chain's descriptor and payload bytes.
-
-    Only the addresses the golden model itself defines are written, coalesced
-    into contiguous runs; the DMA never observes this on the bus.
-    """
-    for device_id, values in chain.memory.snapshot().items():
-        if not values:
-            continue
-        psram = bringup.device(device_id)
-        for address, payload in _contiguous_runs(values):
-            psram.write(address, payload)
-
-
-def _read_back(bringup, chain) -> "dict[int, dict[int, int]]":
-    """Read back only the addresses the golden chain defines, per device.
-
-    Restricting the observed-memory axis to exactly the golden model's defined
-    addresses (rather than the whole PSRAM model) keeps a multi-window TC's
-    later windows from tripping over an earlier window's unrelated bytes.
-    """
-    observed: "dict[int, dict[int, int]]" = {}
-    for device_id, values in chain.memory.snapshot().items():
-        if not values:
-            continue
-        psram = bringup.device(device_id)
-        observed[device_id] = {address: psram.byte(address) for address in values}
-    return observed
-
-
-def _auto_timeout_ns(chain) -> int:
-    """Scale the DONE timeout to a chain's total payload.
-
-    A fixed budget tuned for ``TC-SMOKE``'s single byte would spuriously time
-    out on a multi-hundred-byte directed transfer.
-    """
-    total_bytes = sum(tcd.transfer_len for tcd in chain.executable)
-    fetches = len(chain.tcds)
-    return max(DONE_TIMEOUT_NS, 2_000 * (total_bytes + TCD_BYTES * fetches))
-
-
 def _chunk_pairs(length: int, depth: int) -> int:
     """Expected ``DATA_READ``/``DATA_WRITE`` pair count for one TCD's transfer."""
     if length <= 0:
         return 0
     return -(-length // depth)
-
-
-async def _run_directed_window(dut, bringup, chain, *, test: str, config: dict, repro: str):
-    """Install *chain*, pulse START, and dual-axis-compare one DMA run.
-
-    DUT-master: after backdoor descriptor/payload installation, one accepted
-    START pulse is the only stimulus; the DMA fetches and moves data itself.
-    Safe to call more than once on the same live *bringup* (no ``rst_n``
-    toggling) so a TC can chain several windows, each with a clean scoreboard
-    epoch and dispose window.
-
-    Returns:
-        ``(golden, report)``: the golden :class:`reference.chain.ChainResult`
-        and the :class:`common.dispose.DisposeReport` for this window.
-    """
-    bringup.clear()
-    _install_chain(bringup, chain)
-
-    golden = chain.interpret(dma_buf_depth=config["dma_buf_depth"])
-    timeout_ns = _auto_timeout_ns(chain)
-
-    await pulse_start(dut)
-    try:
-        await with_timeout(_wait_for_done_pulse(dut), timeout_ns, "ns")
-    except SimTimeoutError:
-        dut._log.error(repro)
-        raise AssertionError(
-            f"{test}: DONE did not return within {timeout_ns} ns; classify "
-            "DUT vs TB before retry. " + repro
-        )
-
-    if bringup.pin is None or bringup.pin.blocked:
-        reason = (
-            "missing"
-            if bringup.pin is None
-            else f"blocked ({bringup.pin.blocked_reason})"
-        )
-        raise AssertionError(
-            f"{test}: pin monitor {reason}; L1 directed cases require a live "
-            "pin axis for dual-axis scoreboard compare. " + repro
-        )
-
-    Scoreboard.from_result(
-        golden,
-        guards=chain.guards,
-        regions=chain.regions,
-        context=RunContext(
-            level=config["level"],
-            sim=config["sim"],
-            seed=config["seed"],
-            depth=config["dma_buf_depth"],
-            timing=config["timing_profile"],
-            test=test,
-            repro=repro,
-        ),
-        log=dut._log,
-    ).compare(
-        bringup.pin.transactions(),
-        observed_memory=_read_back(bringup, chain),
-    )
-
-    report = dispose_run(bringup, test=test, log=dut._log, repro=repro)
-    dut._log.info(
-        "%s passed: %d transaction(s) (%s)",
-        test,
-        len(golden.transactions),
-        report.summary(),
-    )
-    return golden, report
 
 
 def _assert_ranges_overlap(tcd, *, test: str, repro: str) -> None:
@@ -627,7 +483,7 @@ async def overlapping_same_device_ranges(dut):
     )
 
 
-@cocotb.test()
+@cocotb.test(skip=True)
 async def dma_buf_depth_sweep(dut):
-    """TC-DEPTH: directed suite at DMA_BUF_DEPTH 1, 2, 4, 8 (blocked on harness)."""
-    raise NotImplementedError("M5+ implements TC-DEPTH when harness supports depth sweep")
+    """TC-DEPTH: skipped for M5 / harness depth (DMA_BUF_DEPTH 1/2/4/8 sweep)."""
+    pass

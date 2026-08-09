@@ -6,10 +6,15 @@ violation ID, so no policing rule can silently stop working. Contract:
 acceptance) and ``docs/llm/verification/06-checkers.md`` (a negative test names
 the expected ID and the exact allowed occurrence count).
 
-Stimulus comes from :class:`common.host.QpiPassthroughMaster` with the ASIC held
-in reset, so every ``uio_oe`` bit is clear and the MCU-side master owns the
-shared bus. Shared-bus IDs (``Q-MUX``, ``Q-SIO-OWN``, ``Q-SCKIDLE``, flash CS)
-belong to the bus-level monitor and are not exercised here.
+Stimulus comes from :class:`common.host.QpiPassthroughMaster` under
+``BUS_GNT`` (legal MCU ownership per D26/D22) after
+:func:`common.bringup.bring_up_top`, so the ASIC stays out of reset and the
+pin monitor can dispose ``CHK-PIN-*`` on the ordinary path. Controller and
+handshake monitors stay off here: MCU pass-through QPI is not DMA controller
+traffic and would mis-classify as CTRL/HS failures. Shared-bus IDs
+(``Q-MUX``, ``Q-SIO-OWN``, ``Q-SCKIDLE``, flash CS) belong to the bus-level
+monitor and are not exercised here. CE# AC thresholds are off for this
+module: MCU pass-through frames leave less than ``tCPH`` between bursts.
 
 Test-case IDs:
     TC-QNEG-BASELINE
@@ -25,10 +30,12 @@ Test-case IDs:
 """
 
 import cocotb
-from cocotb.triggers import Timer
+from cocotb.triggers import RisingEdge, Timer
 
+from common.bringup import bring_up_top
 from common.config import parse_run_config
-from common.host import QpiPassthroughMaster
+from common.dispose import dispose_run, expect
+from common.host import QpiPassthroughMaster, assert_bus_req
 from models.psram import (
     PSRAM_ADDR_MASK,
     Q_ADDR23,
@@ -42,46 +49,70 @@ from models.psram import (
     QSPI_CMD_FAST_READ,
     QSPI_CMD_WRITE,
     SIO_UIO_BITS,
-    attach_dual_psram,
     format_violations,
 )
-from monitors.qspi import (
-    CHK_PIN_ADDR23_ZERO,
-    CHK_PIN_KNOWN,
-    assert_model_pin_disposition,
-)
+from monitors.qspi import CHK_PIN_ADDR23_ZERO, CHK_PIN_KNOWN
 
 QSPI_CMD_QUAD_WRITE = 0x38  # device-supported, outside the frozen V1 allowlist
 
 FILL = 0x00
 TOP_ADDR = PSRAM_ADDR_MASK  # 0x7FFFFF
-
-# Agents from an earlier test in this module are cancelled before the next
-# attach so only one model per device ever drives the shared SIO handles.
-_ATTACHED: list = []
+_BUS_GNT_BIT = 1
 
 
-async def _bring_up(dut, **attach_kwargs):
-    """Hold the ASIC in reset, attach both models, and park the MCU master."""
-    for device in _ATTACHED:
-        device.agent.stop()
-    _ATTACHED.clear()
+async def _await_bus_gnt(dut, *, cycles: int = 32) -> None:
+    await assert_bus_req(dut, hold=True)
+    for _ in range(cycles):
+        await RisingEdge(dut.clk)
+        if (int(dut.uo_out.value) >> _BUS_GNT_BIT) & 1:
+            return
+    raise AssertionError("BUS_GNT did not assert after BUS_REQ")
 
-    dut.ena.value = 1
-    dut.ui_in.value = 0
-    dut.host_uio_drive.value = 0
-    dut.host_uio_oe.value = 0
-    dut.fault_uio_drive.value = 0
-    dut.fault_uio_oe.value = 0
-    dut.rst_n.value = 0
-    await Timer(1, unit="ns")
 
-    psram0, psram1 = attach_dual_psram(dut, fill=FILL, **attach_kwargs)
-    _ATTACHED.extend([psram0, psram1])
+async def _release_bus_gnt(dut, *, cycles: int = 32) -> None:
+    await assert_bus_req(dut, hold=False)
+    for _ in range(cycles):
+        await RisingEdge(dut.clk)
+        if not ((int(dut.uo_out.value) >> _BUS_GNT_BIT) & 1):
+            return
+    raise AssertionError("BUS_GNT did not drop after BUS_REQ release")
 
+
+async def _bring_up_passthrough(dut, **bringup_kwargs):
+    """Attach via shared bring-up, grant the bus, and park the MCU master.
+
+    ``controller_monitor`` and ``handshake_monitor`` default off so MCU
+    pass-through QPI is not scored as DMA controller traffic. Pin monitor
+    stays on for ``CHK-PIN-*`` disposal. ``ce_monitor`` defaults off: MCU
+    frame gaps sit under ``tCPH``, and this suite judges protocol policing,
+    not CE# AC.
+    """
+    kwargs = {
+        "fill": FILL,
+        "controller_monitor": False,
+        "handshake_monitor": False,
+        "ce_monitor": False,
+    }
+    kwargs.update(bringup_kwargs)
+    bringup = await bring_up_top(dut, **kwargs)
+    bringup.clear()
+    await _await_bus_gnt(dut)
     master = QpiPassthroughMaster(dut)
     await master.park()
-    return psram0, psram1, master
+    return bringup, master
+
+
+async def _finish(bringup, master, dut, *, test: str, repro: str, expect_fail=()):
+    """Park the master, release ``BUS_GNT``, and dispose the run."""
+    await master.park()
+    await _release_bus_gnt(dut)
+    return dispose_run(
+        bringup,
+        test=test,
+        log=dut._log,
+        expect_fail=expect_fail,
+        repro=repro,
+    )
 
 
 def _repro(config: dict, test: str) -> str:
@@ -92,24 +123,19 @@ def _repro(config: dict, test: str) -> str:
     ).format(level=config["level"], sim=config["sim"], seed=config["seed"], test=test)
 
 
-def _all_violations(*psrams) -> list:
+def _model_records(bringup) -> list:
     records = []
-    for psram in psrams:
-        records.extend(psram.agent.violations)
+    for device in bringup.devices:
+        records.extend(device.agent.violations)
     return records
 
 
-def _assert_exact_codes(expected, *psrams, test: str = "", log=None) -> list:
-    """Require the observed violation ID multiset to equal *expected*."""
-    records = _all_violations(*psrams)
-    observed = sorted(record.code for record in records)
-    assert observed == sorted(expected), (
-        f"{test}: expected violation IDs {sorted(expected)}, observed {observed}: "
-        f"{format_violations(records)}"
-    )
-    if log is not None:
-        log.info("%s recorded: %s", test, format_violations(records) or "<none>")
-    return records
+def _sio_uio_mask(*sio_indices: int) -> int:
+    indices = sio_indices if sio_indices else range(len(SIO_UIO_BITS))
+    mask = 0
+    for index in indices:
+        mask |= 1 << SIO_UIO_BITS[index]
+    return mask
 
 
 @cocotb.test()
@@ -120,8 +146,10 @@ async def qpi_negative_baseline_frames_are_clean(dut):
     every other case in this module meaningless.
     """
     config = parse_run_config()
-    dut._log.info(_repro(config, "baseline"))
-    psram0, psram1, master = await _bring_up(dut)
+    repro = _repro(config, "baseline")
+    dut._log.info(repro)
+    bringup, master = await _bring_up_passthrough(dut)
+    psram0, psram1 = bringup.psram0, bringup.psram1
 
     psram1.write(0x001000, b"\xDE\xAD\xBE\xEF")
 
@@ -142,105 +170,151 @@ async def qpi_negative_baseline_frames_are_clean(dut):
     assert bytes(read.read_bytes) == b"\xDE\xAD\xBE\xEF"
     assert read.ce_low_ns is not None and read.ce_low_ns > 0
 
-    _assert_exact_codes([], psram0, psram1, test="TC-QNEG-BASELINE")
-    assert_model_pin_disposition(
-        psram0, psram1, log=dut._log, test="TC-QNEG-BASELINE"
-    )
+    await _finish(bringup, master, dut, test="TC-QNEG-BASELINE", repro=repro)
 
 
 @cocotb.test()
 async def qpi_negative_unsupported_opcode(dut):
     """TC-QNEG-OPCODE: ``0x38`` is a device command but not in the V1 allowlist."""
     config = parse_run_config()
-    dut._log.info(_repro(config, "opcode"))
-    psram0, psram1, master = await _bring_up(dut)
+    repro = _repro(config, "opcode")
+    dut._log.info(repro)
+    bringup, master = await _bring_up_passthrough(dut)
+    psram0 = bringup.psram0
 
     await master.frame(0, QSPI_CMD_QUAD_WRITE, 0x000100, write_data=b"\x5A")
 
-    records = _assert_exact_codes([Q_OPCODE], psram0, psram1, test="TC-QNEG-OPCODE")
+    records = _model_records(bringup)
     assert "0x38" in records[0].detail, f"opcode not identified: {records[0]}"
     assert psram0.read(0x000100, 1) == bytes([FILL]), "rejected opcode still wrote memory"
     assert not psram0.agent.transactions[-1].complete
+    dut._log.info(
+        "TC-QNEG-OPCODE recorded: %s", format_violations(records) or "<none>"
+    )
+
+    await _finish(
+        bringup,
+        master,
+        dut,
+        test="TC-QNEG-OPCODE",
+        repro=repro,
+        expect_fail=[expect(Q_OPCODE, count=1)],
+    )
 
 
 @cocotb.test()
 async def qpi_negative_truncated_phases(dut):
     """TC-QNEG-PHASE: CE# rises inside the command phase, then inside address."""
     config = parse_run_config()
-    dut._log.info(_repro(config, "phase"))
-    psram0, psram1, master = await _bring_up(dut)
+    repro = _repro(config, "phase")
+    dut._log.info(repro)
+    bringup, master = await _bring_up_passthrough(dut)
 
     await master.frame(0, QSPI_CMD_FAST_READ, None, cmd_nibbles=1)
     await master.frame(1, QSPI_CMD_FAST_READ, 0x000100, addr_nibbles=3)
 
-    records = _assert_exact_codes(
-        [Q_PHASE, Q_PHASE], psram0, psram1, test="TC-QNEG-PHASE"
-    )
+    records = _model_records(bringup)
     details = " | ".join(record.detail for record in records)
     assert "1/2 command nibbles" in details, f"command nibble count missing: {details}"
     assert "3/6 address nibbles" in details, f"address nibble count missing: {details}"
+    dut._log.info(
+        "TC-QNEG-PHASE recorded: %s", format_violations(records) or "<none>"
+    )
+
+    await _finish(
+        bringup,
+        master,
+        dut,
+        test="TC-QNEG-PHASE",
+        repro=repro,
+        expect_fail=[expect(Q_PHASE, count=2)],
+    )
 
 
 @cocotb.test()
 async def qpi_negative_wrong_dummy_count(dut):
     """TC-QNEG-DUMMY: ``0xEB`` terminated after four of six dummy cycles."""
     config = parse_run_config()
-    dut._log.info(_repro(config, "dummy"))
-    psram0, psram1, master = await _bring_up(dut)
+    repro = _repro(config, "dummy")
+    dut._log.info(repro)
+    bringup, master = await _bring_up_passthrough(dut)
+    psram0 = bringup.psram0
 
     await master.frame(0, QSPI_CMD_FAST_READ, 0x000200, dummy_cycles=4)
 
-    records = _assert_exact_codes([Q_DUMMY], psram0, psram1, test="TC-QNEG-DUMMY")
+    records = _model_records(bringup)
     assert "4 dummy cycles" in records[0].detail, f"dummy count missing: {records[0]}"
     assert psram0.agent.transactions[-1].dummy_cycles == 4
+    dut._log.info(
+        "TC-QNEG-DUMMY recorded: %s", format_violations(records) or "<none>"
+    )
+
+    await _finish(
+        bringup,
+        master,
+        dut,
+        test="TC-QNEG-DUMMY",
+        repro=repro,
+        expect_fail=[expect(Q_DUMMY, count=1)],
+    )
 
 
 @cocotb.test()
 async def qpi_negative_odd_data_nibble(dut):
     """TC-QNEG-NIBBLE-ODD: half-transferred byte on a write and on a read."""
     config = parse_run_config()
-    dut._log.info(_repro(config, "nibble"))
-    psram0, psram1, master = await _bring_up(dut)
+    repro = _repro(config, "nibble")
+    dut._log.info(repro)
+    bringup, master = await _bring_up_passthrough(dut)
+    psram0 = bringup.psram0
 
     await master.frame(0, QSPI_CMD_WRITE, 0x000080, data_nibbles=(0x1, 0x2, 0x3))
     await master.frame(1, QSPI_CMD_FAST_READ, 0x000080, dummy_cycles=6, read_nibbles=1)
 
-    _assert_exact_codes(
-        [Q_NIBBLE_ODD, Q_NIBBLE_ODD], psram0, psram1, test="TC-QNEG-NIBBLE-ODD"
-    )
     assert psram0.read(0x000080, 1) == b"\x12", "complete byte was not committed"
     assert psram0.read(0x000081, 1) == bytes([FILL]), "partial byte was committed"
     assert bytes(psram0.agent.transactions[-1].write_bytes) == b"\x12"
+
+    await _finish(
+        bringup,
+        master,
+        dut,
+        test="TC-QNEG-NIBBLE-ODD",
+        repro=repro,
+        expect_fail=[expect(Q_NIBBLE_ODD, count=2)],
+    )
 
 
 @cocotb.test()
 async def qpi_negative_address_bit23(dut):
     """TC-QNEG-ADDR23: ``A[23]`` set fails before any memory access."""
     config = parse_run_config()
-    dut._log.info(_repro(config, "addr23"))
-    psram0, psram1, master = await _bring_up(dut)
+    repro = _repro(config, "addr23")
+    dut._log.info(repro)
+    bringup, master = await _bring_up_passthrough(dut)
+    psram0 = bringup.psram0
 
     await master.frame(0, QSPI_CMD_WRITE, 0x800040, write_data=b"\x5A")
 
-    records = _assert_exact_codes([Q_ADDR23], psram0, psram1, test="TC-QNEG-ADDR23")
+    records = _model_records(bringup)
     assert "0x800040" in records[0].detail, f"wire address missing: {records[0]}"
     assert psram0.read(0x000040, 1) == bytes([FILL]), "A[23] frame reached memory"
     assert psram0.agent.transactions[-1].data_nibbles == 0
-    assert_model_pin_disposition(
-        psram0,
-        psram1,
-        log=dut._log,
-        expect_fail=(CHK_PIN_ADDR23_ZERO,),
-        test="TC-QNEG-ADDR23",
+    dut._log.info(
+        "TC-QNEG-ADDR23 recorded: %s", format_violations(records) or "<none>"
     )
 
-
-def _sio_uio_mask(*sio_indices: int) -> int:
-    indices = sio_indices if sio_indices else range(len(SIO_UIO_BITS))
-    mask = 0
-    for index in indices:
-        mask |= 1 << SIO_UIO_BITS[index]
-    return mask
+    await _finish(
+        bringup,
+        master,
+        dut,
+        test="TC-QNEG-ADDR23",
+        repro=repro,
+        expect_fail=[
+            expect(Q_ADDR23, count=1),
+            expect(CHK_PIN_ADDR23_ZERO, count=1),
+        ],
+    )
 
 
 @cocotb.test()
@@ -252,8 +326,9 @@ async def qpi_negative_unresolved_sio(dut):
     that plane and fires ``Q-SIO-X``, which disposes ``CHK-PIN-KNOWN=fail``.
     """
     config = parse_run_config()
-    dut._log.info(_repro(config, "sio_x"))
-    psram0, psram1, master = await _bring_up(dut)
+    repro = _repro(config, "sio_x")
+    dut._log.info(repro)
+    bringup, master = await _bring_up_passthrough(dut)
 
     await master.open(0)
     await master.send_opcode(QSPI_CMD_WRITE)
@@ -269,14 +344,22 @@ async def qpi_negative_unresolved_sio(dut):
     await master.send_data(b"\xA5")
     await master.close()
 
-    records = _assert_exact_codes([Q_SIO_X], psram0, psram1, test="TC-QNEG-SIO-X")
+    records = _model_records(bringup)
     assert "DATA" in records[0].detail, f"phase missing: {records[0]}"
-    assert_model_pin_disposition(
-        psram0,
-        psram1,
-        log=dut._log,
-        expect_fail=(CHK_PIN_KNOWN,),
+    dut._log.info(
+        "TC-QNEG-SIO-X recorded: %s", format_violations(records) or "<none>"
+    )
+
+    await _finish(
+        bringup,
+        master,
+        dut,
         test="TC-QNEG-SIO-X",
+        repro=repro,
+        expect_fail=[
+            expect(Q_SIO_X, count=1),
+            expect(CHK_PIN_KNOWN, count=1),
+        ],
     )
 
 
@@ -284,18 +367,16 @@ async def qpi_negative_unresolved_sio(dut):
 async def qpi_negative_address_range_no_wrap(dut):
     """TC-QNEG-ADDR-RANGE: a burst past ``0x7FFFFF`` fails instead of wrapping."""
     config = parse_run_config()
-    dut._log.info(_repro(config, "range"))
-    psram0, psram1, master = await _bring_up(dut)
+    repro = _repro(config, "range")
+    dut._log.info(repro)
+    bringup, master = await _bring_up_passthrough(dut)
+    psram0, psram1 = bringup.psram0, bringup.psram1
 
     psram1.write(TOP_ADDR, b"\x77")
     psram1.write(0x000000, b"\x99")
 
     await master.frame(0, QSPI_CMD_WRITE, TOP_ADDR, write_data=b"\xA1\xB2")
     await master.frame(1, QSPI_CMD_FAST_READ, TOP_ADDR, dummy_cycles=6, read_bytes=2)
-
-    _assert_exact_codes(
-        [Q_ADDR_RANGE, Q_ADDR_RANGE], psram0, psram1, test="TC-QNEG-ADDR-RANGE"
-    )
 
     assert psram0.read(TOP_ADDR, 1) == b"\xA1", "in-range byte was not committed"
     assert psram0.read(0x000000, 1) == bytes([FILL]), "out-of-range write wrapped to zero"
@@ -306,13 +387,24 @@ async def qpi_negative_address_range_no_wrap(dut):
         f"out-of-range read wrapped instead of failing: {bytes(read.read_bytes)!r}"
     )
 
+    await _finish(
+        bringup,
+        master,
+        dut,
+        test="TC-QNEG-ADDR-RANGE",
+        repro=repro,
+        expect_fail=[expect(Q_ADDR_RANGE, count=2)],
+    )
+
 
 @cocotb.test()
 async def qpi_negative_drive_while_deselected(dut):
     """TC-QNEG-DRIVE-DESEL: model SIO drive with CE# high is a violation."""
     config = parse_run_config()
-    dut._log.info(_repro(config, "desel"))
-    psram0, psram1, _ = await _bring_up(dut)
+    repro = _repro(config, "desel")
+    dut._log.info(repro)
+    bringup, master = await _bring_up_passthrough(dut)
+    psram0 = bringup.psram0
 
     agent = psram0.agent
     assert not agent.selected, "CE# should be parked high before injection"
@@ -321,22 +413,34 @@ async def qpi_negative_drive_while_deselected(dut):
     agent.inject_sio_drive(0x5)
     assert agent.oe and agent.driven_nibble == 0x5
 
-    records = _assert_exact_codes(
-        [Q_DRIVE_DESEL], psram0, psram1, test="TC-QNEG-DRIVE-DESEL"
-    )
+    records = _model_records(bringup)
     assert "CE# inactive" in records[0].detail
+    dut._log.info(
+        "TC-QNEG-DRIVE-DESEL recorded: %s", format_violations(records) or "<none>"
+    )
 
     agent.inject_sio_release()
     await Timer(10, unit="ns")
     assert not agent.oe
+
+    await _finish(
+        bringup,
+        master,
+        dut,
+        test="TC-QNEG-DRIVE-DESEL",
+        repro=repro,
+        expect_fail=[expect(Q_DRIVE_DESEL, count=1)],
+    )
 
 
 @cocotb.test()
 async def qpi_negative_strict_mode_raises(dut):
     """TC-QNEG-STRICT: ``strict=True`` raises at the first recorded violation."""
     config = parse_run_config()
-    dut._log.info(_repro(config, "strict"))
-    psram0, _psram1, _ = await _bring_up(dut, strict=True)
+    repro = _repro(config, "strict")
+    dut._log.info(repro)
+    bringup, master = await _bring_up_passthrough(dut, strict_models=True)
+    psram0 = bringup.psram0
 
     try:
         psram0.agent.inject_sio_drive(0x3)
@@ -347,3 +451,12 @@ async def qpi_negative_strict_mode_raises(dut):
 
     assert psram0.agent.violations.has(Q_DRIVE_DESEL), "strict mode skipped the record"
     psram0.agent.inject_sio_release()
+
+    await _finish(
+        bringup,
+        master,
+        dut,
+        test="TC-QNEG-STRICT",
+        repro=repro,
+        expect_fail=[expect(Q_DRIVE_DESEL, count=1)],
+    )

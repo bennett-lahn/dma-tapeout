@@ -7,8 +7,9 @@ a test cannot accidentally skip one:
 1. stop the agents and monitors of the previous bring-up in this run,
 2. park stimulus and clear the wrapper's host / fault injectors,
 3. attach the PSRAM model(s) for the level,
-4. start the always-on monitors (all non-strict by default), and
-5. start ``clk`` and apply the level's synchronous active-low reset.
+4. start the always-on monitors (all non-strict by default),
+5. start ``clk`` and apply the level's synchronous active-low reset, and
+6. at L0, settle IDLE and assert CE# high / SCK parked / agents deselected.
 
 Monitors are constructed **before** reset release, as
 ``docs/llm/verification/06-checkers.md`` requires. Backdoor memory preload may
@@ -35,6 +36,8 @@ Dispose the resulting monitors and model logs with :mod:`common.dispose`.
 """
 
 from dataclasses import dataclass, field
+
+from cocotb.triggers import RisingEdge
 
 from common.clocks import apply_engine_reset, apply_reset, start_clock
 from common.config import parse_run_config
@@ -65,6 +68,8 @@ LEVEL_L2 = "L2"
 
 DEFAULT_CLOCK_PERIOD_NS = 10
 DEFAULT_RESET_CYCLES = 5
+# Post-reset settle before the L0 idle self-check (former test_engine_attach).
+ENGINE_IDLE_SETTLE_CYCLES = 4
 
 # Bring-ups started in this simulation, newest last. A new bring-up stops the
 # previous one so only one model per device ever drives the shared SIO handles.
@@ -177,6 +182,41 @@ def _optional(dut, name):
         return None
 
 
+def _level(handle) -> "int | None":
+    try:
+        return int(handle.value)
+    except ValueError:
+        return None
+
+
+async def _assert_engine_idle_after_reset(dut, bringup: BringUp) -> None:
+    """CE#/SCK idle self-check absorbed from retired ``test_engine_attach``.
+
+    After reset, settle a few IDLE clocks with ``txn_valid`` parked, then require
+    both CE# high (covers single-device attach: the unselected pin stays high),
+    SCK parked low, and every attached agent deselected with OE off. L0 QPI
+    callers get this coverage for free via :func:`bring_up_engine`.
+    """
+    for _ in range(ENGINE_IDLE_SETTLE_CYCLES):
+        await RisingEdge(dut.clk)
+
+    assert _level(dut.psram0_ce_n) == 1, (
+        "bring_up_engine: PSRAM0 CE# not idle high after reset"
+    )
+    assert _level(dut.psram1_ce_n) == 1, (
+        "bring_up_engine: PSRAM1 CE# not idle high after reset "
+        "(unselected device must stay high when only one agent is attached)"
+    )
+    assert _level(dut.psram_sck) == 0, (
+        "bring_up_engine: SCK not parked low while deselected after reset"
+    )
+    for device in bringup.devices:
+        assert not device.agent.selected and not device.agent.oe, (
+            f"bring_up_engine: PSRAM{device.device_id} agent selected/OE "
+            f"after reset (selected={device.agent.selected}, oe={device.agent.oe})"
+        )
+
+
 def _start_monitors(
     dut,
     bringup: BringUp,
@@ -273,6 +313,10 @@ async def bring_up_engine(
     and ``CHK-CTRL-*`` row is ``na``, and ``CHK-RST-INTERNAL`` runs its engine
     subset. ``CHK-HS-OPCODE`` needs the pin decoder for its wait-cycle half, so
     it reports ``blocked`` at L0 unless ``pin_monitor=True``.
+
+    After reset release, settles a few IDLE clocks and asserts CE# high / SCK
+    parked / agents deselected (coverage formerly in ``test_engine_attach``,
+    including the single-device case where the unselected CE# must stay high).
     """
     log = dut._log if log is None else log
     _stop_previous()
@@ -313,6 +357,7 @@ async def bring_up_engine(
 
     await start_clock(dut, period_ns=clock_period_ns)
     await apply_engine_reset(dut, cycles=reset_cycles)
+    await _assert_engine_idle_after_reset(dut, bringup)
 
     _HISTORY.append(bringup)
     return bringup

@@ -45,6 +45,15 @@ from cocotb.triggers import (
 
 from common.bringup import bring_up_top
 from common.config import parse_run_config
+from common.directed import (
+    DONE_BIT,
+    auto_timeout_ns as _auto_timeout_ns,
+    compare_and_dispose as _compare_and_dispose,
+    install_chain as _install_chain,
+    run_context as _run_context,
+    wait_for_done_pulse as _wait_for_done_pulse,
+    wait_until_done as _wait_until_done,
+)
 from common.dispose import REVIEW, dispose_run
 from common.host import BUS_REQ_BIT, START_BIT, assert_bus_req, pulse_start
 from monitors.handshake import (
@@ -60,12 +69,9 @@ from monitors.handshake import (
     SYS_CONTROL_WRITE,
 )
 from reference.generator import PATTERN_INCREMENT, TcdSpec, build_directed_chain
-from reference.scoreboard import RunContext, Scoreboard
-from reference.tcd import TCD_BYTES
+from reference.scoreboard import Scoreboard
 
-DONE_BIT = 0x1
 BUS_GNT_BIT = 0x2
-DONE_TIMEOUT_NS = 100_000
 
 _STATE_TIMEOUT_CYCLES = 50_000
 _GRANT_TIMEOUT_CYCLES = 2_000
@@ -124,96 +130,6 @@ def _repro(config: dict, test_filter: str) -> str:
         timing=config["timing_profile"],
         test_filter=test_filter,
     )
-
-
-def _run_context(config: dict, test: str, repro: str) -> RunContext:
-    return RunContext(
-        level=config["level"],
-        sim=config["sim"],
-        seed=config["seed"],
-        depth=config["dma_buf_depth"],
-        timing=config["timing_profile"],
-        test=test,
-        repro=repro,
-    )
-
-
-# -- small local mirrors of tests.test_dma_directed's directed-window plumbing
-# (duplicated, not imported: W4a is frozen and this file owns its own copies,
-# matching the precedent in tests.test_qspi_reset_protocol) -----------------
-
-
-def _contiguous_runs(values: dict):
-    runs = []
-    start = None
-    run = bytearray()
-    previous = None
-    for address in sorted(values):
-        if previous is not None and address == previous + 1:
-            run.append(values[address])
-        else:
-            if start is not None:
-                runs.append((start, bytes(run)))
-            start = address
-            run = bytearray([values[address]])
-        previous = address
-    if start is not None:
-        runs.append((start, bytes(run)))
-    return runs
-
-
-def _install_chain(bringup, chain) -> None:
-    for device_id, values in chain.memory.snapshot().items():
-        if not values:
-            continue
-        psram = bringup.device(device_id)
-        for address, payload in _contiguous_runs(values):
-            psram.write(address, payload)
-
-
-def _read_back(bringup, chain) -> "dict[int, dict[int, int]]":
-    observed: "dict[int, dict[int, int]]" = {}
-    for device_id, values in chain.memory.snapshot().items():
-        if not values:
-            continue
-        psram = bringup.device(device_id)
-        observed[device_id] = {address: psram.byte(address) for address in values}
-    return observed
-
-
-def _auto_timeout_ns(chain) -> int:
-    total_bytes = sum(tcd.transfer_len for tcd in chain.executable)
-    fetches = len(chain.tcds)
-    return max(DONE_TIMEOUT_NS, 2_000 * (total_bytes + TCD_BYTES * fetches))
-
-
-async def _wait_for_done_pulse(dut) -> None:
-    while int(dut.uo_out.value) & DONE_BIT:
-        await RisingEdge(dut.clk)
-    while not (int(dut.uo_out.value) & DONE_BIT):
-        await RisingEdge(dut.clk)
-
-
-async def _compare_and_dispose(dut, bringup, chain, *, test: str, config: dict, repro: str) -> None:
-    """Full dual-axis compare against *chain*'s golden model, then dispose."""
-    if bringup.pin is None or bringup.pin.blocked:
-        reason = "missing" if bringup.pin is None else f"blocked ({bringup.pin.blocked_reason})"
-        raise AssertionError(
-            f"{test}: pin monitor {reason}; L1 directed cases require a live "
-            "pin axis for dual-axis scoreboard compare. " + repro
-        )
-    golden = chain.interpret(dma_buf_depth=config["dma_buf_depth"])
-    Scoreboard.from_result(
-        golden,
-        guards=chain.guards,
-        regions=chain.regions,
-        context=_run_context(config, test, repro),
-        log=dut._log,
-    ).compare(
-        bringup.pin.transactions(),
-        observed_memory=_read_back(bringup, chain),
-    )
-    dispose_run(bringup, test=test, log=dut._log, repro=repro)
 
 
 # -- signal / hierarchy access ----------------------------------------------
@@ -605,7 +521,8 @@ _START_PHASE_WINDOW_CYCLES = 40
 
 
 async def _raw_start_pulse(dut, *, phase_ns: float, hold_ns: float) -> None:
-    """Assert then release raw START at a sub-cycle *phase_ns* offset."""
+    """Assert then release raw START at a sub-cycle *phase_ns* after a clk edge."""
+    await RisingEdge(dut.clk)
     await Timer(phase_ns, unit="ns")
     current = int(dut.ui_in.value)
     dut.ui_in.value = current | (1 << START_BIT)
@@ -630,6 +547,15 @@ async def _count_accepted_starts(dut, cycles: int) -> int:
     return count
 
 
+async def _raw_start_pulse_and_count(
+    dut, *, phase_ns: float, hold_ns: float, cycles: int = _START_PHASE_WINDOW_CYCLES
+) -> int:
+    """Pulse raw START and count accepts overlapping the hold window."""
+    counter = cocotb.start_soon(_count_accepted_starts(dut, cycles))
+    await _raw_start_pulse(dut, phase_ns=phase_ns, hold_ns=hold_ns)
+    return await counter
+
+
 @cocotb.test()
 async def start_phase_sweep(dut):
     """TC-START-PHASE: sweep START assertion phase and pulse width."""
@@ -647,17 +573,18 @@ async def start_phase_sweep(dut):
         bringup = await bring_up_top(dut)
         _install_chain(bringup, chain)
         window = f"{test}[long,phase={phase_ns}ns]"
-        await _raw_start_pulse(dut, phase_ns=phase_ns, hold_ns=_START_LONG_HOLD_NS)
-        count = await _count_accepted_starts(dut, _START_PHASE_WINDOW_CYCLES)
+        count = await _raw_start_pulse_and_count(
+            dut, phase_ns=phase_ns, hold_ns=_START_LONG_HOLD_NS
+        )
         assert count == 1, (
             f"{window}: capture-required pulse produced {count} accepted "
             f"edge(s), expected exactly 1. {repro}"
         )
-        for _ in range(_START_PHASE_WINDOW_CYCLES):
-            if _done(dut) == 1:
-                break
-            await RisingEdge(dut.clk)
-        else:
+        try:
+            await with_timeout(
+                _wait_until_done(dut), _auto_timeout_ns(chain), "ns"
+            )
+        except SimTimeoutError:
             raise AssertionError(f"{window}: DONE never returned. {repro}")
         await _compare_and_dispose(dut, bringup, chain, test=window, config=config, repro=repro)
 
@@ -666,19 +593,20 @@ async def start_phase_sweep(dut):
         bringup = await bring_up_top(dut)
         _install_chain(bringup, chain)
         window = f"{test}[short,phase={phase_ns}ns]"
-        await _raw_start_pulse(dut, phase_ns=phase_ns, hold_ns=_START_SHORT_HOLD_NS)
-        count = await _count_accepted_starts(dut, _START_PHASE_WINDOW_CYCLES)
+        count = await _raw_start_pulse_and_count(
+            dut, phase_ns=phase_ns, hold_ns=_START_SHORT_HOLD_NS
+        )
         assert count in (0, 1), (
             f"{window}: short pulse produced {count} accepted edge(s), "
             f"expected 0 or 1. {repro}"
         )
         if count == 1:
             accepted_short += 1
-            for _ in range(_START_PHASE_WINDOW_CYCLES):
-                if _done(dut) == 1:
-                    break
-                await RisingEdge(dut.clk)
-            else:
+            try:
+                await with_timeout(
+                    _wait_until_done(dut), _auto_timeout_ns(chain), "ns"
+                )
+            except SimTimeoutError:
                 raise AssertionError(
                     f"{window}: captured short pulse never returned DONE "
                     f"(partial command). {repro}"

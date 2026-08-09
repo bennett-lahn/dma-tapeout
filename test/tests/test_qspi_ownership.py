@@ -1,31 +1,40 @@
 """Shared-bus ownership negative tests (M1).
 
-Each case uses :func:`monitors.qspi.start_shared_bus_monitor` and either proves
-a clean parked/legal window or injects one ownership fault that must produce
-the matching ``CHK-PIN-*`` / ``Q-*`` ID. Findings while ``rst_n`` is low are
-``RESET-TRUNCATED`` and do not count as fails, so every injection runs after
-reset release. Stimulus uses TB ``fault_uio_*`` (ASIC-side misbehavior) and,
-for SIO dual-drive, the model's OE injection hook - matching how the monitor
-judges ownership from OE handles, not the resolved net.
+Each case uses the shared-bus monitor from :func:`common.bringup.bring_up_top`
+and either proves a clean parked/legal window or injects one ownership fault
+that must produce the matching ``CHK-PIN-*`` / ``Q-*`` ID. Findings while
+``rst_n`` is low are ``RESET-TRUNCATED`` and do not count as fails, so every
+injection runs after reset release. Stimulus uses TB ``fault_uio_*``
+(ASIC-side misbehavior) and, for SIO dual-drive, the model's OE injection
+hook - matching how the monitor judges ownership from OE handles, not the
+resolved net.
 
-All ``TC-OWN-*`` cases run in one cocotb test. A free-running clock plus
-always-on monitor is kept for the whole module; splitting across ``@cocotb.test``
-entry points cancels the next case on ``RisingEdge`` under this Icarus/cocotb
-2.0.1 stack after the first fault is logged.
+All ``TC-OWN-*`` cases run as **sub-steps** inside one cocotb test
+(:func:`ownership_shared_bus_negatives`). They are catalog IDs for the
+directed windows, **not** selectable ``TEST_FILTER`` names. A free-running
+clock plus always-on monitor is kept for the whole module; splitting across
+``@cocotb.test`` entry points cancels the next case on ``RisingEdge`` under
+this Icarus/cocotb 2.0.1 stack after the first fault is logged. Full
+per-case re-split is deferred past M2 (W5a decision 3).
 
-Test-case IDs:
+Sub-steps (not TEST_FILTER targets):
     TC-OWN-BASELINE
     TC-OWN-CS-MUTEX
     TC-OWN-FLASH-CS
     TC-OWN-SIO-DUAL
     TC-OWN-SCK-IDLE
+
+Selectable filter:
+    TEST_FILTER=ownership_shared_bus_negatives
 """
 
 import cocotb
 from cocotb.triggers import RisingEdge, Timer
 
-from common.clocks import apply_reset, start_clock
+from common.bringup import bring_up_top
+from common.clocks import apply_reset
 from common.config import parse_run_config
+from common.dispose import dispose_run, expect
 from common.host import (
     UIO_FLASH_CS_BIT,
     UIO_PSRAM_CE_BITS,
@@ -36,19 +45,21 @@ from common.host import (
 from models.psram import (
     QSPI_CMD_FAST_READ,
     QSPI_CMD_WRITE,
+    Q_DRIVE_DESEL,
     SIO_UIO_BITS,
-    attach_dual_psram,
 )
 from monitors.qspi import (
     CHK_PIN_CS_MUTEX,
     CHK_PIN_FLASH_HIGH,
     CHK_PIN_SCK_PARK,
     CHK_PIN_SIO_OWN,
-    start_shared_bus_monitor,
 )
 
 FILL = 0x00
 EQUAL_SIO_NIBBLE = 0x1  # SIO0=1; equal-value dual drive on one bit
+
+# Real @cocotb.test function name; the only honest TEST_FILTER for this module.
+OWNERSHIP_TEST_FILTER = "ownership_shared_bus_negatives"
 
 
 def _sio_oe_mask(*sio_indices: int) -> int:
@@ -69,49 +80,43 @@ def _pack_sio_uio(nibble: int) -> int:
     return value
 
 
-def _clear_bus_log(bus) -> None:
-    bus.events.clear()
-    bus.violations.clear()
-    bus.reset_truncated.clear()
-    bus.notes.clear()
-    bus._condition_active.clear()
-    bus._suppressed = 0
-
-
-def _clear_agent_log(agent) -> None:
-    agent.inject_sio_release()
-    agent.violations.clear()
-    agent.transactions.clear()
-
-
 def _clear_fault(dut) -> None:
     dut.fault_uio_oe.value = 0
     dut.fault_uio_drive.value = 0
 
 
-async def _park_clean(dut, psram0, psram1, bus):
+async def _park_clean(dut, bringup) -> None:
     """Clear injectors, sync-reset, and start a fresh ownership log window."""
     dut.ena.value = 1
     dut.ui_in.value = 0
     dut.host_uio_drive.value = 0
     dut.host_uio_oe.value = 0
     _clear_fault(dut)
-    _clear_agent_log(psram0.agent)
-    _clear_agent_log(psram1.agent)
-    _clear_bus_log(bus)
+    for agent in bringup.agents:
+        agent.inject_sio_release()
+        agent.violations.clear()
+        agent.transactions.clear()
+    bringup.clear()
     await apply_reset(dut)
     await Timer(20, unit="ns")
-    _clear_bus_log(bus)
-    _clear_agent_log(psram0.agent)
-    _clear_agent_log(psram1.agent)
+    bringup.clear()
+    for agent in bringup.agents:
+        agent.violations.clear()
+        agent.transactions.clear()
 
 
-def _repro(config: dict, test: str) -> str:
+def _repro(config: dict) -> str:
     return (
         "REPRO: source test/env.sh && test/scripts/run_test.sh "
         "LEVEL={level} SIM={sim} SEED={seed} "
-        "COCOTB_TEST_MODULES=tests.test_qspi_ownership TEST_FILTER={test}"
-    ).format(level=config["level"], sim=config["sim"], seed=config["seed"], test=test)
+        "COCOTB_TEST_MODULES=tests.test_qspi_ownership "
+        "TEST_FILTER={filter}"
+    ).format(
+        level=config["level"],
+        sim=config["sim"],
+        seed=config["seed"],
+        filter=OWNERSHIP_TEST_FILTER,
+    )
 
 
 async def _await_bus_gnt(dut, *, cycles: int = 32) -> None:
@@ -132,43 +137,24 @@ async def _release_bus_gnt(dut, *, cycles: int = 32) -> None:
     raise AssertionError("BUS_GNT did not drop after BUS_REQ release")
 
 
-def _assert_clean_bus(bus, *, test: str, log=None) -> None:
-    assert not bus.events, (
-        f"{test}: unexpected ownership events: " + "; ".join(str(e) for e in bus.events)
-    )
-    assert not bus.violations, (
-        f"{test}: unexpected ownership violations: " + "; ".join(bus.violations)
-    )
-    if log is not None:
-        log.info("%s clean: %s", test, bus.summary())
-
-
-def _assert_only_check(bus, check_id: str, *, timing_id: str, test: str, detail_substr: str = "") -> list:
-    """Require at least one event for *check_id* and no other ownership IDs."""
+def _assert_detail(bus, check_id: str, *, test: str, detail_substr: str, timing_id: str) -> list:
+    """Require recorded events for *check_id* carry the expected detail / timing."""
     events = bus.violations_for(check_id)
-    others = [event for event in bus.events if event.check_id != check_id]
-    assert events, (
-        f"{test}: expected {check_id} / {timing_id}, observed {bus.summary()}: "
-        + "; ".join(str(e) for e in bus.events)
-    )
-    assert not others, (
-        f"{test}: unexpected extra IDs {[e.check_id for e in others]}: "
-        + "; ".join(str(e) for e in others)
-    )
+    assert events, f"{test}: expected {check_id} events before dispose, observed {bus.summary()}"
     for event in events:
         assert event.timing_id == timing_id, f"{test}: timing id mismatch: {event}"
         assert not event.reset_truncated, f"{test}: finding was RESET-TRUNCATED: {event}"
-    if detail_substr:
-        details = " | ".join(event.detail for event in events)
-        assert detail_substr in details, f"{test}: missing {detail_substr!r} in {details}"
+    details = " | ".join(event.detail for event in events)
+    assert detail_substr in details, f"{test}: missing {detail_substr!r} in {details}"
     return events
 
 
-async def _tc_own_baseline(dut, psram0, psram1, bus, config) -> None:
-    """TC-OWN-BASELINE: parked idle and legal MCU traffic record no bus violation."""
-    dut._log.info(_repro(config, "baseline"))
-    await _park_clean(dut, psram0, psram1, bus)
-    _assert_clean_bus(bus, test="TC-OWN-BASELINE (park)", log=dut._log)
+async def _tc_own_baseline(dut, bringup, repro: str) -> None:
+    """Sub-step TC-OWN-BASELINE: parked idle and legal MCU traffic stay clean."""
+    bus = bringup.bus
+    psram0, psram1 = bringup.psram0, bringup.psram1
+    await _park_clean(dut, bringup)
+    dispose_run(bringup, test="TC-OWN-BASELINE (park)", log=dut._log, repro=repro)
 
     await _await_bus_gnt(dut)
     master = QpiPassthroughMaster(dut)
@@ -181,58 +167,72 @@ async def _tc_own_baseline(dut, psram0, psram1, bus, config) -> None:
     await Timer(20, unit="ns")
 
     assert psram0.read(0x000040, 2) == b"\x11\x22"
-    _assert_clean_bus(bus, test="TC-OWN-BASELINE", log=dut._log)
+    dispose_run(bringup, test="TC-OWN-BASELINE", log=dut._log, repro=repro)
 
 
-async def _tc_own_cs_mutex(dut, psram0, psram1, bus, config) -> None:
-    """TC-OWN-CS-MUTEX: fault both RAM CE# low → ``CHK-PIN-CS-MUTEX`` / ``Q-MUX``."""
-    dut._log.info(_repro(config, "cs_mutex"))
-    await _park_clean(dut, psram0, psram1, bus)
+async def _tc_own_cs_mutex(dut, bringup, repro: str) -> None:
+    """Sub-step TC-OWN-CS-MUTEX: both RAM CE# low → ``CHK-PIN-CS-MUTEX`` / ``Q-MUX``."""
+    bus = bringup.bus
+    await _park_clean(dut, bringup)
 
     ce_mask = (1 << UIO_PSRAM_CE_BITS[0]) | (1 << UIO_PSRAM_CE_BITS[1])
     dut.fault_uio_drive.value = 0
     dut.fault_uio_oe.value = ce_mask
     await Timer(1, unit="ns")
 
-    events = _assert_only_check(
+    events = _assert_detail(
         bus,
         CHK_PIN_CS_MUTEX,
-        timing_id="Q-MUX",
         test="TC-OWN-CS-MUTEX",
         detail_substr="CE# low together",
+        timing_id="Q-MUX",
+    )
+    dispose_run(
+        bringup,
+        test="TC-OWN-CS-MUTEX",
+        expect_fail=[expect(CHK_PIN_CS_MUTEX)],
+        log=dut._log,
+        repro=repro,
     )
     dut._log.info("TC-OWN-CS-MUTEX recorded: %s", events[0])
     _clear_fault(dut)
     await Timer(1, unit="ns")
 
 
-async def _tc_own_flash_cs(dut, psram0, psram1, bus, config) -> None:
-    """TC-OWN-FLASH-CS: flash CS low under ``~BUS_GNT`` → ``CHK-PIN-FLASH-HIGH``."""
-    dut._log.info(_repro(config, "flash_cs"))
-    await _park_clean(dut, psram0, psram1, bus)
+async def _tc_own_flash_cs(dut, bringup, repro: str) -> None:
+    """Sub-step TC-OWN-FLASH-CS: flash CS low under ``~BUS_GNT`` → ``CHK-PIN-FLASH-HIGH``."""
+    bus = bringup.bus
+    await _park_clean(dut, bringup)
 
     dut.fault_uio_drive.value = 0
     dut.fault_uio_oe.value = 1 << UIO_FLASH_CS_BIT
     await Timer(1, unit="ns")
 
-    events = _assert_only_check(
+    events = _assert_detail(
         bus,
         CHK_PIN_FLASH_HIGH,
-        timing_id="Q-MUX",
         test="TC-OWN-FLASH-CS",
         detail_substr="flash CS low while ~BUS_GNT",
+        timing_id="Q-MUX",
+    )
+    dispose_run(
+        bringup,
+        test="TC-OWN-FLASH-CS",
+        expect_fail=[expect(CHK_PIN_FLASH_HIGH)],
+        log=dut._log,
+        repro=repro,
     )
     dut._log.info("TC-OWN-FLASH-CS recorded: %s", events[0])
     _clear_fault(dut)
     await Timer(1, unit="ns")
 
 
-async def _tc_own_sio_dual(dut, psram0, psram1, bus, config) -> None:
-    """TC-OWN-SIO-DUAL: ASIC-FAULT + device OE on SIO0, equal value → ``CHK-PIN-SIO-OWN``."""
-    dut._log.info(_repro(config, "sio_dual"))
-    await _park_clean(dut, psram0, psram1, bus)
+async def _tc_own_sio_dual(dut, bringup, repro: str) -> None:
+    """Sub-step TC-OWN-SIO-DUAL: ASIC-FAULT + device OE on SIO0 → ``CHK-PIN-SIO-OWN``."""
+    bus = bringup.bus
+    agent = bringup.psram0.agent
+    await _park_clean(dut, bringup)
 
-    agent = psram0.agent
     assert not agent.selected
     assert not agent.oe
 
@@ -242,14 +242,22 @@ async def _tc_own_sio_dual(dut, psram0, psram1, bus, config) -> None:
     await Timer(1, unit="ns")
 
     assert agent.oe and agent.driven_nibble == EQUAL_SIO_NIBBLE
-    events = _assert_only_check(
+    events = _assert_detail(
         bus,
         CHK_PIN_SIO_OWN,
-        timing_id="Q-SIO-OWN",
         test="TC-OWN-SIO-DUAL",
         detail_substr="equal driven values still fail",
+        timing_id="Q-SIO-OWN",
     )
     assert any("SIO0" in event.detail for event in events), f"SIO0 missing: {events}"
+    # Deselected inject_sio_drive → Q-DRIVE-DESEL; ASIC fault dual-drive → CHK-PIN-SIO-OWN.
+    dispose_run(
+        bringup,
+        test="TC-OWN-SIO-DUAL",
+        expect_fail=[expect(CHK_PIN_SIO_OWN), expect(Q_DRIVE_DESEL)],
+        log=dut._log,
+        repro=repro,
+    )
     dut._log.info("TC-OWN-SIO-DUAL recorded: %s", events[0])
 
     agent.inject_sio_release()
@@ -257,21 +265,28 @@ async def _tc_own_sio_dual(dut, psram0, psram1, bus, config) -> None:
     await Timer(1, unit="ns")
 
 
-async def _tc_own_sck_idle(dut, psram0, psram1, bus, config) -> None:
-    """TC-OWN-SCK-IDLE: SCK high while every CS high → ``CHK-PIN-SCK-PARK`` / ``Q-SCKIDLE``."""
-    dut._log.info(_repro(config, "sck_idle"))
-    await _park_clean(dut, psram0, psram1, bus)
+async def _tc_own_sck_idle(dut, bringup, repro: str) -> None:
+    """Sub-step TC-OWN-SCK-IDLE: SCK high while every CS high → ``CHK-PIN-SCK-PARK``."""
+    bus = bringup.bus
+    await _park_clean(dut, bringup)
 
     dut.fault_uio_drive.value = 1 << UIO_SCK_BIT
     dut.fault_uio_oe.value = 1 << UIO_SCK_BIT
     await Timer(1, unit="ns")
 
-    events = _assert_only_check(
+    events = _assert_detail(
         bus,
         CHK_PIN_SCK_PARK,
-        timing_id="Q-SCKIDLE",
         test="TC-OWN-SCK-IDLE",
         detail_substr="SCK high while no device is selected",
+        timing_id="Q-SCKIDLE",
+    )
+    dispose_run(
+        bringup,
+        test="TC-OWN-SCK-IDLE",
+        expect_fail=[expect(CHK_PIN_SCK_PARK)],
+        log=dut._log,
+        repro=repro,
     )
     dut._log.info("TC-OWN-SCK-IDLE recorded: %s", events[0])
     _clear_fault(dut)
@@ -280,21 +295,32 @@ async def _tc_own_sck_idle(dut, psram0, psram1, bus, config) -> None:
 
 @cocotb.test()
 async def ownership_shared_bus_negatives(dut):
-    """Run TC-OWN-BASELINE plus the four ownership negatives in order."""
+    """Run TC-OWN-* ownership sub-steps in one consolidated cocotb test."""
     config = parse_run_config()
+    repro = _repro(config)
     dut._log.info(
         "SEED=%d LEVEL=%s SIM=%s", config["seed"], config["level"], config["sim"]
     )
+    dut._log.info(repro)
 
-    psram0, psram1 = attach_dual_psram(dut, fill=FILL)
-    bus = start_shared_bus_monitor(dut, psram0.agent, psram1.agent, strict=False)
-    await start_clock(dut)
+    # Ownership suite only needs SharedBusMonitor; other always-on monitors stay
+    # off so intentional fault injectors do not trip unrelated CHK-* rows.
+    bringup = await bring_up_top(
+        dut,
+        fill=FILL,
+        ce_monitor=False,
+        handshake_monitor=False,
+        pin_monitor=False,
+        arbitration_monitor=False,
+        controller_monitor=False,
+    )
+    assert bringup.bus is not None, "ownership suite requires SharedBusMonitor"
 
-    await _tc_own_baseline(dut, psram0, psram1, bus, config)
-    await _tc_own_cs_mutex(dut, psram0, psram1, bus, config)
-    await _tc_own_flash_cs(dut, psram0, psram1, bus, config)
-    await _tc_own_sio_dual(dut, psram0, psram1, bus, config)
-    await _tc_own_sck_idle(dut, psram0, psram1, bus, config)
+    await _tc_own_baseline(dut, bringup, repro)
+    await _tc_own_cs_mutex(dut, bringup, repro)
+    await _tc_own_flash_cs(dut, bringup, repro)
+    await _tc_own_sio_dual(dut, bringup, repro)
+    await _tc_own_sck_idle(dut, bringup, repro)
 
     dut._log.info(
         "TC-OWN suite passed: BASELINE, CS-MUTEX, FLASH-CS, SIO-DUAL, SCK-IDLE"

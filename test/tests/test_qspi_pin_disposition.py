@@ -2,7 +2,10 @@
 
 Path: model-side pin decode already proves these catalog rows via ``Q-ADDR23``
 and ``Q-SIO-X`` (see ``monitors.qspi.dispose_model_pin_checks``). This module
-prints explicit pass/fail dispositions and proves each ID can fail.
+prints explicit pass/fail dispositions and proves each ID can fail. It is the
+intentional model-plane dispose contract test: attach/clock/reset come from
+:func:`common.bringup.bring_up_top` with ``pin_monitor=False``, then
+:func:`monitors.qspi.assert_model_pin_disposition` judges via model ``Q-*``.
 
 Test-case IDs:
     TC-PIN-DISP-PASS   - legal traffic leaves both IDs pass
@@ -17,6 +20,7 @@ also printed from ``tests.test_qspi`` after legal engine traffic.
 import cocotb
 from cocotb.triggers import Timer
 
+from common.bringup import bring_up_top
 from common.config import parse_run_config
 from common.host import QpiPassthroughMaster
 from models.psram import (
@@ -25,7 +29,6 @@ from models.psram import (
     QSPI_CMD_FAST_READ,
     QSPI_CMD_WRITE,
     SIO_UIO_BITS,
-    attach_dual_psram,
     format_violations,
 )
 from monitors.qspi import (
@@ -37,29 +40,18 @@ from monitors.qspi import (
 
 FILL = 0x00
 
-_ATTACHED: list = []
-
 
 async def _bring_up(dut):
-    for device in _ATTACHED:
-        device.agent.stop()
-    _ATTACHED.clear()
-
-    dut.ena.value = 1
-    dut.ui_in.value = 0
-    dut.host_uio_drive.value = 0
-    dut.host_uio_oe.value = 0
-    dut.fault_uio_drive.value = 0
-    dut.fault_uio_oe.value = 0
+    """Shared L1 attach/clock/reset, then hold ASIC reset for MCU pass-through."""
+    bringup = await bring_up_top(dut, fill=FILL, pin_monitor=False)
+    # Host drive is legal while rst_n is low (D26/D22); keep ASIC deselected
+    # so the MCU master owns uio for model-plane framing.
     dut.rst_n.value = 0
     await Timer(1, unit="ns")
 
-    psram0, psram1 = attach_dual_psram(dut, fill=FILL)
-    _ATTACHED.extend([psram0, psram1])
-
     master = QpiPassthroughMaster(dut)
     await master.park()
-    return psram0, psram1, master
+    return bringup.psram0, bringup.psram1, master
 
 
 def _repro(config: dict, test: str) -> str:

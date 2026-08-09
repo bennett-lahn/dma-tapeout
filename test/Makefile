@@ -282,10 +282,14 @@ smoke:
 		COCOTB_TEST_MODULES=tests.test_smoke \
 		TEST_FILTER=smoke
 
+# M2 directed cases in tests.test_dma_directed (exclude M5 dma_buf_depth_sweep).
+# Keep parentheses quoted on the recipe line; bare ( breaks bash before make sees it.
+DIRECTED_TEST_FILTER ?= ^(tcd_big_endian_flags|same_device_psram0|same_device_psram1|cross_device_0_to_1|cross_device_1_to_0|multi_tcd_chain|next_device_alternate|transfer_length_corners|quit_descriptor_priority|empty_chain_at_head|restart_after_completion|wide_address_space|overlapping_same_device_ranges)$$
+
 directed:
 	$(MAKE) test \
 		COCOTB_TEST_MODULES=tests.test_smoke,tests.test_qspi,tests.test_dma_directed,tests.test_reset_and_bus \
-		TEST_FILTER=$(if $(TEST_FILTER),$(TEST_FILTER),directed)
+		TEST_FILTER="$(if $(TEST_FILTER),$(TEST_FILTER),$(DIRECTED_TEST_FILTER))"
 
 random:
 	$(MAKE) test \

@@ -17,17 +17,12 @@ import cocotb
 from cocotb.triggers import NextTimeStep, ReadOnly, RisingEdge, Timer, with_timeout
 from cocotb.triggers import SimTimeoutError
 
-from common.clocks import apply_engine_reset, apply_reset, start_clock
+from common.bringup import bring_up_engine, bring_up_top
 from common.config import parse_run_config
-from common.dispose import REQUIRE, clear_sources, dispose_run
+from common.dispose import REQUIRE, dispose_run
 from common.host import pulse_start
-from models.psram import (
-    QSPI_CMD_WRITE,
-    attach_dual_psram,
-    attach_engine_psram,
-)
-from monitors.qspi import sck_is_parked, start_shared_bus_monitor
-from monitors.timing import start_ce_timing_monitor
+from models.psram import QSPI_CMD_WRITE
+from monitors.qspi import sck_is_parked
 
 FILL = 0x00
 DONE_BIT = 0x1
@@ -41,7 +36,6 @@ SRC_BYTE = 0xA5
 DST_SENTINEL = 0x00
 POST_SRC_BYTE = 0x5A
 
-_ATTACHED: list = []
 _MID_TXN_TIMEOUT_CYCLES = 256
 _ENGINE_WRITE_LEN = 11
 _ENGINE_WRITE_ADDR = 0x003100
@@ -98,12 +92,6 @@ def _level(handle) -> "int | None":
         return None
 
 
-def _stop_attached() -> None:
-    for device in _ATTACHED:
-        device.agent.stop()
-    _ATTACHED.clear()
-
-
 def _bytes_to_nibbles(data: bytes) -> list:
     nibbles = []
     for value in data:
@@ -112,7 +100,7 @@ def _bytes_to_nibbles(data: bytes) -> list:
     return nibbles
 
 
-def _dispose_reset_window(*sources, test: str, log, repro: str) -> list:
+def _dispose_reset_window(bringup, *, test: str, log, repro: str) -> list:
     """Review every ``RESET-TRUNCATED`` finding from the abort window.
 
     Shared contract via :func:`common.dispose.dispose_run`: ordinary fails must
@@ -120,7 +108,7 @@ def _dispose_reset_window(*sources, test: str, log, repro: str) -> list:
     so a silently clean abort cannot pass as a disposed one.
     """
     report = dispose_run(
-        *sources,
+        bringup,
         test=test,
         log=log,
         reset_truncated=REQUIRE,
@@ -200,37 +188,31 @@ async def _q_rst_top(dut, config: dict) -> None:
     repro = _repro(config, "qspi_reset_protocol")
     dut._log.info(repro)
 
-    _stop_attached()
-    psram0, psram1 = attach_dual_psram(dut, fill=FILL)
-    _ATTACHED.extend([psram0, psram1])
-    bus = start_shared_bus_monitor(dut, psram0.agent, psram1.agent, strict=False)
-    ce = start_ce_timing_monitor(dut, strict=False)
+    bringup = await bring_up_top(dut, fill=FILL)
+    psram0 = bringup.psram0
+    psram1 = bringup.psram1
 
     _load_smoke_chain(psram0, src_byte=SRC_BYTE)
-    await start_clock(dut)
-    await apply_reset(dut)
-    clear_sources(bus, ce)
+    bringup.clear()
 
     await pulse_start(dut)
     await _await_mid_txn_top(dut, repro=repro)
     assert psram0.agent.selected, f"{test}: PSRAM0 not selected mid-txn. {repro}"
 
     # Classify the in-flight parser abort before OE release raises CE#.
-    psram0.agent.note_reset()
-    psram1.agent.note_reset()
+    for agent in bringup.agents:
+        agent.note_reset()
     dut.rst_n.value = 0
     await _assert_rst_n_clears_top_oe(dut, test=test)
     await _assert_sampled_reset_status_top(dut, test=test)
 
     truncated = _dispose_reset_window(
-        psram0, psram1, bus, ce, test=test, log=dut._log, repro=repro
+        bringup, test=test, log=dut._log, repro=repro
     )
     assert any(finding.source.startswith("PSRAM") for finding in truncated), (
         f"{test}: expected at least one model RESET-TRUNCATED from mid-txn abort, "
         f"observed {[str(finding) for finding in truncated]}. " + repro
     )
-    for agent in (psram0.agent, psram1.agent):
-        agent.violations.clear()
 
     # Release reset and prove a fresh legal chain can complete.
     dut.ui_in.value = 0
@@ -239,9 +221,8 @@ async def _q_rst_top(dut, config: dict) -> None:
     dut.rst_n.value = 1
     await RisingEdge(dut.clk)
 
-    clear_sources(bus, ce)
-    psram0.agent.transactions.clear()
-    psram1.agent.transactions.clear()
+    bringup.clear()
+    bringup.clear_transactions()
 
     _load_smoke_chain(psram0, src_byte=POST_SRC_BYTE)
     await pulse_start(dut)
@@ -261,19 +242,17 @@ async def _q_rst_top(dut, config: dict) -> None:
     # Default policy: the post-reset chain is ordinary traffic, so neither an
     # ordinary fail nor a further RESET-TRUNCATED finding is allowed.
     dispose_run(
-        psram0,
-        psram1,
-        bus,
-        ce,
+        bringup,
         test=f"{test} post-reset",
         log=dut._log,
         repro=repro,
     )
 
+    bus_summary = bringup.bus.summary() if bringup.bus is not None else "bus=<off>"
     dut._log.info(
         "%s L1 passed: OE cleared, truncated disposed, post-reset copy ok (%s)",
         test,
-        bus.summary(),
+        bus_summary,
     )
 
 
@@ -313,19 +292,15 @@ async def _q_rst_engine(dut, config: dict) -> None:
     repro = _repro(config, "qspi_reset_protocol")
     dut._log.info(repro)
 
-    _stop_attached()
-    await start_clock(dut)
-    await apply_engine_reset(dut)
-    attached = attach_engine_psram(dut, devices=(0, 1))
-    _ATTACHED.extend(attached)
-    psram0, psram1 = attached
-    bus = start_shared_bus_monitor(dut, psram0.agent, psram1.agent, strict=False)
+    bringup = await bring_up_engine(dut, fill=FILL)
+    psram0 = bringup.psram0
+    psram1 = bringup.psram1
 
     await _await_mid_txn_engine(dut, repro=repro)
     assert int(dut.sio_oe.value) != 0, f"{test}: expected engine SIO OE mid-txn. {repro}"
 
-    psram0.agent.note_reset()
-    psram1.agent.note_reset()
+    for agent in bringup.agents:
+        agent.note_reset()
     dut.txn_valid.value = 0
     dut.rst_n.value = 0
 
@@ -341,20 +316,17 @@ async def _q_rst_engine(dut, config: dict) -> None:
     await NextTimeStep()
 
     truncated = _dispose_reset_window(
-        psram0, psram1, bus, test=test, log=dut._log, repro=repro
+        bringup, test=test, log=dut._log, repro=repro
     )
     assert any(finding.source.startswith("PSRAM") for finding in truncated), (
         f"{test}: expected model RESET-TRUNCATED from mid-txn engine abort, "
         f"observed {[str(finding) for finding in truncated]}. {repro}"
     )
-    for agent in (psram0.agent, psram1.agent):
-        agent.violations.clear()
 
     dut.rst_n.value = 1
     await RisingEdge(dut.clk)
-    clear_sources(bus)
-    psram0.agent.transactions.clear()
-    psram1.agent.transactions.clear()
+    bringup.clear()
+    bringup.clear_transactions()
 
     # Subsequent legal short write must complete cleanly.
     payload = bytes([0xA5])
@@ -391,18 +363,17 @@ async def _q_rst_engine(dut, config: dict) -> None:
         f"{test}: post-reset engine write mismatch. {repro}"
     )
     dispose_run(
-        psram0,
-        psram1,
-        bus,
+        bringup,
         test=f"{test} post-reset",
         log=dut._log,
         repro=repro,
     )
 
+    bus_summary = bringup.bus.summary() if bringup.bus is not None else "bus=<off>"
     dut._log.info(
         "%s L0 passed: busy/OE cleared, truncated disposed, post-reset write ok (%s)",
         test,
-        bus.summary(),
+        bus_summary,
     )
 
 
