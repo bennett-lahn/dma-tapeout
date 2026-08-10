@@ -47,8 +47,8 @@ The implementation ladder is fixed as **M0 through M6**:
 
 - **M0** - toolchain and L1 same-device smoke
 - **M1** - PSRAM model and behavioral QSPI checks
-- **M2** - reference model, scoreboard, and directed suite
-- **M3** - delay layer, setup/hold sweeps, and launch/RX edge checks
+- **M2** - reference model, scoreboard, and directed suite (complete 2026-08-08; `TC-DEPTH` deferred to M5)
+- **M3** - delay layer, setup/hold sweeps, and launch/RX edge checks (complete 2026-08-10)
 - **M4** - formal safety proofs and cover reachability
 - **M5** - randomized regression and coverage closure; the buffer-depth sweep is blocked until the sim harness selects `DMA_BUF_DEPTH`
 - **M6** - gate-level and X checks, then handoff to STA and demoboard closure
@@ -94,10 +94,10 @@ For every `pass`, retain the simulator or formal engine, level, seed where appli
 | Platform / toolchain     | `env.sh`, doctor, hooks  | pass           | M0 (complete)                                                                     |
 | Platform smoke           | M0 exit / `TC-SMOKE`     | pass           | M0 (complete); CI job still open                                                  |
 | PSRAM behavioral model   | SCK/CE# agent + policing | pass           | M1 exit met; model-plane Z→0 idealization remains; see `03-psram-model.md`      |
-| QPI protocol (M1 rows)   | `Q-CEM/CPH/MUX/SIO-OWN/RST/SCKIDLE` | pass | M1 (complete under `ideal`); delay rerun of CEM/CPH/SIO-OWN at M3          |
-| QPI protocol (M3 rows)   | `Q-LAUNCH`, `Q-RXEDGE`, `Q-CSP/CHD/TERM` | todo | M3                                                                    |
-| Directed behavior        | `TC-*`, `CHK-*`          | todo           | M2 (`TC-SMOKE` + M1 `TC-QPI-*` / negatives already pass); independent `QspiPinMonitor` live (`via=pin`) |
-| Delay-annotated timing   | `Q-LAUNCH`, `Q-RXEDGE`   | todo           | M3                                                                                |
+| QPI protocol (M1 rows)   | `Q-CEM/CPH/MUX/SIO-OWN/RST/SCKIDLE` | pass | M1 under `ideal`; CEM/CPH/SIO-OWN delay rerun complete at M3 (2026-08-10) |
+| QPI protocol (M3 rows)   | `Q-LAUNCH`, `Q-RXEDGE`, `Q-CSP/CHD/TERM` | pass | M3 (complete 2026-08-10)                                              |
+| Directed behavior (M2)   | M2 `TC-*`, `CHK-*`, dual-axis scoreboard | pass | M2 complete (2026-08-08); `TC-DEPTH` remains M5/`blocked` |
+| Delay-annotated timing   | `Q-LAUNCH`, `Q-RXEDGE`   | pass           | M3 complete (2026-08-10); see `04-timing-in-sim.md` residuals         |
 | Formal                   | `FP-*`                   | todo           | M4                                                                                |
 | Random and coverage      | `COV-*`                  | todo           | M5                                                                                |
 | Buffer-depth sweep       | `TC-DEPTH`, `COV-DEPTH*` | blocked        | M5, after sim harness wires `DMA_BUF_DEPTH`                                       |
@@ -106,7 +106,7 @@ For every `pass`, retain the simulator or formal engine, level, seed where appli
 | Physical timing          | `T-*`                    | todo           | Post-M6/M7 closure                                                                |
 
 
-This table is a planning roll-up, not evidence of implementation. Update the owning catalog first, then this summary. M1 matrix evidence: `test/runs/m1_t10_icarus_matrix.log` and `test/runs/m1_t10_verilator_matrix.log` (Icarus ≡ Verilator; may be wiped by `make clean`). Detail in `04-timing-in-sim.md` (M1 behavioral evidence).
+This table is a planning roll-up, not evidence of implementation. Update the owning catalog first, then this summary. M1 matrix evidence: `test/runs/m1_t10_icarus_matrix.log` and `test/runs/m1_t10_verilator_matrix.log` (Icarus ≡ Verilator; may be wiped by `make clean`). Detail in `04-timing-in-sim.md` (M1 behavioral evidence). M2 Acceptance evidence (2026-08-08): L1 Icarus smoke, `tests.test_dma_directed` (13 `TC-*` + skipped `TC-DEPTH`), `tests.test_reset_and_bus` (11/11), and migrated M1 modules (`test_qspi_negative`, `test_qspi_timing`, `test_qspi_reset_protocol`, `test_qspi_ownership`, `test_qspi_pin_disposition`). Detail in `01-strategy.md` (M2 acceptance status) and owning catalogs. M3 Acceptance evidence (2026-08-10): delay layer + launch/RX under `nominal`, Icarus ≡ Verilator on `test_qspi_timing`, `test_qspi_timing_delay`, `test_qspi_timing_launch_rx`, `test_qspi_ownership`; centralized `PendingLedger` / `finalize_all` cleanup; directed cleanup `TC-*`. Detail in `01-strategy.md` (M3 acceptance status), `04-timing-in-sim.md`, and `06-checkers.md` (lifecycle contract).
 
 ## Architecture anchors
 

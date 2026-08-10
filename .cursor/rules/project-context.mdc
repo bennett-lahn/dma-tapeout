@@ -11,6 +11,8 @@ This repo is a Tiny Tapeout scatter-gather DMA project in the **planning / archi
 
 Read `docs/llm/00-index.md` and the files it lists for the task at hand. Prefer those docs over chat memory.
 
+When discussing PSRAM timing parameters, testbench timing parameters, or verification IDs (`Q-*`, `FP-*`, etc.), define each term inline on first use; see `.cursor/rules/verification-vocabulary.mdc`.
+
 Human summaries live in `docs/human/` (condensed, not stubs). Every durable fact in `docs/llm/` must appear in `docs/human/` in some form; llm elaborates, it does not hold private truth. Do not grow human docs into a second full dump, and do not leave new requirements llm-only behind a pointer (anti-pattern: `CHK-*` only in `docs/llm/verification/06-checkers.md`).
 
 ## Hard constraints

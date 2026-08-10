@@ -190,15 +190,15 @@ M1 model acceptance requires:
 - transaction logs reconstruct exact addresses and bytes, and
 - Icarus and Verilator agree on the directed protocol cases.
 
-**M1 acceptance status:** `pass` (2026-08-03). Evidence: `test/runs/m1_t10_icarus_matrix.log` and `test/runs/m1_t10_verilator_matrix.log` (`TIMING_PROFILE=ideal`, `SEED=1`; both sims exit 0 on smoke, `test_qspi_negative`, `test_qspi_ownership`, `test_qspi_timing`, `test_qspi_reset_protocol`, `test_qspi_pin_disposition` at L1; `test_qspi` / `test_engine_attach` at L0). Catalog `Q-*` detail and REPROs: `04-timing-in-sim.md`.
+**M1 acceptance status:** `pass` (2026-08-03). Evidence: `test/runs/m1_t10_icarus_matrix.log` and `test/runs/m1_t10_verilator_matrix.log` (`TIMING_PROFILE=ideal`, `SEED=1`; both sims exit 0 on smoke, `test_qspi_negative`, `test_qspi_ownership`, `test_qspi_timing`, `test_qspi_reset_protocol`, `test_qspi_pin_disposition` at L1; `test_qspi` at L0). L0 CE#/SCK idle attach self-check now runs inside `bring_up_engine` (former `test_engine_attach` folded away). Catalog `Q-*` detail and REPROs: `04-timing-in-sim.md`.
 
 Residual limitations (do not reopen the M1 behavioral gate, but stay honest):
 
 - `tb_top` / `tb_engine` model plane still maps floating SIO `z` to idle `0` (Z→0 idealization); `CHK-PIN-KNOWN` float-as-X coverage waits on removing that idealization.
-- Independent `QspiPinMonitor` is live: CE#-framed pin decode exports the ordered transaction log; `CHK-PIN-ADDR23-ZERO` / `CHK-PIN-KNOWN` dispose with `via=pin` when the monitor ran. Model `Q-ADDR23` / `Q-SIO-X` remain the fallback when the pin monitor is absent or blocked (and for legacy M1 model-dispose call-sites).
-- Delay-annotated policing and `Q-LAUNCH` / `Q-RXEDGE` remain M3.
+- Independent `QspiPinMonitor` is live: CE#-framed pin decode exports the ordered transaction log; `CHK-PIN-ADDR23-ZERO` / `CHK-PIN-KNOWN` dispose with `via=pin` when the monitor ran. Ordinary suites use `dispose_run` / pin. Model `Q-ADDR23` / `Q-SIO-X` remain the fallback when the pin monitor is absent or blocked; the intentional model-plane dispose contract is retained only in `tests.test_qspi_pin_disposition` (`assert_model_pin_disposition`).
+- Delay-annotated policing and `Q-LAUNCH` / `Q-RXEDGE` closed at M3 (2026-08-10); see `04-timing-in-sim.md`. Timed wrappers participate in `PendingLedger` / `finalize_all` cleanup (`06-checkers.md`).
 
-M3 adds the delay behavior and timing checks in `04-timing-in-sim.md`. Passing either milestone does not close a physical `T-*` item.
+M3 delay behavior and timing checks live in `04-timing-in-sim.md`. Passing M1 or M3 does not close a physical `T-*` item.
 
 ## Repository sources
 

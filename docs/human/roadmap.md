@@ -26,18 +26,18 @@
 
 ## Phase 2 - Descriptor DMA (V1 feature complete) (current)
 
-- [x] Fetch + single-TCD copy (same-device PSRAM) - exercised by M0 `TC-SMOKE` (length-1); broader lengths/corners still M2
-- [ ] Cross-device PSRAM copy (A↔B)
-- [ ] Chained TCDs (incl. next TCD on other device; zero-length no-op)
-- [ ] DONE / error status
+- [x] Fetch + single-TCD copy (same-device PSRAM) - M0 `TC-SMOKE` plus M2 length/address corners
+- [x] Cross-device PSRAM copy (A↔B) - M2 `TC-CROSS-01` / `TC-CROSS-10`
+- [x] Chained TCDs (incl. next TCD on other device; zero-length no-op) - M2 `TC-CHAIN` / `TC-NEXT-DEVICE` / `TC-EMPTY` / `TC-QUIT`
+- [ ] DONE / error status (DONE exercised by M2 directed; sticky error / `uo_out` packing still open)
 - [x] M0 - toolchain and L1 same-device smoke (`source test/env.sh && test/scripts/run_smoke.sh`)
 - [x] Verification scaffold + durable toolchain hooks (`test/env.sh`, wrappers, doctor/run scripts)
 - [x] SCK-accurate dual PSRAM model (6 dummy cycles; table-driven `0xEB`/`0x02`) with M1 protocol policing
-- [x] M1 - protocol policing, L0 QPI directed tests, and Icarus/Verilator agreement (behavioral `Q-*` under `ideal`; residual: independent `QspiPinMonitor` stub, model-plane Z→0, CI smoke still open; M3 owns delays / `Q-LAUNCH` / `Q-RXEDGE`)
-- [ ] M2 - reference model, dual-axis scoreboard, directed tests, and always-on checkers
-- [ ] M3 - delay layer, setup/hold sweeps, and launch/RX edge checks
+- [x] M1 - protocol policing, L0 QPI directed tests, and Icarus/Verilator agreement (behavioral `Q-*` under `ideal`; residual: model-plane Z→0, CI smoke still open; delays / `Q-LAUNCH` / `Q-RXEDGE` closed at M3)
+- [x] M2 - reference model, dual-axis scoreboard, directed `TC-*` (24 cases; `TC-DEPTH` deferred to M5), always-on `CHK-*`, pin monitor (`via=pin`); Acceptance 2026-08-08
+- [x] M3 - delay layer, setup/hold sweeps, launch/RX edge checks, centralized pending-item lifecycle; Acceptance 2026-08-10 (physical `T-*` remain post-M3)
 - [ ] M4 - formal safety proofs and cover reachability
-- [ ] M5 - randomized regression and coverage closure; buffer-depth sweep blocked pending sim harness `DMA_BUF_DEPTH` wiring
+- [ ] M5 - randomized regression and coverage closure; buffer-depth sweep blocked pending sim harness `DMA_BUF_DEPTH` wiring (`TC-DEPTH` skipped in default directed module)
 - [ ] CI smoke job (L1 Icarus)
 - [ ] Firmware library + demoboard bring-up for M7 readiness (MicroPython under `firmware/`; host-side `firmware/tests` may start earlier; demoboard HIL still Phase 3 / M7)
 

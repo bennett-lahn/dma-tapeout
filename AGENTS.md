@@ -22,6 +22,7 @@ Planning / architecture. Early RTL under `src/rtl/`. Resolve items in `docs/llm/
 
 ## Do / don't
 
+- Do define PSRAM timing parameters, testbench timing parameters (`TB_*`, `D_OUT_*`, `D_IN_*`), `TIMING_PROFILE` values, and verification IDs (`Q-*`, `T-*`, `FP-*`, `CHK-*`, `TC-*`, `COV-*`) inline on first use in every response; one short plain-language phrase is enough (see `.cursor/rules/verification-vocabulary.mdc`)
 - Do update `docs/llm/` when architectural decisions change
 - Do keep `docs/human/` condensed **and complete**: every durable fact in `docs/llm/` must appear in `docs/human/` in some form (summary, table, or bullets). llm elaborates; it is not a private second source of truth
 - Do cite TinyDMA-2C explicitly when using that file

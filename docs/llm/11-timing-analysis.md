@@ -48,7 +48,7 @@ Engine **SCK = clk/2** (registered toggle when enabled; idle low when disabled).
 | [`Q-LAUNCH`](verification/04-timing-in-sim.md) | Driven SIO and OE launch-edge discipline with modeled setup and hold | Required prerequisite for `T-SP-HD` |
 | [`Q-RXEDGE`](verification/04-timing-in-sim.md) | Falling-edge model launch reconciled to one rising-edge DUT capture | Required prerequisite for `T-ACLK` |
 
-`Q-LAUNCH` passing does not close routed output setup or hold. `Q-RXEDGE` passing does not close the physical read-return path. Their complete definitions remain only in `verification/04-timing-in-sim.md`.
+`Q-LAUNCH` and `Q-RXEDGE` simulation prerequisites are `pass` as of M3 (2026-08-10); see `verification/04-timing-in-sim.md`. Passing them does not close routed output setup/hold or the physical read-return path. Their complete definitions remain only in that file.
 
 ### PSRAM / QSPI - post-RTL timing / board
 

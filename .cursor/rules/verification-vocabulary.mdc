@@ -1,0 +1,29 @@
+---
+description: Define PSRAM timing and verification IDs inline in agent responses
+alwaysApply: true
+---
+
+# Verification and timing vocabulary
+
+Whenever a response mentions a PSRAM timing parameter, testbench timing parameter, or verification ID, define it at that point in plain language. Do not assume the reader knows repo shorthand.
+
+## What triggers this rule
+
+- **Device AC parameters:** `PSRAM_*` (for example `PSRAM_TACLK_NS`, `PSRAM_TCSP_NS`, `PSRAM_TCHD_NS`, `PSRAM_TCPH_NS`, `PSRAM_TSP_NS`, `PSRAM_THD_NS`, `PSRAM_THZ_NS`, `PSRAM_TCEM_*`, SCK duty ratios, `PSRAM_TKHKL_NS`)
+- **Testbench path parameters:** `TB_*`, derived `D_OUT_*`, `D_IN_*` (for example `TB_TCO_NS`, `TB_FLIGHT_OUT_NS`, `TB_FLIGHT_IN_NS`, per-signal overrides)
+- **Profiles and knobs:** `TIMING_PROFILE` values (`ideal`, `nominal`, `sweep`) and any explicit timing override passed to bring-up or tests
+- **Verification IDs:** `Q-*`, `T-*`, `FP-*`, `CHK-*`, `TC-*`, `COV-*`, and related stable IDs such as `RESET-TRUNCATED` when used as a classification
+
+## How to define
+
+- Keep each definition to one short phrase or sentence: what is being measured, constrained, or delayed, and in which direction when relevant (setup vs hold, launch vs capture, min vs max).
+- Define on first use in the response. Later mentions in the same response may use the bare identifier if already defined.
+- Prefer inline form: appositive, parenthetical, or "meaning -" after the name. Example: "`Q-CSP` (CE# must fall at least 2.5 ns before the first rising SCK)".
+- For datasheet-style names, tie the env var to the symbol when helpful: "`PSRAM_TACLK_NS` / `tACLK` (read data valid after falling SCK)".
+- Do not invent values or rename IDs. Canonical catalogs live in `docs/llm/verification/` (`04-timing-in-sim.md` for `Q-*` and timing params, `00-index.md` for ID namespaces, `06-checkers.md` for `CHK-*`, `07-formal.md` for `FP-*`).
+
+## Examples
+
+Good: "Under `TIMING_PROFILE=nominal` (documented APS6404L min/max AC with zero TB placeholders), `Q-LAUNCH` (driven SIO/OE changes only while SCK is low, with modeled setup/hold) still fails on byte 3."
+
+Bad: "Run nominal and check Q-LAUNCH and PSRAM_TACLK_NS." (no definitions)

@@ -169,7 +169,7 @@ Do not print enum values only as simulator-specific integers. Include the symbol
 
 ## Implementation separation
 
-Planned monitor ownership under `test/monitors/`:
+Monitor ownership under `test/monitors/`:
 
 - `qspi.py` - CE#, SCK, opcode/address/data decoding and `CHK-PIN-*`
 - `arbitration.py` - grant, OE, park, reset release, and bus atomicity
@@ -180,6 +180,50 @@ The checker manager starts monitors before reset, collects one result per ID, an
 
 Do not derive observed pin facts from internal request fields. For example, `CHK-PIN-ADDR23-ZERO` decodes the six address nibbles from SIO; `CHK-HS-REQ-STABLE` separately checks the internal request bus. Agreement between independent observations is useful evidence.
 
+## Pending-item lifecycle (single cleanup mechanism)
+
+As of M3 (2026-08-10), every open event window is audited through one shared policy in `test/common/lifecycle.py`. Monitors declare open items; they do not implement a second audit path.
+
+### Contract
+
+- `PendingLedger` is owned by each participant (monitor, model, or timed wrapper). Callables `record`, `in_reset`, and `now_ns` are injected so the ledger never depends on monitor internals.
+- Severities at `open()` time:
+  - `SEV_FAIL` - unresolved at window end is a checker finding under the declared ID
+  - `SEV_DIAGNOSTIC` - incomplete-window note only; never an ordinary fail
+  - `SEV_IGNORE` - tracked for debug; dropped silently at audit
+- Reasons recorded in finding detail: `dispose`, `window-clear`, `monitor-stop`, `scope-close`, `reset` (`REASON_DISPOSE` / `REASON_CLEAR` / `REASON_STOP` / `REASON_SCOPE` / `REASON_RESET`).
+- `finalize_all(participants, *, reason)` is the only function that calls `audit`. On `REASON_STOP` it also calls `cancel_tasks()` when present (timed PSRAM wrappers).
+- Carryover findings survive `PendingLedger.clear()` / owner `clear()` so a window reset cannot erase an audit that already fired.
+- CE# fall uses `close_scope(device_id, reason=scope-close)` so pending launches for that device are audited before the open set drops them.
+
+### Triggers (tests never call finalize themselves)
+
+| Trigger | Reason | Where |
+|---|---|---|
+| `dispose.collect` / `dispose_run` | `dispose` | before reading monitor events |
+| `BringUp.clear` | `window-clear` | before wiping participant state; carryover retained |
+| `BringUp.stop` / `_stop_previous` | `monitor-stop` | bring-up retirement; timed wrappers cancel child tasks |
+
+`BringUp.participants` is the registry of everything with a window lifecycle (models, timed wrappers, monitors). Dispose expansion reads each participant's `pending.carryover` so an earlier clear in the same test still reaches the report.
+
+### Hunt residuals / intentional non-fails
+
+These severity choices are durable policy, not missing coverage:
+
+| Open item | Severity / policy | Notes |
+|---|---|---|
+| `CeTimingMonitor` pending read launch | `SEV_FAIL` / `Q-RXEDGE` | scope = device; CE# fall uses `close_scope` |
+| `ControllerMonitor._pending_pair` | `SEV_FAIL` / `CHK-CTRL-DATA-PAIR` | payload read awaiting matching write |
+| Live CE#-framed txn (`PsramQpiAgent` / pin decoder) | `SEV_FAIL` / applicable `Q-PHASE`, else `SEV_DIAGNOSTIC` | incomplete command/address when completion was promised |
+| Handshake open txn / pending write nibble | `SEV_DIAGNOSTIC` only | no new catalog ID in M3; do not reuse `CHK-HS-*-COUNT` |
+| `ControllerMonitor._pending_start` | `SEV_IGNORE` | intentional non-fail (START with no first QPI txn yet) |
+| CE# still low at cleanup | not a ledger item | do not manufacture cleanup-only `Q-TERM`; `Q-CEM` fires only if the low pulse already exceeded `tCEM` while active |
+| Timed wrapper delayed tasks | `cancel_tasks()` participant | not a finding ID |
+
+Optional shared `@tb_test` / cocotb finally-hook remains deferred: pytest `conftest.py` cannot cross the sim boundary, and there is no true cocotb test-end hook in this repo. Automatic cleanup means automatic on `dispose_run`, `BringUp.clear`, and bring-up retirement. A test that raises before `dispose_run` is audited one step late at the next `_stop_previous()` as a logged note rather than an assertion (raising there would mask the original exception).
+
+Directed cleanup evidence: `TC-RXEDGE-PENDING-AT-STOP`, `TC-PENDING-SURVIVES-CLEAR`, `TC-TIMED-WRAPPER-STOP-ISOLATION` (`tests.test_qspi_timing_launch_rx`); `TC-CTRL-DATA-PAIR-PENDING-AT-STOP`, `TC-LIVE-CE-FRAME-AT-STOP` (`tests.test_qspi_cleanup`).
+
 ## M2 acceptance
 
 - Every applicable L0/L1 test reports a disposition for every catalog ID.
@@ -189,6 +233,14 @@ Do not derive observed pin facts from internal request fields. For example, `CHK
 - Reset tests distinguish the low transition from the first rising `clk` edge sampled low.
 - At least one controlled negative test per monitor group proves the monitor can fail and emits the required ID and context.
 - Icarus and Verilator agree on all checks assigned to both simulators.
+
+**Status:** `pass` (2026-08-08) for M2 directed DMA paths and migrated M1 suites under shared bring-up. Ordinary dispose prefers pin-axis `dispose_run` / `dispose_pin_checks`. `test_qspi_pin_disposition` alone retains `assert_model_pin_disposition` as the intentional model-plane contract test.
+
+**Residuals (do not reopen M2):**
+
+- MCU pass-through negatives (`test_qspi_negative`) intentionally leave CTRL/HS monitors off; host QPI under `BUS_GNT` is not DMA controller traffic. A later catalog follow-up may make CTRL/HS BUS_GNT-aware so those monitors can stay attached without false fails.
+- Missing L1 hierarchy still dispositions as `blocked`, never silent skip.
+- Delay-window `Q-*` twins closed at M3 (2026-08-10); see `04-timing-in-sim.md`.
 
 ## Related
 

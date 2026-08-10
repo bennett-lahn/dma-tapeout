@@ -166,7 +166,7 @@ For every command, address, and write-data nibble:
 
 OE release into read dummy and OE reclaim after a read are also required to occur while SCK is low. Device-driven read-data changes are not `Q-LAUNCH` events; they are checked under `Q-RXEDGE`.
 
-`Q-LAUNCH` exists to hold `qspi_engine` to the APS6404L setup/hold contract on an ongoing basis, independent of any specific RTL revision's implementation history: any future change to the engine's output timing must still satisfy this window. The check remains `todo` until the M3 harness runs it against current RTL; whether it passes or fails is determined by that execution, not asserted in this document.
+`Q-LAUNCH` exists to hold `qspi_engine` to the APS6404L setup/hold contract on an ongoing basis, independent of any specific RTL revision's implementation history: any future change to the engine's output timing must still satisfy this window. M3 directed evidence under `nominal` (and selected `tACLK` endpoints) is `pass` as of 2026-08-10; see the M3 evidence section below.
 
 ## `Q-RXEDGE`
 
@@ -198,15 +198,15 @@ These IDs retain the meanings established in `../11-timing-analysis.md`. Moving 
 |---|---|---|---|---|
 | `Q-CEM` | Every CE# low pulse remains below `tCEM`: 4 us extended or 8 us standard | L0/L1 | M1, delay rerun M3 | pass |
 | `Q-CPH` | CE# high gap is at least 18 ns between bursts | L0/L1 | M1, delay rerun M3 | pass |
-| `Q-CSP` | CE# falls at least 2.5 ns before the first rising SCK | L0/L1 | M3 | todo |
-| `Q-CHD` | CE# remains low at least 3.0 ns after the final rising SCK | L0/L1 | M3 | todo |
-| `Q-TERM` | Final read data is committed before CE# rises, with SCK frozen and no extra beat; advisory long-hold margin is reported | L0/L1 | M3 | todo |
+| `Q-CSP` | CE# falls at least 2.5 ns before the first rising SCK | L0/L1 | M3 | pass |
+| `Q-CHD` | CE# remains low at least 3.0 ns after the final rising SCK | L0/L1 | M3 | pass |
+| `Q-TERM` | Final read data is committed before CE# rises, with SCK frozen and no extra beat; advisory long-hold margin is reported | L0/L1 | M3 | pass |
 | `Q-MUX` | At most one RAM CE# is low; ASIC flash CS stays high while `~BUS_GNT` | L0/L1 | M1 | pass |
 | `Q-SIO-OWN` | ASIC and any selected PSRAM/SPI device never drive the same bidirectional SIO bit at once; equal driven values still fail; ownership uses delayed OE / model-drive enables; legal phases follow `../03-architecture.md` | L0/L1 | M1, delay rerun M3 | pass |
 | `Q-RST` | Asserted `rst_n` aborts the ASIC transaction, releases all top-level shared OE, and returns the engine/controller to reset state without a soft-abort command | L0/L1 | M1 | pass |
 | `Q-SCKIDLE` | SCK remains low for the entire interval while no device is selected (flash CS, RAM A CE#, and RAM B CE# all high at L1; both engine CS outputs high at L0); no erroneous SCK cycle occurs while deselected | L0/L1 | M1 | pass |
-| `Q-LAUNCH` | Driven SIO and OE change only with SCK low and meet modeled 2 ns setup and hold windows | L0 | M3 | todo |
-| `Q-RXEDGE` | Each read nibble launched from a falling edge is captured exactly once on the documented following rising edge | L0, selected L1 | M3 | todo |
+| `Q-LAUNCH` | Driven SIO and OE change only with SCK low and meet modeled 2 ns setup and hold windows | L0 | M3 | pass |
+| `Q-RXEDGE` | Each read nibble launched from a falling edge is captured exactly once on the documented following rising edge | L0, selected L1 | M3 | pass |
 
 Every AC value in this catalog is sourced through the parameter table above from `../05-qspi-psram.md` and APS6404L Rev 2.3 Table 10. Status uses the vocabulary in `00-index.md`.
 
@@ -216,10 +216,10 @@ M1 `pass` rows above are under `TIMING_PROFILE=ideal`, `SEED=1`, `DMA_BUF_DEPTH=
 
 | ID | Evidence module(s) | Level | Notes |
 |---|---|---|---|
-| `Q-CEM`, `Q-CPH` | `tests.test_qspi_timing` | L1 | Coarse directed thresholds; delay-annotated rerun remains M3 |
-| `Q-MUX`, `Q-SIO-OWN`, `Q-SCKIDLE` | `tests.test_qspi_ownership` | L1 | Shared-bus monitor negatives + clean baseline |
+| `Q-CEM`, `Q-CPH` | `tests.test_qspi_timing` | L1 | Coarse directed thresholds under `ideal`; delay-annotated rerun at M3 |
+| `Q-MUX`, `Q-SIO-OWN`, `Q-SCKIDLE` | `tests.test_qspi_ownership` | L1 | Shared-bus monitor negatives + clean baseline; SIO-OWN delay rerun at M3 |
 | `Q-RST` | `tests.test_qspi_reset_protocol` | L1 (and L0 subset) | Dispose + `RESET-TRUNCATED` classification |
-| `Q-LAUNCH`, `Q-RXEDGE`, `Q-CSP`, `Q-CHD`, `Q-TERM` | - | - | Still `todo` until M3 harness runs |
+| `Q-LAUNCH`, `Q-RXEDGE`, `Q-CSP`, `Q-CHD`, `Q-TERM` | - | - | Closed under M3 evidence below |
 
 Cross-sim REPRO (per module; both sims exit 0 in the matrix logs):
 
@@ -228,8 +228,47 @@ source test/env.sh
 test/scripts/run_test.sh LEVEL=top SIM=icarus SEED=1 COCOTB_TEST_MODULES=tests.test_qspi_ownership
 test/scripts/run_test.sh LEVEL=top SIM=verilator SEED=1 COCOTB_TEST_MODULES=tests.test_qspi_ownership
 # likewise: test_qspi_timing, test_qspi_reset_protocol, test_qspi_negative,
-#           test_qspi_pin_disposition; LEVEL=engine: tests.test_qspi, tests.test_engine_attach
+#           test_qspi_pin_disposition; LEVEL=engine: tests.test_qspi
 ```
+
+### M3 delay / launch / RX evidence (2026-08-10)
+
+M3 `pass` rows above are under `TIMING_PROFILE=nominal` unless noted, `SEED=1`, Icarus and Verilator agreeing on the directed set. An `ideal`-only pass does not close M3.
+
+| ID | Evidence module(s) | Level | Notes |
+|---|---|---|---|
+| `Q-CEM`, `Q-CPH` | `tests.test_qspi_timing` | L1 | Delay-annotated legal baseline + violation cases; W3b margin gate on present fields |
+| `Q-CSP`, `Q-CHD`, `Q-TERM` | `tests.test_qspi_timing_delay` | L1 | Legal baseline + directed violations; do not manufacture cleanup-only `Q-TERM` |
+| `Q-SIO-OWN` | `tests.test_qspi_ownership` | L1 | Delay-aware OE / model-drive ownership under `nominal` |
+| `Q-LAUNCH`, `Q-RXEDGE` | `tests.test_qspi_timing_launch_rx` | L0 | Nominal pass + fault/pending cleanup; `tACLK` endpoints via `sweep` + `PSRAM_TACLK_NS` |
+
+Cleanup directed evidence (same modules; lifecycle contract in `06-checkers.md`):
+
+- `TC-RXEDGE-PENDING-AT-STOP`, `TC-PENDING-SURVIVES-CLEAR`, `TC-TIMED-WRAPPER-STOP-ISOLATION` in `tests.test_qspi_timing_launch_rx`
+- `TC-CTRL-DATA-PAIR-PENDING-AT-STOP`, `TC-LIVE-CE-FRAME-AT-STOP` in `tests.test_qspi_cleanup`
+
+Cross-sim REPRO (both sims exit 0 on the directed timing set):
+
+```sh
+source test/env.sh
+test/scripts/run_test.sh LEVEL=top SIM=icarus TIMING_PROFILE=nominal SEED=1 \
+  COCOTB_TEST_MODULES=tests.test_qspi_timing
+test/scripts/run_test.sh LEVEL=top SIM=verilator TIMING_PROFILE=nominal SEED=1 \
+  COCOTB_TEST_MODULES=tests.test_qspi_timing
+# likewise: test_qspi_timing_delay, test_qspi_ownership
+test/scripts/run_test.sh LEVEL=engine SIM=icarus TIMING_PROFILE=nominal SEED=1 \
+  COCOTB_TEST_MODULES=tests.test_qspi_timing_launch_rx
+test/scripts/run_test.sh LEVEL=engine SIM=verilator TIMING_PROFILE=nominal SEED=1 \
+  COCOTB_TEST_MODULES=tests.test_qspi_timing_launch_rx
+```
+
+**M3 residuals** (do not reopen the M3 gate; see also `01-strategy.md`):
+
+- Delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*` after CE# rise cleanup
+- Suites with `ce_monitor=True` and default `reset_truncated=FORBID` may need REVIEW when a `RESET-TRUNCATED` `Q-LAUNCH` appears (same discipline as smoke)
+- Margin gate checks only present legal-baseline fields; write-path may omit CEM/CSP/CHD mins; boundary-pass margins near 0 are by construction
+- Broader sweep / `PSRAM_TACLK_NS` matrix beyond nominal + documented endpoints is post-M3 if not already covered
+- Physical `T-*` (including `T-HZ`) remain STA / demoboard
 
 ## Reset-interrupted timing checks
 

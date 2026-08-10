@@ -40,12 +40,40 @@ IDs identify required behavior, not Python function names. One implementation ma
 | `TC-RESET-IDLE`   | L1    | Reset from IDLE and while BUS_GNT is active                                                                                               | DONE returns high, BUS_GNT clears, all shared OE clears during reset, and post-reset START uses the fixed head                                | M2                                |
 | `TC-RESET-ACTIVE` | L1    | Reset during every controller state and each externally visible QPI phase                                                                 | Transaction may be truncated by reset, but CE# and OE become reset-safe, working state clears, and no spontaneous resume occurs               | M2                                |
 | `TC-RESET-REPEAT` | L1    | Run one directed chain to normal quit completion, assert and release `rst_n` from IDLE, re-initialize source and destination memory identically, then run the identical chain again with a fresh START | The second run's ordered transaction log and final memory are byte-for-byte identical to the first run; no working state, counter, or pointer carries over across the reset boundary | M2                                |
-| `TC-DEPTH`        | L1    | Run the applicable directed suite at `DMA_BUF_DEPTH=1,2,4,8`                                                                              | Final memory and transaction lengths follow `k=min(N, remaining)` with no depth-specific functional change                                    | M5, blocked on sim harness wiring |
+| `TC-DEPTH`        | L1    | Run the applicable directed suite at `DMA_BUF_DEPTH=1,2,4,8`                                                                              | Final memory and transaction lengths follow `k=min(N, remaining)` with no depth-specific functional change                                    | M5, blocked on sim harness wiring; skipped in default `tests.test_dma_directed` |
 
 
 `TC-OVERLAP` records actual V1 byte or chunk ordering. Firmware must not infer stronger overlap semantics than the architecture provides.
 
+### M2 directed acceptance (2026-08-08)
+
+All M2 rows in the table above (everything except `TC-DEPTH`) are `pass` at L1 Icarus under `ideal` / seed 1 / depth 1:
+
+- Descriptor/data: `tests.test_dma_directed` (13 cases; `dma_buf_depth_sweep` / `TC-DEPTH` skipped for M5 so the module exits 0)
+- START / bus / reset: `tests.test_reset_and_bus` (11/11)
+- Shared helpers: `test/common/directed.py` (install, read-back, done-wait, dual-axis compare, dispose window)
+- Makefile `make directed` default filter enumerates the 13 directed function names and excludes the skipped depth sweep (do not use a dishonest bare `TEST_FILTER=directed`)
+
+Ownership negatives live in `tests.test_qspi_ownership` as one consolidated test (`ownership_shared_bus_negatives`); `TC-OWN-*` IDs are sub-steps, not selectable filters. Full per-case re-split is deferred past M2.
+
 `TC-RESET-ACTIVE` and `TC-RESET-REPEAT` continue to run normal `Q-*` timing checks up to the sampled reset edge. Any apparent violation fully explained by the reset-driven OE release is reported as a distinct `RESET-TRUNCATED` event per `04-timing-in-sim.md`, not folded into an ordinary timing pass or fail.
+
+### M3 timing and cleanup directed cases (2026-08-10)
+
+M3 timing evidence uses dedicated modules rather than expanding the M2 DMA `TC-*` table. Stable case IDs:
+
+| ID | Module | Level | Required result |
+|---|---|---|---|
+| `TC-LAUNCH-NOMINAL-PASS` / `TC-LAUNCH-SCK-HIGH-VIOLATION` | `tests.test_qspi_timing_launch_rx` | L0 | `Q-LAUNCH` clean under `nominal`; injected SCK-high drive fails |
+| `TC-RXEDGE-NOMINAL-PASS` / `TC-RXEDGE-TACLK-BOUNDARY-*` | `tests.test_qspi_timing_launch_rx` | L0 | `Q-RXEDGE` clean; `tACLK` endpoints under `sweep` when selected |
+| `TC-RXEDGE-PENDING-AT-STOP` | `tests.test_qspi_timing_launch_rx` | L0 | unresolved launch fails `Q-RXEDGE` with `reason=dispose` |
+| `TC-PENDING-SURVIVES-CLEAR` | `tests.test_qspi_timing_launch_rx` | L0 | same finding after `BringUp.clear`, tagged `reason=window-clear` |
+| `TC-TIMED-WRAPPER-STOP-ISOLATION` | `tests.test_qspi_timing_launch_rx` | L0 | retired delayed tasks do not drive DUT or append events |
+| `TC-CTRL-DATA-PAIR-PENDING-AT-STOP` | `tests.test_qspi_cleanup` | L1 | open payload pair fails `CHK-CTRL-DATA-PAIR` at dispose |
+| `TC-LIVE-CE-FRAME-AT-STOP` | `tests.test_qspi_cleanup` | L1 | incomplete CE# frame is audited, not silently dropped |
+| CE# / CSP / CHD / TERM delay cases | `tests.test_qspi_timing`, `tests.test_qspi_timing_delay` | L1 | legal baselines + directed violations under `nominal` |
+
+Lifecycle policy for incomplete windows: `06-checkers.md`. Catalog `Q-*` status and REPRO: `04-timing-in-sim.md`.
 
 ## Constrained-random generation
 

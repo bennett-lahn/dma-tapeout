@@ -168,7 +168,7 @@ M0 deliberately uses L1 so the first smoke validates the TT wrapper path, not on
 - behavioral `Q-*` rows assigned to M1 pass at L0 and applicable L1 cases
 - Icarus and Verilator agree on the directed protocol set
 
-Timing-delay sweeps and sample-edge closure remain M3.
+Timing-delay sweeps and sample-edge closure are M3 (closed 2026-08-10).
 
 ### M2 - Reference model and directed behavior
 
@@ -181,6 +181,27 @@ Timing-delay sweeps and sample-edge closure remain M3.
 - all M2 `TC-*` cases pass at L1
 - all applicable `CHK-*` monitors run in every test and remain clean
 - same-device, cross-device, chaining, `QUIT`, zero length, bus yield, and reset cases pass
+
+**M2 acceptance status:** `pass` (2026-08-08, L1 Icarus, `TIMING_PROFILE=ideal`, `SEED=1`, `DMA_BUF_DEPTH=1`).
+
+Evidence (W5 Acceptance):
+
+- `test/scripts/run_smoke.sh` green
+- `tests.test_dma_directed`: 13 M2 descriptor/data `TC-*` PASS; `TC-DEPTH` / `dma_buf_depth_sweep` skipped for M5 (module exit 0)
+- `tests.test_reset_and_bus`: 11/11 START/BUS/RESET `TC-*` PASS
+- Migrated M1 modules green under shared bring-up / `dispose_run`: `test_qspi_negative`, `test_qspi_timing`, `test_qspi_reset_protocol`, `test_qspi_ownership`, `test_qspi_pin_disposition`
+- Independent pin monitor live (`via=pin`); reference dual-axis scoreboard; always-on ARB/HS/CTRL/PIN `CHK-*` disposed on ordinary DMA paths
+
+Out of M2 (residuals, do not reopen the M2 gate):
+
+- CI L1 Icarus smoke job still open
+- M3: delays, `Q-LAUNCH` / `Q-RXEDGE`, `Q-CSP` / `Q-CHD` / `Q-TERM` (closed 2026-08-10; physical `T-HZ` remains post-M3 closure)
+- M4 formal `FP-*`
+- M5 random / `COV-*` and `TC-DEPTH` (harness must select `DMA_BUF_DEPTH` 2/4/8)
+- Optional model-plane Z→0 retirement (`tb_top` / `tb_engine` float→0)
+- `test_qspi_pin_disposition` retains the intentional model-plane dispose contract (`assert_model_pin_disposition`); ordinary paths use `dispose_run` / pin
+- Ownership suite keeps one consolidated `@cocotb.test`; `TC-OWN-*` are sub-steps, not `TEST_FILTER` names (full re-split deferred)
+- Catalog follow-up: BUS_GNT-aware CTRL/HS checkers so MCU pass-through negatives need not detach those monitors
 
 ### M3 - Delay-annotated timing in simulation
 
@@ -196,6 +217,26 @@ Timing-delay sweeps and sample-edge closure remain M3.
 - any zero or negative modeled nominal margin is resolved or explicitly blocks progression
 
 M3 supplies pre-STA evidence. It does not close a `T-*` row.
+
+**M3 acceptance status:** `pass` (2026-08-10).
+
+Evidence:
+
+- Delay layer and CE# / ownership delay rerun under `TIMING_PROFILE=nominal` (documented APS6404L min/max AC with zero testbench transport placeholders): `tests.test_qspi_timing`, `tests.test_qspi_timing_delay`, `tests.test_qspi_ownership`
+- Launch / RX: `tests.test_qspi_timing_launch_rx` at L0 (`LEVEL=engine`) for `Q-LAUNCH` / `Q-RXEDGE`, including `tACLK` endpoints via `TIMING_PROFILE=sweep` when selected
+- Margin gate on legal baselines: recorded present min margins must be strictly positive
+- Cross-sim: Icarus ≡ Verilator on the directed timing set above
+- Cleanup contract: centralized `PendingLedger` / `finalize_all` in `test/common/lifecycle.py`; directed cases `TC-RXEDGE-PENDING-AT-STOP`, `TC-PENDING-SURVIVES-CLEAR`, `TC-TIMED-WRAPPER-STOP-ISOLATION`, `TC-CTRL-DATA-PAIR-PENDING-AT-STOP`, `TC-LIVE-CE-FRAME-AT-STOP`
+
+Out of M3 (residuals, do not reopen the M3 gate):
+
+- Physical `T-HZ` and other `T-*` remain STA / demoboard closure
+- Fuller `PSRAM_TACLK_NS` / path-delay sweep matrix beyond the documented nominal + endpoint boundary cases is post-M3 if not already covered
+- Delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*` (per-signal DUT-to-device output path delay) after CE# rise cleanup remains a known follow-up
+- Suites that attach `ce_monitor=True` with default `reset_truncated=FORBID` may need REVIEW disposition like smoke when a `RESET-TRUNCATED` `Q-LAUNCH` appears
+- Margin gate asserts only fields present on a legal baseline; write-path baselines may omit CEM/CSP/CHD mins; boundary-pass margins near zero are expected by construction
+- Lifecycle intentional non-fails and incomplete-window diagnostics: see `06-checkers.md`
+- CI L1 Icarus smoke job, M4 formal, M5 random / `COV-*` / `TC-DEPTH`, Z→0 retirement, BUS_GNT-aware CTRL/HS remain unchanged open items
 
 ### M4 - Formal control-plane safety
 

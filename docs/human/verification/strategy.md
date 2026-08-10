@@ -36,21 +36,25 @@ Stable selectors are `LEVEL=engine`, `LEVEL=top`, and `LEVEL=gl`.
 
 Milestones are cumulative. A required child ID in `fail`, `wip`, or `blocked` prevents its parent milestone from closing.
 
-## Known blockers
+## Known blockers / residuals after M3
 
-- `Q-LAUNCH` and `Q-RXEDGE` remain `todo`: the M3 harness has not yet executed them against current RTL.
-- M3 also owns delay-annotated reruns of `Q-CEM` / `Q-CPH` / `Q-SIO-OWN` and `Q-CSP` / `Q-CHD` / `Q-TERM`.
-- Independent `QspiPinMonitor` is live; pin ADDR23/KNOWN dispose with `via=pin` when the monitor ran (model `Q-*` twins remain the fallback).
+- M3 is `pass` (2026-08-10): delay layer, `Q-LAUNCH` / `Q-RXEDGE` / `Q-CSP` / `Q-CHD` / `Q-TERM`, delay-rerun of `Q-CEM` / `Q-CPH` / `Q-SIO-OWN`, Icarus ≡ Verilator, margin gate, and centralized `PendingLedger` cleanup.
+- Physical `T-HZ` and other `T-*` remain STA / demoboard; M3 supplies pre-STA evidence only.
+- Follow-ups (not M3 blockers): delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*` after CE# rise cleanup; `ce_monitor=True` + `reset_truncated=FORBID` REVIEW after `RESET-TRUNCATED` `Q-LAUNCH`; margin-gate field presence / boundary-pass ≈0; broader `PSRAM_TACLK_NS` sweep if needed; Handshake incomplete-window diagnostic-only; `_pending_start` ignore; no cleanup-only `Q-TERM`; `@tb_test` finally deferred.
+- Independent `QspiPinMonitor` is live; pin ADDR23/KNOWN dispose with `via=pin` when the monitor ran (model `Q-*` twins remain the fallback; model-plane dispose contract retained only in pin-disposition).
 - Model-plane Z→0 idealization remains (`tb_top` / `tb_engine` float→0).
 - CI L1 Icarus smoke job is still open (local smoke is green).
 - SDF remains `blocked` until hardening produces a compatible netlist-matched artifact and annotation is qualified.
-- The M5 `DMA_BUF_DEPTH=1,2,4,8` sweep needs the sim harness to select the module parameter. RTL default remains depth 1 (V1 tapeout).
+- The M5 `DMA_BUF_DEPTH=1,2,4,8` sweep / `TC-DEPTH` needs the sim harness to select the module parameter; default directed module skips the depth case so exit is 0. RTL default remains depth 1 (V1 tapeout).
+- M4 formal and M5 random / `COV-*` not started.
+- Catalog follow-up: BUS_GNT-aware CTRL/HS checkers for MCU pass-through suites.
 - M7 FPGA hardware validation has not started.
 
 ## Progress and operational lessons
 
-- M0 (`TC-SMOKE`) and M1 behavioral exit are green (Icarus ≡ Verilator on the directed protocol set under `ideal`). Next milestone is M2 reference / scoreboard / directed `TC-*`.
+- M0 (`TC-SMOKE`), M1 behavioral exit, M2 (reference / dual-axis scoreboard / 24 directed `TC-*` / always-on `CHK-*`), and M3 (delay / launch / RX / lifecycle) are green. Next milestone is M4 formal.
 - Do not mix nix Icarus into cocotb runs; use `source test/env.sh` (suite wrappers). Raw suite `bin/vvp` breaks `dma-venv` via `PYTHONHOME`.
 - PSRAM model must remain SCK/CE#-edge driven with six real dummy cycles - no clk-polling calibration.
+- Prefer `make directed` / quoted directed function-name filters; do not use a bare `TEST_FILTER=directed`.
 
 Full strategy and milestone gates: [`../../llm/verification/01-strategy.md`](../../llm/verification/01-strategy.md).

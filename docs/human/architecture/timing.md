@@ -25,8 +25,8 @@ M7 FPGA hardware validation (see [`verification/strategy.md`](../verification/st
 
 The full `Q-*` definitions live only in [`../../llm/verification/04-timing-in-sim.md`](../../llm/verification/04-timing-in-sim.md). In particular:
 
-- `Q-LAUNCH` checks that driven SIO and OE changes obey the low-SCK launch policy and modeled setup/hold windows. It must pass before physical `T-SP-HD` closure.
-- `Q-RXEDGE` reconciles each falling-edge PSRAM launch with exactly one following rising-edge DUT capture. It must pass before physical `T-ACLK` closure.
+- `Q-LAUNCH` checks that driven SIO and OE changes obey the low-SCK launch policy and modeled setup/hold windows. Simulation prerequisite is `pass` at M3 (2026-08-10); it must still precede physical `T-SP-HD` closure.
+- `Q-RXEDGE` reconciles each falling-edge PSRAM launch with exactly one following rising-edge DUT capture. Simulation prerequisite is `pass` at M3; it must still precede physical `T-ACLK` closure.
 - `Q-SIO-OWN` / `CHK-PIN-SIO-OWN` require that the ASIC and a PSRAM/SPI device never drive the same bidirectional SIO bit at once. It must pass before physical `T-HZ` turnaround closure.
 
 Passing either prerequisite only validates modeled behavior. It does not close routed IHP/TT paths or board timing.

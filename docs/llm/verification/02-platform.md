@@ -39,12 +39,26 @@ test/
     __init__.py
     test_smoke.py
     test_qspi.py
+    test_qspi_negative.py
+    test_qspi_ownership.py
+    test_qspi_timing.py
+    test_qspi_timing_delay.py
+    test_qspi_timing_launch_rx.py
+    test_qspi_cleanup.py
+    test_qspi_reset_protocol.py
+    test_qspi_pin_disposition.py
     test_dma_directed.py
     test_dma_random.py
     test_reset_and_bus.py
+    test_reference_*.py
     test_gate_level.py
   common/
     __init__.py
+    bringup.py
+    dispose.py
+    lifecycle.py
+    directed.py
+    engine_bfm.py
     config.py
     clocks.py
     host.py
@@ -75,8 +89,8 @@ test/
 Responsibilities:
 
 - `tb/` contains only HDL wrappers, shared-bus resolution, dump setup, and visibility needed by a DUT level.
-- `tests/` contains cocotb test entry points. Test names carry `TC-*` IDs in docstrings or metadata, not in Python identifiers.
-- `common/` contains host actions, clock/reset helpers, run configuration, deterministic random support, and artifact naming.
+- `tests/` contains cocotb test entry points. Test names carry `TC-*` IDs in docstrings or metadata, not in Python identifiers. L0 CE#/SCK idle self-check lives inside `bring_up_engine` (former `test_engine_attach` deleted).
+- `common/` contains host actions, clock/reset helpers, shared bring-up / dispose / directed plumbing, the pending-item lifecycle (`lifecycle.py`: `PendingLedger` / `finalize_all`), the blessed write BFM, run configuration, deterministic random support, and artifact naming. Cleanup contract detail: `06-checkers.md`.
 - `models/` contains the two independent APS6404L instances and delay layer.
 - `reference/` contains the pure-Python TCD encoder/decoder, chain interpreter, the modularized legal-chain generator class described in `08-stimulus-and-coverage.md`, and scoreboards. None of these may call DUT internals, and the generator is kept in its own module (`generator.py`) separate from the golden interpreter (`chain.py`) it depends on, since generating stimulus and interpreting it are distinct responsibilities that must stay separately testable.
 - `monitors/` contains passive protocol decoders and always-on `CHK-*` checks.
@@ -150,7 +164,7 @@ Equivalent Make targets (after `source test/env.sh` and `cd test`):
 | `make doctor` | Toolchain health check (suite tools, python3, venv, cocotb) |
 | `make test` | Run the selected level, simulator, and test filter once |
 | `make smoke` | Run the M0 L1 same-device smoke with a fixed default seed |
-| `make directed` | Run directed tests assigned to the selected level |
+| `make directed` | Run M2 directed modules; default `TEST_FILTER` enumerates the 13 `tests.test_dma_directed` cases and excludes skipped `dma_buf_depth_sweep` |
 | `make random` | Run constrained-random tests for one seed |
 | `make regression` | Run the configured seed list and simulator matrix |
 | `make formal` | Run the required SymbiYosys jobs |
@@ -187,6 +201,8 @@ cd test && make random LEVEL=top SIM=verilator SEED=4231 TIMING_PROFILE=nominal
 `DMA_BUF_DEPTH` is a module parameter on `tt_um_lahnb_sgdma` / `sys_controller` (default 1). Package `DMA_BUF_DEPTH_MAX` in `src/rtl/types.svh` sizes `qpi_byte_len_t` / cycle counters for the 1..8 sweep. The Makefile should pass `-GDMA_BUF_DEPTH=$(DMA_BUF_DEPTH)` (or the simulator equivalent) and reject values outside `1..DMA_BUF_DEPTH_MAX`.
 
 The Makefile maps `TEST_FILTER` to cocotb 2.x `COCOTB_TEST_FILTER` and lists modules through `COCOTB_TEST_MODULES`. Do not use removed legacy environment names.
+
+`make directed` sets `COCOTB_TEST_MODULES=tests.test_smoke,tests.test_qspi,tests.test_dma_directed,tests.test_reset_and_bus` and, unless the caller overrides `TEST_FILTER`, applies a quoted regex of the 13 descriptor/data directed function names (not a bare substring `directed`, which would dishonestly miss or mis-select cases). `TC-DEPTH` / `dma_buf_depth_sweep` stays skipped for M5. Ownership negatives use `TEST_FILTER=ownership_shared_bus_negatives` only; `TC-OWN-*` are sub-steps inside that one test.
 
 ## Build and artifact isolation
 

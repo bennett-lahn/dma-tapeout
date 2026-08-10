@@ -316,6 +316,8 @@ Use a distinct `reference` axis for invalid TCD encoding, out-of-range access, u
 - Reset tests apply prefix semantics and synchronous-reset sampling explicitly.
 - `TC-RESET-REPEAT` produces two independently oracle-passing epochs whose observed transaction logs are field-for-field identical to each other.
 
+**Status:** `pass` (2026-08-08). Pure-Python reference pytest and L1 directed dual-axis scoreboard evidence are recorded under `01-strategy.md` (M2 acceptance status). Generator placement refuses destination writes into descriptor slots (no-clobber); intentional descriptor-overwrite-before-fetch remains oracle-legal but is not default stimulus.
+
 ## Related
 
 - Strategy and M2 gate: `01-strategy.md`

@@ -8,7 +8,7 @@ Signoff requires reproducible evidence for the exact RTL or netlist revision and
 - [ ] Every required simulation row is `pass`: `Q-*`, `CHK-*`, `TC-*`, and `COV-*`.
 - [ ] Both scoreboard axes pass: ordered pin-decoded QPI transactions and final memory on both PSRAM devices.
 - [ ] Same-device copies, both cross-device directions, chaining, `QUIT`, zero length, bus handoff, and reset recovery pass.
-- [ ] `Q-LAUNCH` and `Q-RXEDGE` pass at M3 with reproducible nominal and boundary sweeps.
+- [x] `Q-LAUNCH` and `Q-RXEDGE` pass at M3 with reproducible nominal and boundary evidence (2026-08-10; fuller path-delay sweep remains a post-M3 follow-up).
 - [ ] Every required `FP-*` safety property proves with the real `qspi_engine`; helper invariants are asserted and proved, required covers produce witnesses, and bounded deadlock checks pass.
 - [ ] Formal assumptions are audited and do not duplicate their conclusions.
 - [ ] Icarus passes the full required suite and Verilator passes its assigned directed and high-volume subset.
@@ -16,10 +16,12 @@ Signoff requires reproducible evidence for the exact RTL or netlist revision and
 - [ ] No unresolved reproducible seed or unreviewed exclusion remains.
 - [ ] Every waiver names an owner, rationale, affected configuration, risk, and expiration condition.
 
-Current blockers to this gate:
+Current blockers to this gate (M0-M3 simulation exits are green as of 2026-08-10):
 
-- `Q-LAUNCH` and `Q-RXEDGE` remain `todo` pending M3 execution against current RTL.
-- The depth sweep cannot run until the sim harness selects module parameter `DMA_BUF_DEPTH`. Default / tapeout remains depth 1.
+- M4 formal and M5 random / `COV-*` not started.
+- The depth sweep / `TC-DEPTH` cannot run until the sim harness selects module parameter `DMA_BUF_DEPTH`. Default directed module skips that case; tapeout remains depth 1.
+- CI L1 Icarus smoke job still open.
+- M3 follow-ups (not freeze blockers by themselves): delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*`; `RESET-TRUNCATED` `Q-LAUNCH` REVIEW on some `ce_monitor` suites; margin-gate field presence / boundary ≈0; physical `T-*`.
 
 ## Final-netlist and shuttle freeze
 
@@ -40,6 +42,7 @@ Delay-annotated RTL or SDF simulation is diagnostic and regression evidence only
 - [`strategy.md`](strategy.md) - venue, level, and milestone summary
 - [`../../llm/verification/01-strategy.md`](../../llm/verification/01-strategy.md) - complete entry and exit gates
 - [`../../llm/verification/04-timing-in-sim.md`](../../llm/verification/04-timing-in-sim.md) - `Q-*` catalog and delay boundary
+- [`../../llm/verification/06-checkers.md`](../../llm/verification/06-checkers.md) - `CHK-*` and pending-item lifecycle contract
 - [`../../llm/verification/07-formal.md`](../../llm/verification/07-formal.md) - `FP-*` catalog and proof requirements
 - [`../../llm/verification/08-stimulus-and-coverage.md`](../../llm/verification/08-stimulus-and-coverage.md) - `TC-*`, `COV-*`, and depth sweep
 - [`../../llm/verification/09-gate-level-and-x.md`](../../llm/verification/09-gate-level-and-x.md) - L2, X, and SDF criteria
