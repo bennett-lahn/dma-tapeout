@@ -10,6 +10,47 @@ platform default (``icarus``) when absent.
 import os
 
 
+_TIMING_ENV_NAMES = (
+    "PSRAM_TACLK_NS",
+    "PSRAM_TCSP_NS",
+    "PSRAM_TCHD_NS",
+    "PSRAM_TCPH_NS",
+    "PSRAM_THZ_NS",
+    "PSRAM_TSP_NS",
+    "PSRAM_THD_NS",
+    "PSRAM_TCEM_US_EXT",
+    "PSRAM_TCEM_US_STD",
+    "PSRAM_TCH_MIN_RATIO",
+    "PSRAM_TCL_MIN_RATIO",
+    "PSRAM_TCH_MAX_RATIO",
+    "PSRAM_TCL_MAX_RATIO",
+    "PSRAM_TKHKL_NS",
+    "TB_TCO_NS",
+    "TB_FLIGHT_OUT_NS",
+    "TB_FLIGHT_IN_NS",
+    "TB_TCO_CE_NS",
+    "TB_TCO_SCK_NS",
+    "TB_TCO_SIO_NS",
+    "TB_TCO_OE_NS",
+    "TB_FLIGHT_OUT_CE_NS",
+    "TB_FLIGHT_OUT_SCK_NS",
+    "TB_FLIGHT_OUT_SIO_NS",
+    "TB_FLIGHT_OUT_OE_NS",
+    "TB_FLIGHT_IN_SIO_NS",
+    "TB_TCO_CE_N_NS",
+    "TB_FLIGHT_OUT_CE_N_NS",
+)
+
+
+def timing_env_overrides() -> dict[str, str]:
+    """Return supplied ``resolve_timing_params`` PSRAM/TB environment knobs."""
+    return {
+        name: os.environ[name]
+        for name in _TIMING_ENV_NAMES
+        if name in os.environ
+    }
+
+
 def parse_run_config() -> dict:
     """Return normalized run configuration from environment set by the Makefile."""
     return {

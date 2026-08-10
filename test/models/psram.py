@@ -60,6 +60,15 @@ import cocotb
 from cocotb.simtime import get_sim_time
 from cocotb.triggers import First
 
+from common.lifecycle import (
+    PendingLedger,
+    REASON_RESET,
+    REASON_SCOPE,
+    REASON_STOP,
+    SEV_DIAGNOSTIC,
+    SEV_FAIL,
+)
+
 PSRAM_ADDR_BITS = 23
 PSRAM_SIZE = 1 << PSRAM_ADDR_BITS  # APS6404L: 8 MiB, 23-bit address space
 PSRAM_ADDR_MASK = PSRAM_SIZE - 1
@@ -598,9 +607,18 @@ class PsramQpiAgent:
         self._desel_drive_reported = False
         self._classification = CLASS_FAIL
         self._task = None
+        self._frame_token = None
+        self._phase_token = None
 
         self.transactions: "list[QpiTransaction]" = []
         self.violations = ViolationLog(strict=strict) if violations is None else violations
+        self.notes: "list[str]" = []
+        self.pending = PendingLedger(
+            owner=self._source,
+            record=self._record_pending,
+            in_reset=lambda: self._classification == CLASS_RESET_TRUNCATED,
+            now_ns=_now_ns,
+        )
 
     # -- public state for bus-level monitors -------------------------------
     # Frozen OE/drive surface for SharedBusMonitor (and later ownership
@@ -656,6 +674,7 @@ class PsramQpiAgent:
 
     def stop(self) -> None:
         """Cancel the background BFM task and release SIO."""
+        self.pending.audit(reason=REASON_STOP)
         if self._task is not None:
             self._task.cancel()
             self._task = None
@@ -674,6 +693,7 @@ class PsramQpiAgent:
             return
         self._classification = CLASS_RESET_TRUNCATED
         try:
+            self.pending.audit(reason=REASON_RESET)
             self._end_transaction()
         finally:
             self._classification = CLASS_FAIL
@@ -690,6 +710,25 @@ class PsramQpiAgent:
             phase=self._phase,
             txn_index=len(self.transactions),
             classification=self._classification,
+        )
+
+    def _record_pending(
+        self, check_id: str, detail: str, *, reset_truncated: bool
+    ):
+        if detail.startswith("incomplete-window "):
+            note = f"{self._source} {detail}"
+            self.notes.append(note)
+            return note
+        classification = (
+            CLASS_RESET_TRUNCATED if reset_truncated else CLASS_FAIL
+        )
+        return self.violations.record(
+            check_id,
+            source=self._source,
+            detail=detail,
+            phase=self._phase,
+            txn_index=len(self.transactions),
+            classification=classification,
         )
 
     def report_range_fault(self, address: int) -> None:
@@ -758,6 +797,12 @@ class PsramQpiAgent:
     def _begin_transaction(self) -> None:
         self._desel_drive_reported = False
         self._txn = QpiTransaction(device_id=self._memory.device_id, ce_fall_ns=_now_ns())
+        self._frame_token = self.pending.open(
+            "",
+            severity=SEV_DIAGNOSTIC,
+            detail="CE# frame ended before opcode promised completion",
+            scope=self._memory.device_id,
+        )
         self._access = QpiAccess(self, self._txn, self._memory)
         self._command = None
         self._phase = PHASE_CMD
@@ -778,10 +823,19 @@ class PsramQpiAgent:
 
         view = TerminationView(txn=txn, command=self._command, phase=self._phase)
         for rule in self._rules:
+            if rule.code == Q_PHASE:
+                continue
             if rule.applies(view) and rule.violated(view):
                 self._violation(rule.code, rule.detail(view))
 
-        txn.complete = not txn.faults
+        if view.cmd_complete and view.addr_complete:
+            self.pending.resolve(self._phase_token)
+        elif self._phase_token is not None:
+            txn.faults.append(Q_PHASE)
+        self.pending.close_scope(self._memory.device_id, reason=REASON_SCOPE)
+        self._frame_token = None
+        self._phase_token = None
+        txn.complete = not txn.faults and view.cmd_complete and view.addr_complete
         self.transactions.append(txn)
         self._txn = None
         self._access = None
@@ -797,6 +851,16 @@ class PsramQpiAgent:
             return
         self._command = command
         txn.name = command.name
+        self.pending.resolve(self._frame_token)
+        self._phase_token = self.pending.open(
+            Q_PHASE,
+            severity=SEV_FAIL,
+            detail=(
+                f"{txn.name}: command completed but CE# frame ended before "
+                "the required address phase"
+            ),
+            scope=self._memory.device_id,
+        )
         if command.address_nibbles:
             self._phase = PHASE_ADDR
         else:

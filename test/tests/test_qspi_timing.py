@@ -55,7 +55,8 @@ async def _bring_up(dut):
     ``bring_up_top`` has no ``tcem_ns`` / ``tcph_ns`` hook, so the always-on CE
     monitor is left off and a directed-threshold twin is attached on the handle
     before stimulus. Other always-on catalogs stay off: this suite only judges
-    ``Q-CEM`` / ``Q-CPH``.
+    ``Q-CEM`` / ``Q-CPH``. Attach after park so L1 ``bus_sck`` Z during grant
+    does not log a spurious ``Q-LAUNCH`` (OE change while SCK is undriven).
     """
     bringup = await bring_up_top(
         dut,
@@ -67,17 +68,18 @@ async def _bring_up(dut):
         arbitration_monitor=False,
         controller_monitor=False,
     )
-    bringup.ce = start_ce_timing_monitor(
-        dut,
-        strict=False,
-        tcem_ns=DIRECTED_TCEM_NS,
-        tcph_ns=DIRECTED_TCPH_NS,
-    )
     await _await_bus_gnt(dut)
 
     master = QpiPassthroughMaster(dut)
     await master.park()
     bringup.clear()
+    bringup.ce = start_ce_timing_monitor(
+        dut,
+        strict=False,
+        tcem_ns=DIRECTED_TCEM_NS,
+        tcph_ns=DIRECTED_TCPH_NS,
+        timing_params=bringup.timing_params,
+    )
     return bringup, master
 
 
@@ -96,6 +98,25 @@ def _assert_detail(ce, check_id: str, *, test: str, detail_substr: str) -> None:
     assert detail_substr in events[0].detail, (
         f"{test}: missing {detail_substr!r} in {events[0].detail}"
     )
+
+
+def _assert_positive_margins(ce, *, test: str, log) -> None:
+    """W3b margin gate: recorded min margins on a legal pass must be > 0."""
+    summary = ce.summary()
+    log.info("MARGIN %s: %s", test, summary)
+    fields = (
+        ("min_cem_margin_ns", getattr(ce, "_min_cem_margin_ns", None)),
+        ("min_cph_margin_ns", getattr(ce, "_min_cph_margin_ns", None)),
+        ("min_csp_margin_ns", getattr(ce, "_min_csp_margin_ns", None)),
+        ("min_chd_margin_ns", getattr(ce, "_min_chd_margin_ns", None)),
+    )
+    seen = [(name, value) for name, value in fields if value is not None]
+    assert seen, f"{test}: W3b margin gate FAIL - no margins recorded. {summary}"
+    for name, value in seen:
+        assert value > 0, (
+            f"{test}: W3b margin gate FAIL {name}={value:.3f} (must be > 0). "
+            f"{summary}"
+        )
 
 
 async def _pulse_ce(master: QpiPassthroughMaster, device: int, low_ns: float) -> None:
@@ -123,6 +144,7 @@ async def qspi_timing_cem_cph(dut):
     await Timer(LEGAL_GAP_NS, unit="ns")
     await _pulse_ce(master, 1, low_ns=40.0)
     await Timer(LEGAL_GAP_NS, unit="ns")
+    _assert_positive_margins(bringup.ce, test="TC-CEM-BASELINE", log=dut._log)
     dispose_run(
         bringup.ce,
         test="TC-CEM-BASELINE",

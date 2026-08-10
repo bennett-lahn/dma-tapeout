@@ -62,6 +62,14 @@ import cocotb
 from cocotb.simtime import get_sim_time
 from cocotb.triggers import First, ReadOnly
 
+from common.lifecycle import (
+    PendingLedger,
+    REASON_RESET,
+    REASON_SCOPE,
+    REASON_STOP,
+    SEV_DIAGNOSTIC,
+    SEV_FAIL,
+)
 from reference.chain import (
     OBSERVED_READ,
     OBSERVED_WRITE,
@@ -758,6 +766,7 @@ FAULT_ADDR23 = "addr23-set"
 FAULT_SIO_X = "sio-unresolved"
 FAULT_RESET = "reset-aborted"
 FAULT_REFRAME = "ce-refell-while-active"
+Q_PHASE = "Q-PHASE"
 
 # Wrapper aliases the decoder needs; a missing name blocks both owned rows.
 REQUIRED_PIN_SIGNALS = ("bus_sck", "bus_ram_a_cs_n", "bus_ram_b_cs_n", "bus_sio")
@@ -868,14 +877,24 @@ class _PinDecoder:
         self.device = device
         self.phase = PIN_PHASE_IDLE
         self.txn: "PinTransaction | None" = None
+        self._pending_token = None
+        self._phase_token = None
 
     # -- framing -----------------------------------------------------------
 
     def begin(self) -> None:
         """Start an interval on CE# falling."""
         if self.txn is not None:
-            self._monitor._finish(self.abort(FAULT_REFRAME))
+            interval = self.abort(FAULT_REFRAME)
+            self._monitor._finish(interval)
+            self._monitor._close_frame(self, interval)
         self.txn = PinTransaction(device=self.device, ce_fall_ns=_now_ns())
+        self._pending_token = self._monitor.pending.open(
+            "",
+            severity=SEV_DIAGNOSTIC,
+            detail=f"PSRAM{self.device} CE# frame ended before opcode promised completion",
+            scope=self.device,
+        )
         self.phase = PIN_PHASE_CMD
         self._high = None
 
@@ -967,6 +986,16 @@ class _PinDecoder:
             txn.faults.append(FAULT_OPCODE)
             self.phase = PIN_PHASE_IGNORE
             return
+        self._monitor.pending.resolve(self._pending_token)
+        self._phase_token = self._monitor.pending.open(
+            Q_PHASE,
+            severity=SEV_FAIL,
+            detail=(
+                f"PSRAM{self.device} op=0x{txn.opcode:02X} promised command/address "
+                "completion but CE# frame remained incomplete"
+            ),
+            scope=self.device,
+        )
         self.phase = PIN_PHASE_ADDR
 
     def _decode_address(self) -> None:
@@ -1073,6 +1102,13 @@ class QspiPinMonitor:
         self._suppressed = 0
         self._active = False
         self._task = None
+        self.notes: "list[str]" = []
+        self.pending = PendingLedger(
+            owner=self.name,
+            record=self._record_pending,
+            in_reset=lambda: self._in_reset,
+            now_ns=_now_ns,
+        )
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -1098,6 +1134,7 @@ class QspiPinMonitor:
 
     def stop(self) -> None:
         """Soft-stop so a later test in the same module can re-attach."""
+        self.pending.audit(reason=REASON_STOP)
         self._active = False
 
     def clear(self) -> None:
@@ -1114,6 +1151,7 @@ class QspiPinMonitor:
         self._suppressed = 0
         for decoder in self._decoders.values():
             decoder.abort(FAULT_REFRAME)
+        self.pending.clear()
 
     async def _run(self) -> None:
         watched = self._watched_handles()
@@ -1156,6 +1194,27 @@ class QspiPinMonitor:
         if self._strict:
             raise AssertionError(str(event))
 
+    def _record_pending(
+        self, check_id: str, detail: str, *, reset_truncated: bool
+    ):
+        if detail.startswith("incomplete-window "):
+            note = f"{self.name} {detail}"
+            self.notes.append(note)
+            return note
+        event = BusViolation(
+            check_id=check_id,
+            timing_id=check_id,
+            time_ns=_now_ns(),
+            detail=detail,
+            reset_truncated=reset_truncated,
+        )
+        if reset_truncated:
+            self.reset_truncated.append(event)
+        else:
+            self.events.append(event)
+            self.violations.append(f"{self.name} {event}")
+        return event
+
     def _latch(self, check_id: str, key, active: bool, detail: str) -> None:
         """Record a level condition once per false-to-true transition."""
         was_active = self._condition_active.get(key, False)
@@ -1166,6 +1225,18 @@ class QspiPinMonitor:
     def _finish(self, interval: "PinTransaction | None") -> None:
         if interval is not None:
             self.intervals.append(interval)
+
+    def _close_frame(self, decoder: _PinDecoder, interval: "PinTransaction | None") -> None:
+        if (
+            interval is not None
+            and interval.cmd_nibbles >= CMD_NIBBLES
+            and interval.direction != DIR_UNKNOWN
+            and interval.addr_nibbles >= ADDR_NIBBLES
+        ):
+            self.pending.resolve(decoder._phase_token)
+        self.pending.close_scope(decoder.device, reason=REASON_SCOPE)
+        decoder._pending_token = None
+        decoder._phase_token = None
 
     # -- decode ------------------------------------------------------------
 
@@ -1178,6 +1249,7 @@ class QspiPinMonitor:
         sck = _level(self._sck)
 
         if self._in_reset:
+            self.pending.audit(reason=REASON_RESET)
             self._abort_active(FAULT_RESET)
             self._armed = False
             self._condition_active.clear()
@@ -1196,7 +1268,9 @@ class QspiPinMonitor:
 
     def _abort_active(self, reason: str) -> None:
         for decoder in self._decoders.values():
-            self._finish(decoder.abort(reason))
+            interval = decoder.abort(reason)
+            self._finish(interval)
+            self._close_frame(decoder, interval)
 
     def _check_known_levels(self, ce_levels, sck) -> None:
         """``CHK-PIN-KNOWN`` for the framing pins the protocol always needs."""
@@ -1226,7 +1300,9 @@ class QspiPinMonitor:
             if previous != 0 and level == 0:
                 decoder.begin()
             elif previous == 0 and level != 0:
-                self._finish(decoder.end())
+                interval = decoder.end()
+                self._finish(interval)
+                self._close_frame(decoder, interval)
 
     def _track_clock(self, ce_levels, sck) -> None:
         if sck is None or self._prev_sck is None or sck == self._prev_sck:

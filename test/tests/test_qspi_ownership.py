@@ -299,12 +299,18 @@ async def ownership_shared_bus_negatives(dut):
     config = parse_run_config()
     repro = _repro(config)
     dut._log.info(
-        "SEED=%d LEVEL=%s SIM=%s", config["seed"], config["level"], config["sim"]
+        "SEED=%d LEVEL=%s SIM=%s TIMING_PROFILE=%s",
+        config["seed"],
+        config["level"],
+        config["sim"],
+        config["timing_profile"],
     )
     dut._log.info(repro)
 
     # Ownership suite only needs SharedBusMonitor; other always-on monitors stay
     # off so intentional fault injectors do not trip unrelated CHK-* rows.
+    # ce_monitor stays off by design; Q-SIO-OWN is judged via CHK-PIN-SIO-OWN
+    # under the delay-aware model OE path when TIMING_PROFILE=nominal.
     bringup = await bring_up_top(
         dut,
         fill=FILL,
@@ -315,6 +321,13 @@ async def ownership_shared_bus_negatives(dut):
         controller_monitor=False,
     )
     assert bringup.bus is not None, "ownership suite requires SharedBusMonitor"
+    assert bringup.timing_profile in ("nominal", "sweep", "ideal"), (
+        f"unexpected TIMING_PROFILE={bringup.timing_profile!r}"
+    )
+    dut._log.info(
+        "W3b Q-SIO-OWN delay-rerun under TIMING_PROFILE=%s (ce_monitor=off)",
+        bringup.timing_profile,
+    )
 
     await _tc_own_baseline(dut, bringup, repro)
     await _tc_own_cs_mutex(dut, bringup, repro)

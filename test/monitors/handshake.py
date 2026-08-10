@@ -93,6 +93,14 @@ from cocotb.simtime import get_sim_time
 from cocotb.triggers import ReadOnly, RisingEdge
 
 from common.config import parse_run_config
+from common.lifecycle import (
+    PendingLedger,
+    REASON_RESET,
+    REASON_STOP,
+    SEV_DIAGNOSTIC,
+    SEV_FAIL,
+    SEV_IGNORE,
+)
 from monitors.qspi import (
     DIR_READ as PIN_DIR_READ,
     DIR_UNKNOWN as PIN_DIR_UNKNOWN,
@@ -438,6 +446,7 @@ class HandshakeMonitor:
         self.violations: "list[str]" = []
         self.events: "list[HsViolation]" = []
         self.reset_truncated: "list[HsViolation]" = []
+        self.notes: "list[str]" = []
         self.transactions: "list[HsTransaction]" = []
 
         self._txn: "HsTransaction | None" = None
@@ -452,6 +461,14 @@ class HandshakeMonitor:
         self._suppressed = 0
         self._active = False
         self._task = None
+        self._txn_pending = None
+        self._pending_wdata_token = None
+        self.pending = PendingLedger(
+            owner=self.name,
+            record=self._record_pending,
+            in_reset=lambda: self._in_reset,
+            now_ns=_now_ns,
+        )
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -486,6 +503,7 @@ class HandshakeMonitor:
 
     def stop(self) -> None:
         """Soft-stop so a later test in the same module can re-attach."""
+        self.pending.audit(reason=REASON_STOP)
         self._active = False
 
     def clear(self) -> None:
@@ -493,6 +511,7 @@ class HandshakeMonitor:
         self.events.clear()
         self.violations.clear()
         self.reset_truncated.clear()
+        self.notes.clear()
         self.transactions.clear()
         self._txn = None
         self._saw_busy = False
@@ -501,6 +520,9 @@ class HandshakeMonitor:
         self._prev = {"txn_valid": 0, "rdata_valid": 0, "wdata_next": 0}
         self._pins.reset()
         self._suppressed = 0
+        self._txn_pending = None
+        self._pending_wdata_token = None
+        self.pending.clear()
 
     async def _run(self) -> None:
         while True:
@@ -539,6 +561,13 @@ class HandshakeMonitor:
             )
         if self._strict:
             raise AssertionError(str(event))
+
+    def _record_pending(
+        self, check_id: str, detail: str, *, reset_truncated: bool
+    ) -> str:
+        note = f"{self.name} {detail}"
+        self.notes.append(note)
+        return note
 
     # -- sampling ----------------------------------------------------------
 
@@ -583,13 +612,16 @@ class HandshakeMonitor:
     def _on_reset_sample(self) -> None:
         """Close an in-flight transaction as aborted; do not demand its totals."""
         self._in_reset = True
+        self.pending.audit(reason=REASON_RESET)
         if self._txn is not None:
             self._txn.aborted = True
             self._txn.end_ns = _now_ns()
             self.transactions.append(self._txn)
             self._txn = None
+        self._txn_pending = None
         self._saw_busy = False
         self._pending_wdata = False
+        self._pending_wdata_token = None
         self._unstable.clear()
         self._prev = {"txn_valid": 0, "rdata_valid": 0, "wdata_next": 0}
 
@@ -618,6 +650,8 @@ class HandshakeMonitor:
         if not self._pending_wdata:
             return
         self._pending_wdata = False
+        self.pending.resolve(self._pending_wdata_token)
+        self._pending_wdata_token = None
         value = _resolved(self._wdata)
         if self._txn is not None:
             self._txn.wdata_nibbles.append(value)
@@ -706,6 +740,7 @@ class HandshakeMonitor:
             self._txn.aborted = True
             self._txn.end_ns = _now_ns()
             self.transactions.append(self._txn)
+            self.pending.resolve(self._txn_pending)
 
         self._txn = HsTransaction(
             opcode=opcode,
@@ -714,6 +749,11 @@ class HandshakeMonitor:
             start_ns=_now_ns(),
             address=_resolved(self._addr),
             device_sel=_resolved(self._device_sel),
+        )
+        self._txn_pending = self.pending.open(
+            "",
+            severity=SEV_DIAGNOSTIC,
+            detail=f"accepted transaction remains open ({self._txn})",
         )
         self._saw_busy = False
         self._unstable.clear()
@@ -760,6 +800,11 @@ class HandshakeMonitor:
             return
 
         self._pending_wdata = True
+        self._pending_wdata_token = self.pending.open(
+            "",
+            severity=SEV_DIAGNOSTIC,
+            detail=f"wdata_next pulse awaits its next write nibble ({txn})",
+        )
 
     def _check_rdata_valid(self, rdata_valid, busy) -> None:
         """``CHK-HS-RDATA-COUNT`` pulse placement, plus per-transaction counting."""
@@ -833,9 +878,13 @@ class HandshakeMonitor:
 
         txn.complete = not txn.aborted
         self.transactions.append(txn)
+        self.pending.resolve(self._txn_pending)
+        self._txn_pending = None
         self._txn = None
         self._saw_busy = False
         self._pending_wdata = False
+        self.pending.resolve(self._pending_wdata_token)
+        self._pending_wdata_token = None
         self._unstable.clear()
 
     def _check_pin_intervals(self) -> None:
@@ -1155,6 +1204,14 @@ class ControllerMonitor:
         self._suppressed = 0
         self._active = False
         self._task = None
+        self._pending_start_token = None
+        self._pending_pair_token = None
+        self.pending = PendingLedger(
+            owner=self.name,
+            record=self._record_pending,
+            in_reset=lambda: self._in_reset,
+            now_ns=_now_ns,
+        )
 
     # -- applicability -----------------------------------------------------
 
@@ -1242,6 +1299,7 @@ class ControllerMonitor:
 
     def stop(self) -> None:
         """Soft-stop so a later test in the same module can re-attach."""
+        self.pending.audit(reason=REASON_STOP)
         self._active = False
 
     def clear(self) -> None:
@@ -1261,6 +1319,9 @@ class ControllerMonitor:
         self._prev_done = None
         self._reported.clear()
         self._suppressed = 0
+        self._pending_start_token = None
+        self._pending_pair_token = None
+        self.pending.clear()
 
     async def _run(self) -> None:
         clk = self._h["clk"]
@@ -1307,6 +1368,18 @@ class ControllerMonitor:
         if self._strict:
             raise AssertionError(str(event))
 
+    def _record_pending(
+        self, check_id: str, detail: str, *, reset_truncated: bool
+    ):
+        before_events = len(self.events)
+        before_reset = len(self.reset_truncated)
+        self._report(check_id, detail)
+        if len(self.events) > before_events:
+            return self.events[-1]
+        if len(self.reset_truncated) > before_reset:
+            return self.reset_truncated[-1]
+        return None
+
     # -- sampling ----------------------------------------------------------
 
     def _sample(self) -> None:
@@ -1351,9 +1424,12 @@ class ControllerMonitor:
     def _on_reset_sample(self) -> None:
         """Drop per-transaction and per-sequence state at a sampled reset edge."""
         self._in_reset = True
+        self.pending.audit(reason=REASON_RESET)
         self._accepted_len = None
         self._pending_start = None
         self._pending_pair = None
+        self._pending_start_token = None
+        self._pending_pair_token = None
         self._prev_state = None
         self._prev_stalled = None
         self._prev_done = None
@@ -1527,6 +1603,11 @@ class ControllerMonitor:
         if self._prev_done == 1 and done == 0:
             self._starts += 1
             self._pending_start = _now_ns()
+            self._pending_start_token = self.pending.open(
+                "",
+                severity=SEV_IGNORE,
+                detail="accepted START awaits its first QPI transaction",
+            )
 
     def _check_pin_intervals(self) -> None:
         """``CHK-CTRL-FETCH-HEAD`` and ``CHK-CTRL-DATA-PAIR`` from pin intervals."""
@@ -1546,6 +1627,8 @@ class ControllerMonitor:
             return  # opened before this START was accepted
 
         self._pending_start = None
+        self.pending.resolve(self._pending_start_token)
+        self._pending_start_token = None
         self._fetch_heads += 1
         faults = []
         if interval.opcode != QSPI_CMD_FAST_READ:
@@ -1582,10 +1665,20 @@ class ControllerMonitor:
                     f"by its payload write ({interval.canonical()})",
                 )
                 self._pending_pair = None
+                self.pending.resolve(self._pending_pair_token)
+                self._pending_pair_token = None
                 return
             if interval.length == TCD_BYTES:
                 return  # descriptor fetch: pairing restarts here
             self._pending_pair = interval.length
+            self._pending_pair_token = self.pending.open(
+                CHK_CTRL_DATA_PAIR,
+                severity=SEV_FAIL,
+                detail=(
+                    f"payload read of {interval.length} byte(s) awaits its "
+                    f"same-length payload write ({interval.canonical()})"
+                ),
+            )
             return
 
         if self._pending_pair is None:
@@ -1603,6 +1696,8 @@ class ControllerMonitor:
                 f"({interval.canonical()})",
             )
         self._pending_pair = None
+        self.pending.resolve(self._pending_pair_token)
+        self._pending_pair_token = None
 
     # -- results -----------------------------------------------------------
 

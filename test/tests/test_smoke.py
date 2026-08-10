@@ -10,7 +10,7 @@ from cocotb.triggers import SimTimeoutError
 
 from common.bringup import bring_up_top
 from common.config import parse_run_config
-from common.dispose import dispose_run
+from common.dispose import REVIEW, dispose_run
 from common.host import pulse_start
 from reference.chain import MemoryImage, interpret_chain
 from reference.scoreboard import RunContext, Scoreboard
@@ -133,7 +133,15 @@ async def smoke_same_device_copy(dut):
         observed_memory={device.device_id: device for device in bringup.devices},
     )
 
-    report = dispose_run(bringup, test="TC-SMOKE", log=dut._log, repro=repro)
+    # Q-LAUNCH records forced SIO/OE reset convergence as RESET-TRUNCATED while
+    # SCK is still X; smoke is not a reset-protocol case, so review rather than forbid.
+    report = dispose_run(
+        bringup,
+        test="TC-SMOKE",
+        log=dut._log,
+        reset_truncated=REVIEW,
+        repro=repro,
+    )
     dut._log.info("TC-SMOKE pin txn log:\n%s", bringup.pin.log_text())
     dut._log.info(
         "TC-SMOKE passed: dest[0x%06X]=0x%02X after %d PSRAM0 transactions "

@@ -42,6 +42,7 @@ Reset review use::
 from dataclasses import dataclass, field
 
 from common.bringup import BringUp
+from common.lifecycle import REASON_DISPOSE, finalize_all
 from models.psram import (
     CLASS_RESET_TRUNCATED,
     PsramDevice,
@@ -171,14 +172,31 @@ def _model_findings(agent: PsramQpiAgent) -> "list[Finding]":
 def _monitor_findings(monitor) -> "list[Finding]":
     source = _source_name(monitor, type(monitor).__name__)
     findings = []
-    for event in list(monitor.events) + list(monitor.reset_truncated):
+    pending = getattr(monitor, "pending", None)
+    carryover = getattr(pending, "carryover", ()) if pending is not None else ()
+    seen = set()
+    for event in (
+        list(getattr(monitor, "events", ()))
+        + list(getattr(monitor, "reset_truncated", ()))
+        + list(carryover)
+    ):
+        check_id = getattr(event, "check_id", None)
+        time_ns = getattr(event, "time_ns", None)
+        detail = getattr(event, "detail", None)
+        if check_id is None or time_ns is None or detail is None:
+            continue
+        reset_truncated = bool(getattr(event, "reset_truncated", False))
+        key = (check_id, time_ns, detail, reset_truncated)
+        if key in seen:
+            continue
+        seen.add(key)
         findings.append(
             Finding(
-                check_id=event.check_id,
-                source=source,
-                time_ns=event.time_ns,
-                detail=event.detail,
-                reset_truncated=event.reset_truncated,
+                check_id=check_id,
+                source=getattr(event, "source", source),
+                time_ns=time_ns,
+                detail=detail,
+                reset_truncated=reset_truncated,
             )
         )
     return findings
@@ -197,10 +215,22 @@ _MONITOR_TYPES = (
 )
 
 
-def _expand(sources) -> "tuple[list, list]":
-    """Split arbitrary dispose sources into (psram agents, monitors)."""
+def _unique_identity(items) -> list:
+    unique = []
+    seen = set()
+    for item in items:
+        identity = id(item)
+        if identity not in seen:
+            seen.add(identity)
+            unique.append(item)
+    return unique
+
+
+def _expand(sources) -> "tuple[list, list, list]":
+    """Split arbitrary dispose sources into agents, monitors, and participants."""
     agents: list = []
     monitors: list = []
+    participants: list = []
     for item in sources:
         if item is None:
             continue
@@ -209,23 +239,39 @@ def _expand(sources) -> "tuple[list, list]":
                 device.agent for device in item.devices if device.agent is not None
             )
             monitors.extend(item.monitors)
+            participants.extend(item.participants)
             continue
         if isinstance(item, PsramDevice):
+            participants.append(item)
             if item.agent is not None:
                 agents.append(item.agent)
+                participants.append(item.agent)
             continue
         if isinstance(item, PsramQpiAgent):
             agents.append(item)
+            participants.append(item)
             continue
         if isinstance(item, _MONITOR_TYPES):
             monitors.append(item)
+            participants.append(item)
+            continue
+        if hasattr(item, "device_id") and hasattr(item, "agent"):
+            participants.append(item)
+            agent = item.agent
+            if agent is not None:
+                agents.append(agent)
+                participants.append(agent)
             continue
         raise TypeError(
             f"dispose source {type(item).__name__} is not a BringUp, PsramDevice, "
             "PsramQpiAgent, or one of "
             f"{', '.join(cls.__name__ for cls in _MONITOR_TYPES)}"
         )
-    return agents, monitors
+    return (
+        _unique_identity(agents)
+        , _unique_identity(monitors)
+        , _unique_identity(participants)
+    )
 
 
 def _normalize_expected(expect_fail) -> "tuple[Expected, ...]":
@@ -257,7 +303,8 @@ def collect(*sources) -> "tuple[list[Finding], dict[str, str], dict[str, int], d
     records are the fallback when no usable pin monitor is present (absent or
     ``blocked``), matching :func:`monitors.qspi.dispose_pin_checks`.
     """
-    agents, monitors = _expand(sources)
+    agents, monitors, participants = _expand(sources)
+    finalize_all(participants, reason=REASON_DISPOSE)
 
     findings: "list[Finding]" = []
     results: "dict[str, str]" = {}
@@ -430,7 +477,7 @@ def format_findings(findings) -> str:
 
 def clear_sources(*sources) -> None:
     """Drop recorded findings from every source (fresh directed window)."""
-    agents, monitors = _expand(sources)
+    agents, monitors, _ = _expand(sources)
     for agent in agents:
         agent.violations.clear()
     for monitor in monitors:

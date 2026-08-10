@@ -33,6 +33,12 @@ falls back to the per-device model ``Q-*`` twins when the monitor is blocked or
 absent.
 
 Dispose the resulting monitors and model logs with :mod:`common.dispose`.
+
+Each attached device is passed through :func:`models.psram_timing.wrap_device`
+using ``parse_run_config()["timing_profile"]`` (default ``ideal``). ``ideal``
+returns the same object with no transport task, so pre-M3 attachment behavior
+is unchanged; ``nominal`` / ``sweep`` return an already-started delayed-device
+wrapper that still exposes ``.agent`` / ``.device_id`` for existing consumers.
 """
 
 from dataclasses import dataclass, field
@@ -40,13 +46,15 @@ from dataclasses import dataclass, field
 from cocotb.triggers import RisingEdge
 
 from common.clocks import apply_engine_reset, apply_reset, start_clock
-from common.config import parse_run_config
+from common.config import parse_run_config, timing_env_overrides
+from common.lifecycle import REASON_CLEAR, REASON_STOP, finalize_all
 from models.psram import (
     PsramDevice,
     ViolationLog,
     attach_dual_psram,
     attach_engine_psram,
 )
+from models.psram_timing import resolve_timing_params, wrap_device
 from monitors.arbitration import ArbitrationMonitor, start_arbitration_monitor
 from monitors.handshake import (
     ControllerMonitor,
@@ -78,12 +86,20 @@ _HISTORY: "list[BringUp]" = []
 
 @dataclass
 class BringUp:
-    """Attached models and always-on monitors for one test window."""
+    """Attached models and always-on monitors for one test window.
+
+    ``timing_profile`` / ``timing_params`` record the resolved
+    :mod:`models.psram_timing` manifest applied to *devices* at attach time,
+    for later dispose/repro reporting; they do not change how ``device()`` /
+    ``psram0`` / ``psram1`` / ``agents`` are used.
+    """
 
     dut: object
     level: str
     devices: "tuple[PsramDevice, ...]"
     violations: "ViolationLog | None" = None
+    timing_profile: str = "ideal"
+    timing_params: "Mapping[str, float] | None" = None
     bus: "SharedBusMonitor | None" = None
     ce: "CeTimingMonitor | None" = None
     handshake: "HandshakeMonitor | None" = None
@@ -132,6 +148,25 @@ class BringUp:
             if monitor is not None
         )
 
+    @property
+    def participants(self) -> tuple:
+        """Everything whose open lifecycle work must be finalized."""
+        participants = list(self.monitors)
+        participants.extend(self.devices)
+        participants.extend(
+            agent
+            for agent in self.agents
+            if getattr(agent, "pending", None) is not None
+        )
+        unique = []
+        seen = set()
+        for participant in participants:
+            identity = id(participant)
+            if identity not in seen:
+                seen.add(identity)
+                unique.append(participant)
+        return tuple(unique)
+
     def __iter__(self):
         """Unpack as the attached devices, e.g. ``psram0, psram1 = bringup``."""
         return iter(self.devices)
@@ -145,6 +180,7 @@ class BringUp:
         window clears them itself, so an accidental clear cannot erase the
         evidence a scoreboard is about to compare.
         """
+        finalize_all(self.participants, reason=REASON_CLEAR)
         for monitor in self.monitors:
             monitor.clear()
         for agent in self.agents:
@@ -157,6 +193,7 @@ class BringUp:
 
     def stop(self) -> None:
         """Stop model agents and soft-stop every monitor."""
+        finalize_all(self.participants, reason=REASON_STOP)
         for device in self.devices:
             if device.agent is not None:
                 device.agent.stop()
@@ -242,7 +279,13 @@ def _start_monitors(
             dut, *bringup.agents, strict=strict_monitors, log=log
         )
     if ce_monitor:
-        bringup.ce = start_ce_timing_monitor(dut, strict=strict_monitors, log=log)
+        bringup.ce = start_ce_timing_monitor(
+            dut,
+            strict=strict_monitors,
+            timing_params=bringup.timing_params,
+            timed_devices=bringup.devices,
+            log=log,
+        )
     if pin_monitor:
         bringup.pin = start_qspi_pin_monitor(dut, strict=strict_monitors, log=log)
         if bringup.pin.blocked:
@@ -317,6 +360,10 @@ async def bring_up_engine(
     After reset release, settles a few IDLE clocks and asserts CE# high / SCK
     parked / agents deselected (coverage formerly in ``test_engine_attach``,
     including the single-device case where the unselected CE# must stay high).
+
+    Each attached device is wrapped per ``parse_run_config()["timing_profile"]``
+    (see module docstring); the default ``ideal`` profile is an identity
+    passthrough, so this is a no-op for existing M1/M2 engine suites.
     """
     log = dut._log if log is None else log
     _stop_previous()
@@ -339,8 +386,20 @@ async def bring_up_engine(
         seed=seed,
         violations=violations,
     )
+    timing_profile = parse_run_config()["timing_profile"]
+    timing_overrides = timing_env_overrides()
+    timing_params = resolve_timing_params(timing_profile, **timing_overrides)
+    attached = tuple(
+        wrap_device(device, profile=timing_profile, **timing_overrides)
+        for device in attached
+    )
     bringup = BringUp(
-        dut=dut, level=LEVEL_L0, devices=attached, violations=violations
+        dut=dut,
+        level=LEVEL_L0,
+        devices=attached,
+        violations=violations,
+        timing_profile=timing_profile,
+        timing_params=timing_params,
     )
     _start_monitors(
         dut,
@@ -398,6 +457,10 @@ async def bring_up_top(
     that turned them off would silently drop catalog coverage. At L2 the rows
     that need RTL hierarchy report ``na`` rather than ``blocked``, because the
     flattened netlist has no such names by construction.
+
+    Each attached device is wrapped per ``parse_run_config()["timing_profile"]``
+    (see module docstring); the default ``ideal`` profile is an identity
+    passthrough, so this is a no-op for existing M1/M2 top/gl suites.
     """
     log = dut._log if log is None else log
     _stop_previous()
@@ -417,7 +480,21 @@ async def bring_up_top(
         seed=seed,
         violations=violations,
     )
-    bringup = BringUp(dut=dut, level=level, devices=attached, violations=violations)
+    timing_profile = parse_run_config()["timing_profile"]
+    timing_overrides = timing_env_overrides()
+    timing_params = resolve_timing_params(timing_profile, **timing_overrides)
+    attached = tuple(
+        wrap_device(device, profile=timing_profile, **timing_overrides)
+        for device in attached
+    )
+    bringup = BringUp(
+        dut=dut,
+        level=level,
+        devices=attached,
+        violations=violations,
+        timing_profile=timing_profile,
+        timing_params=timing_params,
+    )
     _start_monitors(
         dut,
         bringup,
