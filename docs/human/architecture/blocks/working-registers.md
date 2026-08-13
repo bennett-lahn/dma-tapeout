@@ -1,6 +1,6 @@
 # Working Registers
 
-Status: widths follow the V1 24-bit / **11-byte** TCD freeze (D18/D19/D24). No head pointer.
+Status: implemented as the working TCD fields inside `sys_controller.sv` (88 DFFs; widths follow the V1 24-bit / **11-byte** TCD freeze, D18/D19/D24). No head pointer.
 
 ## Role
 

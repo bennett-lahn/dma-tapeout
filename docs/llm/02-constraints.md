@@ -9,8 +9,9 @@ These are hard or near-hard limits. Feature proposals must respect them.
 | Shuttle / PDK | **TTIHP26b**; LibreLane with **`ihp-sg13g2`** (IHP Open PDK). Digital stdcells `sg13g2_*`; I/O library `sg13g2_io` |
 | Tile budget | **2 tiles maximum** |
 | Tile geometry (IHP) | **1x1** die box **202.08 × 154.98 µm**; **1x2** **202.08 × 313.74 µm** (`tt-support-tools` `tech/ihp-sg13g2/tile_sizes.yaml`). ~1.7× the sky130 1x2 area; site is **0.48 × 3.78 µm** (vs 0.46 × 2.72 µm on sky130), so usable cell capacity is only modestly higher - keep the soft DFF ceiling until a real synth count |
-| Approx safe DFF budget | ~**500 DFFs** across 2 tiles before routing congestion becomes likely (unchanged soft warning line; re-audit after first IHP harden) |
-| Per-tile DFF heuristics (from notes) | ~256 DFFs comfortable; absolute extreme ~440 DFFs/tile if optimized purely for DFF count and routing is pushed to the limit (sky130-era heuristics; treat as conservative on IHP) |
+| Approx safe DFF budget | ~**500 DFFs** across 2 tiles before routing congestion becomes likely. First IHP harden (2026-08): **158** mapped `sg13g2_dfrbpq_1` at 66 MHz - under budget; see [`13-hardening-librelane.md`](13-hardening-librelane.md) |
+| Per-tile DFF heuristics (from notes) | ~256 DFFs comfortable; absolute extreme ~440 DFFs/tile if optimized purely for DFF count and routing is pushed to the limit (sky130-era heuristics; IHP synth count now available - still treat as soft) |
+| First area audit (manual LibreLane) | **1x1 fits** at `CLOCK_PERIOD` **15.15** ns (66 MHz): ~24k µm² logic in ~29k µm² core (~60% pre-fill); DRC/LVS/setup/hold pass. Accidental 1x2 (stale merged config) also passed with more fill. Runbook: [`13-hardening-librelane.md`](13-hardening-librelane.md) |
 | I/O | **10 in** (`clk`, `rst_n`, `ui_in[7:0]`), **8 bidir** (`uio`), **8 out** (`uo_out`) - severe bottleneck; port list identical to sky130 TT digital projects |
 | Core / pad voltages | **1.2 V** digital core; **3.3 V** I/O (`sg13g2_IOPad*` level-shift 3.3 V ↔ 1.2 V). Demoboard 3.3 V PMOD / PSRAM remains electrically valid |
 | TT pad cells (ttiHP mux) | Inputs (`clk`, `rst_n`, `ui_in`): **`sg13g2_IOPadIn`**. Outputs (`uo_out`): **`sg13g2_IOPadOut30mA`**. Bidirectional (`uio`): **`sg13g2_IOPadInOut30mA`**. (From `tt-multiplexer` `ttihp26b` `tt_ihp_wrapper.v` / `tt_ihp_gpio.v`.) |
@@ -20,6 +21,7 @@ These are hard or near-hard limits. Feature proposals must respect them.
 | TT I/O mux budgets (`signoff.sdc`) | Pad → user-module inward max delay **5.0 ns**; user-module outward → pad **12.5 ns** (plus separate control-path budgets). `clk`/`rst_n` are in the inward group |
 | Clock ceiling (D16, amended D27) | System **`clk` max 66 MHz** (demoboard generator ~66.5 MHz class); registered QSPI **SCK = clk/2** (≈ **33 MHz**). Justification is demoboard / tACLK / simplicity - **not** a published IHP pad MHz rating |
 | Library | Digital standard cells only (no analog IP); harden via LibreLane, not OpenLane |
+| Harden vehicle | Local: `ttihp-verilog-template/` + Nix LibreLane (`~/librelane` `nix develop`) or Docker `tt_tool --harden`; PDK via `PDK_ROOT=~/ttsetup/pdk`, `PDK=ihp-sg13g2`. Details: [`13-hardening-librelane.md`](13-hardening-librelane.md) |
 
 ### Design implication
 

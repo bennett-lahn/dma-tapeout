@@ -1,6 +1,6 @@
 # QSPI Engine
 
-Status: skeleton. **QPI-only ASIC path (D15/D17):** Fast Read Quad `0xEB`, Write `0x02`. System **`clk` 66 MHz** (D16); engine **SCK = clk/2** (registered toggle). Rising-edge RX on SCK. MCU owns enter/exit QPI. CS mux for RAM A/B is in scope (D11); flash opcodes out of V1.
+Status: implemented in `qspi_engine.sv` (L0/L1 exercised through M3). **QPI-only ASIC path (D15/D17):** Fast Read Quad `0xEB`, Write `0x02`. System **`clk` 66 MHz** (D16); engine **SCK = clk/2** (registered toggle). Rising-edge RX on SCK. MCU owns enter/exit QPI. CS mux for RAM A/B is in scope (D11); flash opcodes out of V1.
 
 ## Role
 

@@ -223,19 +223,19 @@ M3 supplies pre-STA evidence. It does not close a `T-*` row.
 Evidence:
 
 - Delay layer and CE# / ownership delay rerun under `TIMING_PROFILE=nominal` (documented APS6404L min/max AC with zero testbench transport placeholders): `tests.test_qspi_timing`, `tests.test_qspi_timing_delay`, `tests.test_qspi_ownership`
-- Launch / RX: `tests.test_qspi_timing_launch_rx` at L0 (`LEVEL=engine`) for `Q-LAUNCH` / `Q-RXEDGE`, including `tACLK` endpoints via `TIMING_PROFILE=sweep` when selected
+- Launch / RX: `tests.test_qspi_timing_launch_rx` at L0 (`LEVEL=engine`) for `Q-LAUNCH` (`Q-LAUNCH`: driven SIO/OE changes only while SCK is low, with modeled setup/hold; applies only while ASIC drives SCK, `asic_sck_oe==1`) / `Q-RXEDGE` (`Q-RXEDGE`: each launched read nibble must be captured exactly once on the following rising SCK), including `tACLK` endpoints via `TIMING_PROFILE=sweep` when selected
+- Device-plane race: `TC-RXEDGE-RACE-DEVICE-PLANE` under `TIMING_PROFILE=sweep` with race `D_OUT_*` (per-signal DUT-to-device output path delay); closed via `ce-rise-committed` + second `close_scope`
 - Margin gate on legal baselines: recorded present min margins must be strictly positive
 - Cross-sim: Icarus ≡ Verilator on the directed timing set above
-- Cleanup contract: centralized `PendingLedger` / `finalize_all` in `test/common/lifecycle.py`; directed cases `TC-RXEDGE-PENDING-AT-STOP`, `TC-PENDING-SURVIVES-CLEAR`, `TC-TIMED-WRAPPER-STOP-ISOLATION`, `TC-CTRL-DATA-PAIR-PENDING-AT-STOP`, `TC-LIVE-CE-FRAME-AT-STOP`
+- Cleanup contract: centralized `PendingLedger` / `finalize_all` in `test/common/lifecycle.py`; directed cases `TC-RXEDGE-PENDING-AT-STOP`, `TC-PENDING-SURVIVES-CLEAR`, `TC-TIMED-WRAPPER-STOP-ISOLATION`, `TC-RXEDGE-RACE-DEVICE-PLANE`, `TC-CTRL-DATA-PAIR-PENDING-AT-STOP`, `TC-LIVE-CE-FRAME-AT-STOP`
 
 Out of M3 (residuals, do not reopen the M3 gate):
 
 - Physical `T-HZ` and other `T-*` remain STA / demoboard closure
 - Fuller `PSRAM_TACLK_NS` / path-delay sweep matrix beyond the documented nominal + endpoint boundary cases is post-M3 if not already covered
-- Delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*` (per-signal DUT-to-device output path delay) after CE# rise cleanup remains a known follow-up
-- Suites that attach `ce_monitor=True` with default `reset_truncated=FORBID` may need REVIEW disposition like smoke when a `RESET-TRUNCATED` `Q-LAUNCH` appears
+- Closed (2026-08-10 residual wave): delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*` after CE# rise cleanup - see `TC-RXEDGE-RACE-DEVICE-PLANE` / `04-timing-in-sim.md`
 - Margin gate asserts only fields present on a legal baseline; write-path baselines may omit CEM/CSP/CHD mins; boundary-pass margins near zero are expected by construction
-- Lifecycle intentional non-fails and incomplete-window diagnostics: see `06-checkers.md`
+- Lifecycle intentional non-fails, incomplete-window diagnostics, and the `reset_truncated` authoring rule for forced-`rst_n=0` dispose windows: see `06-checkers.md`
 - CI L1 Icarus smoke job, M4 formal, M5 random / `COV-*` / `TC-DEPTH`, Z→0 retirement, BUS_GNT-aware CTRL/HS remain unchanged open items
 
 ### M4 - Formal control-plane safety

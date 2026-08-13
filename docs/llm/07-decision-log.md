@@ -417,6 +417,8 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/human/architec
 
 **DFF / tile impact:** none to RTL; area/DFF heuristics need an IHP harden before any budget relaxation.
 
+**Follow-up (2026-08):** Manual LibreLane harden on `ttihp-verilog-template` (Nix, `CLOCK_PERIOD` 15.15 ns) closed **1x1** with **158** mapped DFFs; DRC/LVS/timing pass. Soft ~500 DFF ceiling retained. Runbook: [`13-hardening-librelane.md`](13-hardening-librelane.md).
+
 Detail: `02-constraints.md`, `11-timing-analysis.md`, human `architecture/limitations.md`.
 
 ## D28 - FPGA hardware validation before shuttle freeze

@@ -39,6 +39,7 @@ Secondary goals:
 - **External memory target**: **2x** AP Memory APS6404L-3SQR (64 Mbit QSPI PSRAM each) on QSPI PMOD; both devices are DMA endpoints. Flash on the same PMOD is MCU pass-through only for V1.
 - **Shuttle pressure**: treat the active IHP shuttle deadline as a real constraint and scope ruthlessly; slipping a run is acceptable but should not be the default plan.
 - **Local PDK / template clones** (workspace, not sources of truth for architecture): `IHP-Open-PDK/`, `ttihp-verilog-template/`
+- **Local harden runbook:** [`13-hardening-librelane.md`](13-hardening-librelane.md) (Nix LibreLane + `tt_tool`; human twin under `docs/human/architecture/hardening.md`)
 
 ## Core product idea
 
@@ -49,7 +50,7 @@ That trades expensive sequential state for FSM complexity (cheaper in standard-c
 - Linked-list scatter-gather across fragmented memory on either PSRAM
 - Cross-device moves between the two PSRAM devices on the PMOD
 
-## Success criteria (planning-level)
+## Success criteria
 
 A successful project can claim all of the following:
 

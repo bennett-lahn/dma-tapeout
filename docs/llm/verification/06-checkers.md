@@ -194,7 +194,7 @@ As of M3 (2026-08-10), every open event window is audited through one shared pol
 - Reasons recorded in finding detail: `dispose`, `window-clear`, `monitor-stop`, `scope-close`, `reset` (`REASON_DISPOSE` / `REASON_CLEAR` / `REASON_STOP` / `REASON_SCOPE` / `REASON_RESET`).
 - `finalize_all(participants, *, reason)` is the only function that calls `audit`. On `REASON_STOP` it also calls `cancel_tasks()` when present (timed PSRAM wrappers).
 - Carryover findings survive `PendingLedger.clear()` / owner `clear()` so a window reset cannot erase an audit that already fired.
-- CE# fall uses `close_scope(device_id, reason=scope-close)` so pending launches for that device are audited before the open set drops them.
+- CE# fall uses `close_scope(device_id, reason=scope-close)` so pending launches for that device are audited before the open set drops them. Device-plane CE# commit (`ce-rise-committed`) may call `close_scope` again to catch race-window opens after a DUT-plane rise under non-zero `D_OUT_*` (per-signal DUT-to-device output path delay); the second call is an idempotent audit (detail in `04-timing-in-sim.md`).
 
 ### Triggers (tests never call finalize themselves)
 
@@ -205,6 +205,18 @@ As of M3 (2026-08-10), every open event window is audited through one shared pol
 | `BringUp.stop` / `_stop_previous` | `monitor-stop` | bring-up retirement; timed wrappers cancel child tasks |
 
 `BringUp.participants` is the registry of everything with a window lifecycle (models, timed wrappers, monitors). Dispose expansion reads each participant's `pending.carryover` so an earlier clear in the same test still reaches the report.
+
+### `reset_truncated` authoring rule
+
+`dispose_run` defaults `reset_truncated=FORBID`: any `RESET-TRUNCATED` finding (a timing-window observation fully explained by sampled-reset OE release / state convergence, not an ordinary `Q-*` fail) is an unreviewed surprise and fails the dispose. `bring_up_top` / `bring_up_engine` default `ce_monitor=True`, so a live `CeTimingMonitor` can emit `RESET-TRUNCATED` `Q-LAUNCH` (driven SIO/OE changes only while SCK is low, with modeled setup/hold) during a forced `rst_n=0` convergence window.
+
+**Rule:** any `dispose_run` window that includes a forced `rst_n=0` interval on a bring-up with a live CE monitor must declare `reset_truncated=REVIEW` or `REQUIRE`. Do not rely on the default `FORBID`. Do not loosen to `REVIEW`/`REQUIRE` on windows where reset is not actually asserted (post-reset ordinary traffic keeps `FORBID`).
+
+Reference patterns:
+
+- `REVIEW` when truncated findings are optional (may be zero): `tests.test_reset_and_bus` reset windows (`TC-RESET-*`), `tests.test_smoke` bring-up X convergence
+- `REQUIRE` when the abort must produce at least one truncated finding: `tests.test_qspi_reset_protocol` mid-txn abort windows
+- Pre-bring-up `rst_n=0` parking with no live CE dispose window (for example `tests.test_qspi_pin_disposition`) is out of scope for this rule
 
 ### Hunt residuals / intentional non-fails
 
@@ -222,7 +234,7 @@ These severity choices are durable policy, not missing coverage:
 
 Optional shared `@tb_test` / cocotb finally-hook remains deferred: pytest `conftest.py` cannot cross the sim boundary, and there is no true cocotb test-end hook in this repo. Automatic cleanup means automatic on `dispose_run`, `BringUp.clear`, and bring-up retirement. A test that raises before `dispose_run` is audited one step late at the next `_stop_previous()` as a logged note rather than an assertion (raising there would mask the original exception).
 
-Directed cleanup evidence: `TC-RXEDGE-PENDING-AT-STOP`, `TC-PENDING-SURVIVES-CLEAR`, `TC-TIMED-WRAPPER-STOP-ISOLATION` (`tests.test_qspi_timing_launch_rx`); `TC-CTRL-DATA-PAIR-PENDING-AT-STOP`, `TC-LIVE-CE-FRAME-AT-STOP` (`tests.test_qspi_cleanup`).
+Directed cleanup evidence: `TC-RXEDGE-PENDING-AT-STOP`, `TC-PENDING-SURVIVES-CLEAR`, `TC-TIMED-WRAPPER-STOP-ISOLATION`, `TC-RXEDGE-RACE-DEVICE-PLANE` (`tests.test_qspi_timing_launch_rx`; race case needs `TIMING_PROFILE=sweep` + race `D_OUT_*`); `TC-CTRL-DATA-PAIR-PENDING-AT-STOP`, `TC-LIVE-CE-FRAME-AT-STOP` (`tests.test_qspi_cleanup`).
 
 ## M2 acceptance
 

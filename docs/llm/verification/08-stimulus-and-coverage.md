@@ -69,6 +69,7 @@ M3 timing evidence uses dedicated modules rather than expanding the M2 DMA `TC-*
 | `TC-RXEDGE-PENDING-AT-STOP` | `tests.test_qspi_timing_launch_rx` | L0 | unresolved launch fails `Q-RXEDGE` with `reason=dispose` |
 | `TC-PENDING-SURVIVES-CLEAR` | `tests.test_qspi_timing_launch_rx` | L0 | same finding after `BringUp.clear`, tagged `reason=window-clear` |
 | `TC-TIMED-WRAPPER-STOP-ISOLATION` | `tests.test_qspi_timing_launch_rx` | L0 | retired delayed tasks do not drive DUT or append events |
+| `TC-RXEDGE-RACE-DEVICE-PLANE` | `tests.test_qspi_timing_launch_rx` | L0 | under `TIMING_PROFILE=sweep` + race `D_OUT_*`, delayed device-plane CE# commit audits post-rise launches via second `close_scope` |
 | `TC-CTRL-DATA-PAIR-PENDING-AT-STOP` | `tests.test_qspi_cleanup` | L1 | open payload pair fails `CHK-CTRL-DATA-PAIR` at dispose |
 | `TC-LIVE-CE-FRAME-AT-STOP` | `tests.test_qspi_cleanup` | L1 | incomplete CE# frame is audited, not silently dropped |
 | CE# / CSP / CHD / TERM delay cases | `tests.test_qspi_timing`, `tests.test_qspi_timing_delay` | L1 | legal baselines + directed violations under `nominal` |

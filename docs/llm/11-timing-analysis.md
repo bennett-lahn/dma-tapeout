@@ -45,8 +45,8 @@ Engine **SCK = clk/2** (registered toggle when enabled; idle low when disabled).
 | [`Q-SIO-OWN`](verification/04-timing-in-sim.md) | ASIC and PSRAM/SPI device never co-drive bidirectional SIO | Prerequisite for contention-free turnaround (`T-HZ`) and shared-bus bring-up |
 | [`Q-RST`](verification/04-timing-in-sim.md) | Transaction abort and shared-OE release on reset | Prerequisite for safe board reset testing |
 | [`Q-SCKIDLE`](verification/04-timing-in-sim.md) | SCK stays low while no device is selected; no erroneous SCK cycle while deselected | Supports contention-free bring-up on a bus shared with MCU pass-through |
-| [`Q-LAUNCH`](verification/04-timing-in-sim.md) | Driven SIO and OE launch-edge discipline with modeled setup and hold | Required prerequisite for `T-SP-HD` |
-| [`Q-RXEDGE`](verification/04-timing-in-sim.md) | Falling-edge model launch reconciled to one rising-edge DUT capture | Required prerequisite for `T-ACLK` |
+| [`Q-LAUNCH`](verification/04-timing-in-sim.md) | Driven SIO and OE launch-edge discipline with modeled setup and hold while ASIC drives SCK (`asic_sck_oe==1`) | Required prerequisite for `T-SP-HD` |
+| [`Q-RXEDGE`](verification/04-timing-in-sim.md) | Falling-edge model launch reconciled to one rising-edge DUT capture (device-plane CE# commit re-audits race-window opens under non-zero `D_OUT_*`) | Required prerequisite for `T-ACLK` |
 
 `Q-LAUNCH` and `Q-RXEDGE` simulation prerequisites are `pass` as of M3 (2026-08-10); see `verification/04-timing-in-sim.md`. Passing them does not close routed output setup/hold or the physical read-return path. Their complete definitions remain only in that file.
 

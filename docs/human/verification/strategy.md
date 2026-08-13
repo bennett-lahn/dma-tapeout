@@ -40,7 +40,8 @@ Milestones are cumulative. A required child ID in `fail`, `wip`, or `blocked` pr
 
 - M3 is `pass` (2026-08-10): delay layer, `Q-LAUNCH` / `Q-RXEDGE` / `Q-CSP` / `Q-CHD` / `Q-TERM`, delay-rerun of `Q-CEM` / `Q-CPH` / `Q-SIO-OWN`, Icarus ≡ Verilator, margin gate, and centralized `PendingLedger` cleanup.
 - Physical `T-HZ` and other `T-*` remain STA / demoboard; M3 supplies pre-STA evidence only.
-- Follow-ups (not M3 blockers): delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*` after CE# rise cleanup; `ce_monitor=True` + `reset_truncated=FORBID` REVIEW after `RESET-TRUNCATED` `Q-LAUNCH`; margin-gate field presence / boundary-pass ≈0; broader `PSRAM_TACLK_NS` sweep if needed; Handshake incomplete-window diagnostic-only; `_pending_start` ignore; no cleanup-only `Q-TERM`; `@tb_test` finally deferred.
+- `Q-LAUNCH` (`Q-LAUNCH`: driven SIO/OE changes only while SCK is low, with modeled setup/hold) applies only while ASIC drives SCK (`asic_sck_oe==1`); grant/park OE clear is not a launch event.
+- Follow-ups (not M3 blockers): margin-gate field presence / boundary-pass ≈0; broader `PSRAM_TACLK_NS` sweep if needed; Handshake incomplete-window diagnostic-only; `_pending_start` ignore; no cleanup-only `Q-TERM`; `@tb_test` finally deferred. Closed residual wave: delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*` (`TC-RXEDGE-RACE-DEVICE-PLANE`). Forced-`rst_n=0` dispose windows with a live CE monitor must declare `reset_truncated=REVIEW` or `REQUIRE` (never default `FORBID`); see checkers index.
 - Independent `QspiPinMonitor` is live; pin ADDR23/KNOWN dispose with `via=pin` when the monitor ran (model `Q-*` twins remain the fallback; model-plane dispose contract retained only in pin-disposition).
 - Model-plane Z→0 idealization remains (`tb_top` / `tb_engine` float→0).
 - CI L1 Icarus smoke job is still open (local smoke is green).

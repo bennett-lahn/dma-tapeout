@@ -11,6 +11,7 @@ Hard or near-hard limits. Feature proposals must respect these. Deeper PSRAM pro
 | Comfortable DFFs / tile | ~**256** (sky130-era heuristic; keep until IHP synth audit) |
 | Extreme DFFs / tile | ~**440** (~55 bytes) if optimized only for DFF count and routing is pushed to the limit |
 | Soft 2-tile ceiling | treat ~**500 DFFs** total as the practical warning line |
+| First IHP harden (2026-08) | **158** DFFs mapped; **1x1** closes at 66 MHz (`CLOCK_PERIOD` 15.15 ns) with DRC/LVS/timing pass - see [`hardening.md`](hardening.md) |
 | I/O | Severe; serialize host interfaces; reserve a muxed DFT/debug output for FSM observe |
 | Process / voltages | IHP **SG13G2**: **1.2 V** core, **3.3 V** pads (level-shifted). Digital stdcells only |
 | TT pads | `ui`/`clk`/`rst_n` → `sg13g2_IOPadIn`; `uo` → `sg13g2_IOPadOut30mA`; `uio` → `sg13g2_IOPadInOut30mA` |

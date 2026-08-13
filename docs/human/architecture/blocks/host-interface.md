@@ -1,6 +1,6 @@
 # Host / Mode Control
 
-Status: bus-ownership OE model + idle/START/DONE frozen (D14/D18); **no ABORT** (D23: use `rst_n`). Pass-through is **request/grant** (`BUS_REQ` / `BUS_GNT`, D22). ASIC is **bus keeper** while `rst_n=1 && ~BUS_GNT`; while `rst_n=0`, shared OE is off and MCU drive of QSPI nets is legal (D26; board 10 kΩ CS pull-ups hold CE# unless MCU selects). Pins: **START** = `ui_in[0]`, **BUS_REQ** = `ui_in[2]`, **DONE** = `uo_out[0]`, **BUS_GNT** = `uo_out[1]`; `ui_in[1]` reserved. No head-pointer pins. QSPI on `uio` per system I/O map.
+Status: implemented in `top.v` + `sys_controller.sv` (exercised by M2 reset/bus and ownership suites). Bus-ownership OE model + idle/START/DONE frozen (D14/D18); **no ABORT** (D23: use `rst_n`). Pass-through is **request/grant** (`BUS_REQ` / `BUS_GNT`, D22). ASIC is **bus keeper** while `rst_n=1 && ~BUS_GNT`; while `rst_n=0`, shared OE is off and MCU drive of QSPI nets is legal (D26; board 10 kΩ CS pull-ups hold CE# unless MCU selects). Pins: **START** = `ui_in[0]`, **BUS_REQ** = `ui_in[2]`, **DONE** = `uo_out[0]`, **BUS_GNT** = `uo_out[1]`; `ui_in[1]` reserved. No head-pointer pins. QSPI on `uio` per system I/O map. `uo_out[7:2]` status / DFT packing still open.
 
 ## Role
 
@@ -66,7 +66,7 @@ ASIC pad      ──uio_oe─┘
 - Firmware may enable MCU QSPI drivers while **`BUS_GNT=1`** or while **`rst_n=0`** (D22 / D26). While `rst_n=1` and `~BUS_GNT`, MCU stays Hi-Z and the ASIC is bus keeper.
 - **Board:** the PMOD / demoboard path has a **10 kΩ pull-up on each CS** (flash, RAM A, RAM B). Those pull-ups keep CE# high during reset / power-up / pre-mux windows unless the MCU selects a device. While the design is live (`rst_n=1`) and `~BUS_GNT`, the ASIC is the active bus keeper (D26).
 
-QSPI PMOD map (frozen for V1 planning; matches TT community flash+PSRAM Pmod). Full table: `[../system.md](../system.md)` I/O section.
+QSPI PMOD map (frozen for V1; matches TT community flash+PSRAM Pmod). Full table: `[../system.md](../system.md)` I/O section.
 
 
 | `uio`      | Role                                                                          |

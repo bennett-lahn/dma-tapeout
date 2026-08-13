@@ -164,7 +164,7 @@ For every command, address, and write-data nibble:
 - they must remain stable for at least `tHD` after that edge, and
 - the first command nibble, first address nibble, and first write-data nibble are checked explicitly at phase boundaries.
 
-OE release into read dummy and OE reclaim after a read are also required to occur while SCK is low. Device-driven read-data changes are not `Q-LAUNCH` events; they are checked under `Q-RXEDGE`.
+The check applies while the ASIC drives SCK (`asic_sck_oe==1`); grant/park or reset OE clear with SCK OE off is not a `Q-LAUNCH` event (`CHK-ARB-*` / `CHK-RST-OE`). OE release into read dummy and OE reclaim after a read are also required to occur while SCK is low. Device-driven read-data changes are not `Q-LAUNCH` events; they are checked under `Q-RXEDGE`.
 
 `Q-LAUNCH` exists to hold `qspi_engine` to the APS6404L setup/hold contract on an ongoing basis, independent of any specific RTL revision's implementation history: any future change to the engine's output timing must still satisfy this window. M3 directed evidence under `nominal` (and selected `tACLK` endpoints) is `pass` as of 2026-08-10; see the M3 evidence section below.
 
@@ -190,6 +190,8 @@ Pass requires:
 
 At L0, internal engine signals may be observed to diagnose the capture event. The durable requirement remains the port behavior: `rdata`, `rdata_valid`, SCK, and SIO must agree. At L1/L2, the pin transaction log and resulting memory data remain the end-to-end evidence.
 
+DUT-plane CE# rise closes the device's pending-launch scope immediately via `close_scope` (`reason=scope-close`). With non-zero `D_OUT_CE_NS` (`D_OUT_*`: per-signal DUT-to-device output path delay), a late device-plane SCK-fall can still open a pending launch after that DUT-plane close. The timed model then emits `ce-rise-committed` when CE# rise commits on the device plane; the monitor runs a second idempotent `close_scope` so race-window opens are audited rather than lost. Directed evidence: `TC-RXEDGE-RACE-DEVICE-PLANE` in `tests.test_qspi_timing_launch_rx` under `TIMING_PROFILE=sweep` (documented boundary / override profile) with the suite's race `D_OUT_*` point. This residual wave is closed; it does not reopen M3.
+
 ## Stable `Q-*` catalog
 
 These IDs retain the meanings established in `../11-timing-analysis.md`. Moving their owning specification here does not rename or reuse them.
@@ -205,7 +207,7 @@ These IDs retain the meanings established in `../11-timing-analysis.md`. Moving 
 | `Q-SIO-OWN` | ASIC and any selected PSRAM/SPI device never drive the same bidirectional SIO bit at once; equal driven values still fail; ownership uses delayed OE / model-drive enables; legal phases follow `../03-architecture.md` | L0/L1 | M1, delay rerun M3 | pass |
 | `Q-RST` | Asserted `rst_n` aborts the ASIC transaction, releases all top-level shared OE, and returns the engine/controller to reset state without a soft-abort command | L0/L1 | M1 | pass |
 | `Q-SCKIDLE` | SCK remains low for the entire interval while no device is selected (flash CS, RAM A CE#, and RAM B CE# all high at L1; both engine CS outputs high at L0); no erroneous SCK cycle occurs while deselected | L0/L1 | M1 | pass |
-| `Q-LAUNCH` | Driven SIO and OE change only with SCK low and meet modeled 2 ns setup and hold windows | L0 | M3 | pass |
+| `Q-LAUNCH` | Driven SIO and OE change only while ASIC drives SCK (`asic_sck_oe==1`) with SCK low, meeting modeled 2 ns setup and hold windows | L0 | M3 | pass |
 | `Q-RXEDGE` | Each read nibble launched from a falling edge is captured exactly once on the documented following rising edge | L0, selected L1 | M3 | pass |
 
 Every AC value in this catalog is sourced through the parameter table above from `../05-qspi-psram.md` and APS6404L Rev 2.3 Table 10. Status uses the vocabulary in `00-index.md`.
@@ -240,11 +242,11 @@ M3 `pass` rows above are under `TIMING_PROFILE=nominal` unless noted, `SEED=1`, 
 | `Q-CEM`, `Q-CPH` | `tests.test_qspi_timing` | L1 | Delay-annotated legal baseline + violation cases; W3b margin gate on present fields |
 | `Q-CSP`, `Q-CHD`, `Q-TERM` | `tests.test_qspi_timing_delay` | L1 | Legal baseline + directed violations; do not manufacture cleanup-only `Q-TERM` |
 | `Q-SIO-OWN` | `tests.test_qspi_ownership` | L1 | Delay-aware OE / model-drive ownership under `nominal` |
-| `Q-LAUNCH`, `Q-RXEDGE` | `tests.test_qspi_timing_launch_rx` | L0 | Nominal pass + fault/pending cleanup; `tACLK` endpoints via `sweep` + `PSRAM_TACLK_NS` |
+| `Q-LAUNCH`, `Q-RXEDGE` | `tests.test_qspi_timing_launch_rx` | L0 | Nominal pass + fault/pending cleanup; `tACLK` endpoints via `sweep` + `PSRAM_TACLK_NS`; `Q-LAUNCH` only while `asic_sck_oe==1` |
 
 Cleanup directed evidence (same modules; lifecycle contract in `06-checkers.md`):
 
-- `TC-RXEDGE-PENDING-AT-STOP`, `TC-PENDING-SURVIVES-CLEAR`, `TC-TIMED-WRAPPER-STOP-ISOLATION` in `tests.test_qspi_timing_launch_rx`
+- `TC-RXEDGE-PENDING-AT-STOP`, `TC-PENDING-SURVIVES-CLEAR`, `TC-TIMED-WRAPPER-STOP-ISOLATION`, `TC-RXEDGE-RACE-DEVICE-PLANE` in `tests.test_qspi_timing_launch_rx` (`TC-RXEDGE-RACE-DEVICE-PLANE` needs `TIMING_PROFILE=sweep` + race `D_OUT_*`)
 - `TC-CTRL-DATA-PAIR-PENDING-AT-STOP`, `TC-LIVE-CE-FRAME-AT-STOP` in `tests.test_qspi_cleanup`
 
 Cross-sim REPRO (both sims exit 0 on the directed timing set):
@@ -264,9 +266,9 @@ test/scripts/run_test.sh LEVEL=engine SIM=verilator TIMING_PROFILE=nominal SEED=
 
 **M3 residuals** (do not reopen the M3 gate; see also `01-strategy.md`):
 
-- Delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*` after CE# rise cleanup
-- Suites with `ce_monitor=True` and default `reset_truncated=FORBID` may need REVIEW when a `RESET-TRUNCATED` `Q-LAUNCH` appears (same discipline as smoke)
+- Closed (2026-08-10 residual wave): delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*` after CE# rise cleanup - fixed via device-plane `ce-rise-committed` + second `close_scope`; evidence `TC-RXEDGE-RACE-DEVICE-PLANE` (see `Q-RXEDGE` above)
 - Margin gate checks only present legal-baseline fields; write-path may omit CEM/CSP/CHD mins; boundary-pass margins near 0 are by construction
+- Forced-`rst_n=0` dispose windows with a live CE monitor must declare `reset_truncated=REVIEW` or `REQUIRE` (authoring rule in `06-checkers.md`); not an open suite gap
 - Broader sweep / `PSRAM_TACLK_NS` matrix beyond nominal + documented endpoints is post-M3 if not already covered
 - Physical `T-*` (including `T-HZ`) remain STA / demoboard
 

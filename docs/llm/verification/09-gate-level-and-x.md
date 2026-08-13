@@ -23,7 +23,7 @@ The local TTIHP template establishes the required entry shape:
 
 This project preserves that compatible path through `LEVEL=gl`, with `GATES=yes` implying the same L2 flow. The template path is the baseline functional gate run. It does not by itself prove that SDF was generated, annotated, or honored.
 
-The project netlist is expected to be the unpowered `nl` view described by D27. Do not mix powered and unpowered cell-model interfaces. Record the exact netlist, PDK revision, cell-model files, synthesis or hardening run, and top instance used for every L2 result.
+The project netlist is expected to be the unpowered `nl` view described by D27 (typical path after local harden: `ttihp-verilog-template/runs/wokwi/final/nl/tt_um_lahnb_sgdma.nl.v`). Do not mix powered and unpowered cell-model interfaces. Record the exact netlist, PDK revision, cell-model files, synthesis or hardening run, and top instance used for every L2 result. How to produce that netlist: [`../13-hardening-librelane.md`](../13-hardening-librelane.md).
 
 ## Required functional L2 flow
 

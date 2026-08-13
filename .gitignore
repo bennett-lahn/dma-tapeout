@@ -37,3 +37,7 @@ test/runs/*
 !test/runs/.gitkeep
 results.xml
 **/__pycache__/
+
+# Buffer-depth study scratch (scripts tracked; work/results not)
+scripts/buffer-study/work/
+scripts/buffer-study/results/

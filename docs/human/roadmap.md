@@ -1,5 +1,7 @@
 # Roadmap
 
+**Current focus (2026-08):** Phase 2. V1 feature RTL is in place; cocotb **M0–M3** accepted. Next checklist items are M4 formal, sticky error / `uo_out` packing, CI smoke, and firmware bring-up toward M7. Phase 0–1 are complete.
+
 ## Phase 0 - Planning
 
 - [x] Choose DMA over hash
@@ -26,6 +28,8 @@
 
 ## Phase 2 - Descriptor DMA (V1 feature complete) (current)
 
+Feature path (fetch / copy / chain / cross-device) and verification through M3 are done. Remaining Phase 2 work is hardening and unfinished V1 polish, not skeleton RTL.
+
 - [x] Fetch + single-TCD copy (same-device PSRAM) - M0 `TC-SMOKE` plus M2 length/address corners
 - [x] Cross-device PSRAM copy (A↔B) - M2 `TC-CROSS-01` / `TC-CROSS-10`
 - [x] Chained TCDs (incl. next TCD on other device; zero-length no-op) - M2 `TC-CHAIN` / `TC-NEXT-DEVICE` / `TC-EMPTY` / `TC-QUIT`
@@ -35,7 +39,7 @@
 - [x] SCK-accurate dual PSRAM model (6 dummy cycles; table-driven `0xEB`/`0x02`) with M1 protocol policing
 - [x] M1 - protocol policing, L0 QPI directed tests, and Icarus/Verilator agreement (behavioral `Q-*` under `ideal`; residual: model-plane Z→0, CI smoke still open; delays / `Q-LAUNCH` / `Q-RXEDGE` closed at M3)
 - [x] M2 - reference model, dual-axis scoreboard, directed `TC-*` (24 cases; `TC-DEPTH` deferred to M5), always-on `CHK-*`, pin monitor (`via=pin`); Acceptance 2026-08-08
-- [x] M3 - delay layer, setup/hold sweeps, launch/RX edge checks, centralized pending-item lifecycle; Acceptance 2026-08-10 (physical `T-*` remain post-M3)
+- [x] M3 - delay layer, setup/hold sweeps, launch/RX edge checks, centralized pending-item lifecycle; Acceptance 2026-08-10 (physical `T-*` remain post-M3; residual-wave TB fixes for device-plane `Q-RXEDGE` race + Verilator `Q-LAUNCH` `asic_sck_oe` gate landed without reopening M3)
 - [ ] M4 - formal safety proofs and cover reachability
 - [ ] M5 - randomized regression and coverage closure; buffer-depth sweep blocked pending sim harness `DMA_BUF_DEPTH` wiring (`TC-DEPTH` skipped in default directed module)
 - [ ] CI smoke job (L1 Icarus)
@@ -46,7 +50,7 @@
 Once the cocotb/RTL verification milestones that gate M7 entry are complete, **FPGA testing must be ready to run**. That requires demoboard/FPGA bring-up including firmware, so the firmware library and bring-up work above is allowed and needed before or as M7 starts (not deferred until after M7). Host-side unit logic under `firmware/tests/` can start earlier; demoboard HIL remains M7.
 
 - [ ] RP2 demoboard scripts (bulk A↔B / scatter-gather patterns) - firmware bring-up complete enough that M7 can start
-- [ ] Area/DFF audit vs 2-tile budget
+- [x] Area/DFF audit vs 2-tile budget - manual LibreLane: **158** DFFs; **1x1 @ 66 MHz** closes (2026-08); keep re-auditing after RTL growth ([`architecture/hardening.md`](architecture/hardening.md))
 - [ ] M6 - gate-level and X checks, then hand remaining physical `T-*` rows to STA and demoboard closure
 - [ ] M7 - FPGA hardware validation: load synthesizable RTL on an FPGA standing in for the ASIC on the same carrier board and MCU, run firmware-driven high-value hardware regression before freezing RTL for shuttle
 - [ ] Close **66 MHz `clk` / 33 MHz SCK** / rising-edge RX (D16 / D27): use delay-annotated simulation for `Q-*` pre-checks, STA for IHP pad + TT mux margin, and the demoboard for final number validity; see [`verification/strategy.md`](verification/strategy.md), [`architecture/timing.md`](architecture/timing.md), and [`../llm/verification/04-timing-in-sim.md`](../llm/verification/04-timing-in-sim.md)
@@ -77,7 +81,7 @@ Do not pull post-V1 items above chaining to “save” the interview story - the
 
 Keep these out of the next milestones; details in the verification execution plan:
 
-1. **Do not mix nix Icarus with cocotb** - use OSS CAD Suite via `test/env.sh`; harden with Docker/nix in a separate shell.
+1. **Do not mix nix Icarus with cocotb** - use OSS CAD Suite via `test/env.sh`; harden with Docker/Nix LibreLane in a separate shell (runbook: [`architecture/hardening.md`](architecture/hardening.md)).
 2. **Never call raw suite `bin/vvp`** - use wrappers from `env.sh` (`PYTHONHOME` breaks `dma-venv` / cocotb).
 3. **PSRAM model must stay SCK/CE#-driven** - no clk-polling or dummy-count calibration hacks.
 4. **Agents run only `test/scripts/*.sh`** - avoid brittle one-liners and `/tmp` logs.

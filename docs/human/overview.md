@@ -33,7 +33,7 @@ V1 target: **bulk mover** between PSRAM A and B (learning / resume demo). ADC te
 
 ## Status
 
-Architecture / planning. Early RTL under `src/rtl/` (QSPI package + engine skeleton). TinyDMA-2C (Andrew Kim, TT 296) is prior-art feasibility context only; implementation will be original. Details live in `../llm/prior-art/tinydma-2c.md` and must be cited when used.
+**Phase 2** (V1 feature RTL + verification hardening). Working RTL under `src/rtl/` (`top.v`, `sys_controller.sv`, `qspi_engine.sv`, `types.svh`) covers TT wrap, bus keeper / pass-through, QPI engine, and descriptor fetch / copy / chain / cross-device. Cocotb milestones **M0–M3** are accepted (smoke through delay / launch / RX; latest M3 exit 2026-08-10). Manual LibreLane harden (Nix, `ttihp-verilog-template`) closed **1x1 @ 66 MHz** with ~158 DFFs - see [`architecture/hardening.md`](architecture/hardening.md). Still open inside V1: sticky error / `uo_out[7:2]` status packing, M4 formal, M5 random/coverage, CI smoke, firmware / demoboard (M7), then gate-level and physical closure. TinyDMA-2C (Andrew Kim, TT 296) is prior-art feasibility context only; this implementation is original. Details live in `../llm/prior-art/tinydma-2c.md` and must be cited when used.
 
 ## See also
 

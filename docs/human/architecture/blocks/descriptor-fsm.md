@@ -1,6 +1,6 @@
 # Descriptor FSM
 
-Status: rough RTL in `sys_controller.sv`. Host/mode control and descriptor sequencing are implemented in the same module; this document describes the descriptor-control behavior, not a separate RTL block. Idle / DONE / quit-TCD / zero-length rules follow D14 / D18 / D19 / D23. Bus yield via `BUS_REQ`/`BUS_GNT` follows D22. No soft abort (kill with `rst_n`, D23).
+Status: implemented in `sys_controller.sv` (V1 feature path covered by M0–M3). Host/mode control and descriptor sequencing are in the same module; this document describes the descriptor-control behavior, not a separate RTL block. Idle / DONE / quit-TCD / zero-length rules follow D14 / D18 / D19 / D23. Bus yield via `BUS_REQ`/`BUS_GNT` follows D22. No soft abort (kill with `rst_n`, D23). Sticky error / `uo_out[7:2]` status packing still open.
 
 ## Role
 
@@ -18,7 +18,7 @@ The descriptor FSM **arbitrates** ASIC `uio_oe`. The ASIC is the **bus keeper** 
 
 Do **not** float CS/SCK between DMA transactions. Do **not** reclaim SIO drive inside the selected device's `tHZ` after CE# rises. **MCU priority (D22):** while `BUS_REQ` is high, do **not** pulse `txn_valid`; if `busy`, wait for the current QPI txn to finish (atomic), then release OE and assert `BUS_GNT`. Never leave both sources driving conflicting OE without a single mux select. Ownership matrix: [`host-interface.md`](host-interface.md); agent detail: [`../../../llm/03-architecture.md`](../../../llm/03-architecture.md). Board **10 kΩ** CS pull-ups cover reset / pre-enable only ([`firmware.md`](../firmware.md)).
 
-## Planned states (V1)
+## V1 states
 
 1. `IDLE` - DONE high; ASIC parks bus (`~BUS_GNT`: CS high / SCK low); accept the top-level-qualified one-`clk` **START** pulse with **`~BUS_REQ`**. A START pulse in every other state is ignored and not queued.
 2. `STATE_FETCH` - QPI read **11 bytes** into working regs. First fetch (every START): `0x000000` / PSRAM 0; later: `NEXT_TCD` on `NEXT_DEVICE`. If `QUIT=1` → **IDLE** (next START starts at fixed head again).

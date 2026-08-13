@@ -21,7 +21,7 @@ Current blockers to this gate (M0-M3 simulation exits are green as of 2026-08-10
 - M4 formal and M5 random / `COV-*` not started.
 - The depth sweep / `TC-DEPTH` cannot run until the sim harness selects module parameter `DMA_BUF_DEPTH`. Default directed module skips that case; tapeout remains depth 1.
 - CI L1 Icarus smoke job still open.
-- M3 follow-ups (not freeze blockers by themselves): delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*`; `RESET-TRUNCATED` `Q-LAUNCH` REVIEW on some `ce_monitor` suites; margin-gate field presence / boundary ≈0; physical `T-*`.
+- M3 follow-ups (not freeze blockers by themselves): margin-gate field presence / boundary ≈0; physical `T-*`. Delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*` is closed (`TC-RXEDGE-RACE-DEVICE-PLANE`).
 
 ## Final-netlist and shuttle freeze
 

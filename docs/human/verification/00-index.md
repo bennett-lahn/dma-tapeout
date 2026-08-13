@@ -37,9 +37,11 @@ Residuals: BUS_GNT-aware CTRL/HS so pass-through suites need not detach those mo
 
 ### Pending-item lifecycle (M3 cleanup contract)
 
-Single mechanism in `test/common/lifecycle.py`: `PendingLedger` + `finalize_all`. Severities at open time: fail / diagnostic / ignore. Reasons: dispose, window-clear, monitor-stop, scope-close, reset. Triggers: `dispose.collect`, `BringUp.clear`, `BringUp.stop` / `_stop_previous`. Carryover survives clear; CE# fall uses `close_scope`. Timed wrappers cancel tasks on stop.
+Single mechanism in `test/common/lifecycle.py`: `PendingLedger` + `finalize_all`. Severities at open time: fail / diagnostic / ignore. Reasons: dispose, window-clear, monitor-stop, scope-close, reset. Triggers: `dispose.collect`, `BringUp.clear`, `BringUp.stop` / `_stop_previous`. Carryover survives clear; CE# fall uses `close_scope`; delayed device-plane CE# commit (`ce-rise-committed`) may `close_scope` again for race-window opens. Timed wrappers cancel tasks on stop.
 
 Intentional non-fails: Handshake incomplete-window is diagnostic only (no new catalog ID; no `CHK-HS-*-COUNT` reuse); `ControllerMonitor._pending_start` is ignore; do not manufacture cleanup-only `Q-TERM`. Optional `@tb_test` finally-hook deferred (no true cocotb test-end hook). Full contract: [`06-checkers.md`](../../llm/verification/06-checkers.md).
+
+**`reset_truncated` rule:** any `dispose_run` window with a forced `rst_n=0` interval and a live CE monitor (`ce_monitor=True`) must pass `reset_truncated=REVIEW` or `REQUIRE` - never rely on default `FORBID`. Do not loosen where reset was not asserted. `RESET-TRUNCATED` means a timing observation explained by reset OE/state convergence (not an ordinary `Q-*` fail); `Q-LAUNCH` (`Q-LAUNCH`: driven SIO/OE changes only while SCK is low, with modeled setup/hold) is the usual ID during that window, and only while ASIC drives SCK (`asic_sck_oe==1`) so grant/park OE clear is not a launch event.
 
 ## Toolchain (how to run)
 
@@ -78,8 +80,7 @@ System Python is `python3`. Prefer suite Verilator 5.051 over older `/usr/local`
 
 - CI L1 Icarus smoke job
 - Physical `T-HZ` and other `T-*` (STA / demoboard)
-- Delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*` after CE# rise cleanup
-- Suites with `ce_monitor=True` + default `reset_truncated=FORBID` may need REVIEW like smoke after `RESET-TRUNCATED` `Q-LAUNCH`
+- Closed (2026-08-10 residual wave): delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*` after CE# rise cleanup - `ce-rise-committed` + `TC-RXEDGE-RACE-DEVICE-PLANE`
 - Margin gate: asserts present legal-baseline fields; write-path may omit CEM/CSP/CHD mins; boundary-pass ≈0 by construction
 - Broader `PSRAM_TACLK_NS` / path sweep beyond nominal + documented endpoints is post-M3 if not already covered
 - Handshake incomplete-window stays diagnostic (no new ID); `_pending_start` ignore; no cleanup-only `Q-TERM`; `@tb_test` finally deferred

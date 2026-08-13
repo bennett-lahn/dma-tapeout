@@ -1,6 +1,6 @@
 # Agent Guide
 
-This repository documents and will implement a **descriptor-based scatter-gather DMA** for Tiny Tapeout on the **IHP SG13G2** shuttle (**TTIHP26b**, 2-tile budget) targeting **dual** QSPI PSRAM as a **bulk mover** (cross-device OK). Flash on the PMOD is MCU pass-through only for V1. ALU / cond-stop / ring / ASIC flash are post-V1 (`docs/llm/10-post-v1-features.md`).
+This repository implements a **descriptor-based scatter-gather DMA** for Tiny Tapeout on the **IHP SG13G2** shuttle (**TTIHP26b**, 2-tile budget) targeting **dual** QSPI PSRAM as a **bulk mover** (cross-device OK). Flash on the PMOD is MCU pass-through only for V1. ALU / cond-stop / ring / ASIC flash are post-V1 (`docs/llm/10-post-v1-features.md`).
 
 ## Context sources
 
@@ -9,6 +9,7 @@ This repository documents and will implement a **descriptor-based scatter-gather
 3. **Handwritten notes (read-only):** `C:\Users\lahnb\Documents\Obsidian Vault\Projects\Tiny Tapeout\`
 4. **Prior art (separate):** [`docs/llm/prior-art/tinydma-2c.md`](docs/llm/prior-art/tinydma-2c.md) - Andrew Kim / TT 296
 5. **Local shuttle / PDK clones (supporting, not architecture truth):** `ttihp-verilog-template/`, `IHP-Open-PDK/`
+6. **Local LibreLane harden runbook:** [`docs/llm/13-hardening-librelane.md`](docs/llm/13-hardening-librelane.md) (human: [`docs/human/architecture/hardening.md`](docs/human/architecture/hardening.md))
 
 ## Prior-art attribution
 
@@ -18,7 +19,7 @@ Related skill: [`.cursor/skills/tinydma-prior-art/SKILL.md`](.cursor/skills/tiny
 
 ## Current phase
 
-Planning / architecture. Early RTL under `src/rtl/`. Resolve items in `docs/llm/08-open-questions.md` before freezing interfaces. Process / pad model: **D27** in `docs/llm/07-decision-log.md`.
+**Phase 2** - V1 feature RTL is in place under `src/rtl/`; cocotb **M0–M3** accepted. Manual IHP LibreLane harden closed **1x1 @ 66 MHz** (~158 DFFs; see harden runbook). Next: M4 formal, remaining opens in `docs/llm/08-open-questions.md` (`uo_out[7:2]` status / error model), then M5–M7 and shuttle closure. Process / pad model: **D27** in `docs/llm/07-decision-log.md`.
 
 ## Do / don't
 

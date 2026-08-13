@@ -16,12 +16,14 @@ This directory is the canonical, verbose project context for AI agents working a
 10. `09-references.md` - links and external notes
 11. `10-post-v1-features.md` - add-later: ALU, cond-stop, ring, flash
 12. `11-timing-analysis.md` - post-RTL timing checklist (PSRAM QSPI AC; extensible)
-13. `verification/00-index.md` - verification strategy, cocotb platform, timed PSRAM model, scoreboards, checkers, formal, coverage, and gate-level/X closure
-14. `prior-art/tinydma-2c.md` - **separate** TinyDMA-2C prior-art dump (optional; read only when comparing)
+13. `13-hardening-librelane.md` - local LibreLane / Nix harden runbook (TTIHP26b, `ttihp-verilog-template`, area audits)
+14. `verification/00-index.md` - verification strategy, cocotb platform, timed PSRAM model, scoreboards, checkers, formal, coverage, and gate-level/X closure
+15. `prior-art/tinydma-2c.md` - **separate** TinyDMA-2C prior-art dump (optional; read only when comparing)
 
 ## Companion docs
 
 - Human-facing (condensed, complete): `../human/` (architecture split under `../human/architecture/`)
+- Local harden (condensed): `../human/architecture/hardening.md` (twin of `13-hardening-librelane.md`)
 - Verification (verbose): `verification/00-index.md` (M0-M6 ladder; simulation, formal, and physical-closure handoff)
 - Verification (condensed): `../human/verification/00-index.md`
 - **Parity:** durable facts here must also appear in `../human/` in some form. llm elaborates; it is not a private source of truth. See `../README.md`. Known debt: `verification/06-checkers.md` (`CHK-*`) is still mostly llm-only.
@@ -32,7 +34,7 @@ This directory is the canonical, verbose project context for AI agents working a
 
 ## Agent rules of engagement
 
-- Project status: **architecture / planning**. Early RTL exists under `src/rtl/` (QSPI package + engine skeleton); interfaces still follow `docs/llm/` + human architecture.
+- Project status: **Phase 2** (V1 feature RTL + verification hardening). Working RTL under `src/rtl/` (`top.v`, `sys_controller.sv`, `qspi_engine.sv`, `types.svh`). Simulation exits **M0–M3** accepted (M3: 2026-08-10). Manual LibreLane harden on IHP has closed **1x1 @ 66 MHz** (see `13-hardening-librelane.md`). Next focus: M4 formal (`FP-*`), remaining V1 opens (`uo_out[7:2]` / error model), then M5–M7 and shuttle closure. Interfaces follow `docs/llm/` + human architecture.
 - Start from scratch. TinyDMA-2C is prior art only; do not copy its architecture or RTL.
 - **Attribution:** anything drawn from `prior-art/tinydma-2c.md` (or TinyDMA-2C generally) must be labeled explicitly in the reply as coming from that prior art. Never present it as this project's frozen design.
 - Optimize for DFF count and routing congestion before feature richness.

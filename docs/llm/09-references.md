@@ -37,6 +37,9 @@ Do not modify these files from the repo agent workflow. If notes and repo docs d
   - Process overview: `IHP-Open-PDK/ihp-sg13g2/libs.doc/doc/SG13G2_os_process_spec.pdf`
   - Mux / pad config (TTIHP26b): https://github.com/TinyTapeout/tt-multiplexer/tree/ttihp26b (`rtl/tt_ihp_gpio.v`, `ol2/tt_top/tt_ihp_wrapper.v`, `ol2/tt_top/signoff.sdc`)
   - Clock / GPIO pages on tinytapeout.com still describe **sky130** pad ratings; do not apply those MHz figures to IHP without re-deriving
+  - Local harden runbook (Nix LibreLane, `tt_tool`, pitfalls, area audits): [`13-hardening-librelane.md`](13-hardening-librelane.md) / human [`../human/architecture/hardening.md`](../human/architecture/hardening.md)
+  - Upstream local harden guide: https://www.tinytapeout.com/guides/local-hardening/
+  - LibreLane docs: https://librelane.readthedocs.io/
 
 ## Prior art (separate context; do not copy)
 
