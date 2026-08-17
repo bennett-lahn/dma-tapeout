@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Status: V1 architecture frozen and implemented in `src/rtl/`; verification through M3 accepted. V1 freezes: QSPI on `uio`, `ui_in[0]=START`, `ui_in[2]=BUS_REQ`, `uo_out[0]=DONE` (= idle), `uo_out[1]=BUS_GNT`, idle/START (D14/D18), **no ABORT** (D23: use `rst_n`), pass-through request/grant (D22), **24-bit** address pointers with device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24) + **`QUIT`** end-of-chain (D19/D23: quit → IDLE; next START from fixed head), fixed head at `0x000000`/PSRAM0 (D18), **11-byte** TCD (D19), **QPI data path** `0xEB`/`0x02` (D15/D17), MCU-owned enter/exit QPI (D17), **66 MHz** `clk` + **SCK=clk/2** + rising-edge RX (D16), **1-byte** data buffer with depth-agnostic correctness (D20), FSM↔QSPI pulse-start handshake (D21), **dual PSRAM** DMA (incl. cross-device), **ASIC flash unsupported** (MCU pass-through only). ALU / cond-stop / ring / ASIC flash are **post-V1** (`10-post-v1-features.md`). Remaining open: `uo_out[7:2]` status pack; `ui_in[1]` reserved; error model (Q12).
+Status: V1 architecture frozen and implemented in `src/rtl/`; verification through M3 accepted; M5 active from accepted M2/M3. V1 freezes: QSPI on `uio`, `ui_in[0]=START`, `ui_in[2]=BUS_REQ`, `uo_out[0]=DONE` (= idle), `uo_out[1]=BUS_GNT`, idle/START (D14/D18), **no ABORT** (D23: use `rst_n`), pass-through request/grant (D22), **24-bit** address pointers with device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24) + **`QUIT`** end-of-chain (D19/D23: quit → IDLE; next START from fixed head), fixed head at `0x000000`/PSRAM0 (D18), **11-byte** TCD (D19), **QPI data path** `0xEB`/`0x02` (D15/D17), MCU-owned enter/exit QPI (D17), **66 MHz** `clk` + **SCK=clk/2** + rising-edge RX (D16), **5-byte** on-chip scratch buffer (**`DMA_BUF_DEPTH=5`** tapeout; depth-agnostic correctness per D20), FSM↔QSPI pulse-start handshake (D21), **dual PSRAM** DMA (incl. cross-device), **ASIC flash unsupported** (MCU pass-through only). ALU / cond-stop / ring / ASIC flash are **post-V1** (`10-post-v1-features.md`). Remaining open: `uo_out[7:2]` status pack; `ui_in[1]` reserved; error model (Q12).
 
 ## Product framing
 
@@ -71,7 +71,7 @@ Protocol: DONE ⇔ idle; MCU drives `uio` while `BUS_GNT=1` or `rst_n=0` (D22/D2
 - **Fixed head:** START always fetches TCD at **`0x000000` on PSRAM 0**. Address 0 is a valid TCD/buffer location.
 - **End of chain:** fetched TCD with **`CTRL_FLAGS.QUIT=1`** → IDLE / DONE (D19). Next START always refetches **`0x000000` / PSRAM 0** (D23).
 - Full APS6404L range is DMA-reachable (`A[22:0]`, 8 MB) per device.
-- **DFF cost:** working TCD metadata **88 DFFs** (24+24+8+24+8); no 24-bit head.
+- **DFF cost:** working TCD metadata **88 DFFs** (24+24+8+24+8 flags; full 11-byte record including reserved `[3:0]`); no 24-bit head.
 
 ### Firmware map (convention)
 
@@ -244,33 +244,33 @@ Only the **currently executing TCD** is resident on-chip. Planned fields:
 | `DEST_PTR` | 24 | Dest byte address (`[22:0]`; `[23]` unused) |
 | `TRANSFER_LEN` | 8 | Bytes remaining (0 = no-op) |
 | `NEXT_TCD` | 24 | Next descriptor byte address (`[22:0]`; `[23]` unused) |
-| `QUIT` / device selects / reserved | 8 | Flattened CTRL_FLAGS byte: `quit`, `src_device`, `dest_device`, `next_tcd_device`, `reserved[3:0]` (no nested ctrl struct in RTL) |
+| `QUIT` / device selects / reserved | 8 | Flattened last byte of hardware `tcd_t`: `next_tcd_device`, `dest_device`, `src_device`, `quit` (maps to `CTRL_FLAGS[7:4]`), then `reserved` (`CTRL_FLAGS[3:0]`, packed LSB). V1 control ignores reserved. |
 
 Approximate working metadata: **88 DFFs**, plus at least:
 
-- **Data buffer / holding register** between read and write (**1 byte / 8 DFFs for V1**; D20)
+- **Data buffer / holding register** between read and write (**`N` bytes; tapeout `N=5`**, nibble shift register; D20)
 - FSM state flops
 - QSPI shifter / bit counters / CE# timing counters
 - Error sticky bits (no head pointer)
 
-**Buffer depth (D20):** V1 uses `N=1`. FSM / QSPI sequencing must treat `N` as a parameter: correctness (TCD semantics, pointer/`TRANSFER_LEN` updates, single-CS cross-device) must not depend on a specific buffer length. Deepening the scratch later is a performance/DFF trade only. At `N=1` (and 11-byte TCD fetch), `tCEM` / Linear Burst page-cross limits are not binding. First failing depths @ 33 MHz SCK for a full-buffer hold: **`N ≥ 60`** (`tCEM` 4 us / `0xEB`), **`N ≥ 1026`** (two 1K page crosses).
+**Buffer depth (D20):** V1 tapeout uses **`N=5`**. FSM / QSPI sequencing must treat `N` as a parameter: correctness (TCD semantics, pointer/`TRANSFER_LEN` updates, single-CS cross-device) must not depend on a specific buffer length. Deepening the scratch later is a performance/DFF trade only. Verification may elaborate any integer `1..DMA_BUF_DEPTH_MAX` (8) via Makefile `-G`/`-P`; default sim/Make depth is 5. At `N=1` (and 11-byte TCD fetch), `tCEM` / Linear Burst page-cross limits are not binding. First failing depths @ 33 MHz SCK for a full-buffer hold: **`N ≥ 60`** (`tCEM` 4 us / `0xEB`), **`N ≥ 1026`** (two 1K page crosses).
 
 ### 4. Descriptor-control behavior inside `sys_controller`
 
 The integrated controller currently uses these states:
 
 1. `IDLE` - DONE high; park bus while `~BUS_GNT` (D26); wait for START with `~BUS_REQ` (ignored elsewhere).
-2. `STATE_FETCH` - burst-read **11 bytes** into working registers. First fetch: `0x000000` / PSRAM 0; later: `NEXT_TCD` on `NEXT_DEVICE`. If `QUIT=1` → `IDLE`.
-3. `STATE_READ` - read up to buffer depth `N` bytes from `SRC_PTR` into the data buffer (V1: `N=1`; skip if length 0).
+2. `STATE_FETCH` - burst-read **11 bytes** into working registers (nibble shifter; all 22 wire nibbles latched, including `CTRL_FLAGS[3:0]` reserved). First fetch: `0x000000` / PSRAM 0; later: `NEXT_TCD` on `NEXT_DEVICE`. If `QUIT=1` → `IDLE`.
+3. `STATE_READ` - read up to buffer depth `N` bytes from `SRC_PTR` into the data buffer (tapeout: `N=5`; skip if length 0).
 4. `STATE_WRITE` - write the buffered bytes to `DEST_PTR`.
-5. `STATE_UPDATE` - decrement `TRANSFER_LEN` by bytes moved. If bytes remain, increment SRC/DEST address bits by the same count (device flags sticky) and loop to `STATE_READ`. If length reaches 0, the working pointers need not be incremented because the completed descriptor no longer consumes them; loop to `STATE_FETCH` for `NEXT_TCD` on `NEXT_DEVICE`.
+5. `STATE_UPDATE` - decrement `TRANSFER_LEN` by bytes moved. Pointers are already advanced by `N` on READ/WRITE exit (don't-care on the final chunk). If length remains, loop to `STATE_READ`. If length reaches 0, loop to `STATE_FETCH` for `NEXT_TCD` on `NEXT_DEVICE`.
 
 Notes from planning:
 
 - `STATE_UPDATE` may fold into `STATE_WRITE` to save states.
 - Descriptor fetch should use a **held-CE# burst** so command+address overhead is not paid per TCD byte.
 - Data moves are QPI byte-oriented in V1 (D15). With `N=1`, each READ/WRITE raises CE# after one byte - no CE# refresh / page slicer required; revisit if `N` grows (D20).
-- Buffer depth `N=1` for V1; do not bake `N` into correctness assumptions (D20).
+- Buffer depth **`N=5`** for V1 tapeout; do not bake `N` into correctness assumptions (D20).
 - Abort: finish current QPI txn, then IDLE.
 - **BUS_REQ (D22):** MCU priority; do not start a new QPI txn while REQ; finish in-flight txn atomically, assert `BUS_GNT`, resume when REQ drops (unless IDLE).
 - No `STATE_PROCESS` in V1 (ALU / cond-stop are post-V1).
@@ -314,7 +314,7 @@ The DMA FSM issues transaction requests and arbitrates `uio_oe` (bus keeper whil
 
 #### FSM ↔ QSPI engine handshake (D21)
 
-Request (not a TCD): `{cmd, addr, device_sel, byte_len}` via `qspi_pkg` (`qspi_cmd_t`, `qspi_addr_t`, `qspi_device_sel_t`, `QPI_BYTE_LEN_W` in `src/rtl/types.svh`). `qspi_addr_t` is **24-bit** to match the QPI address phase; device uses `addr[22:0]` (`A[22:0]`); **`addr[23]` unused** (drive 0). `device_sel` selects PSRAM 0/1 from `SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE` as appropriate; pad CE#s remain `ram_a_cs_n` / `ram_b_cs_n`. `byte_len` is `logic [QPI_BYTE_LEN_W-1:0]` with `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)` and `QPI_MAX_BYTES = max(DMA_BUF_DEPTH_MAX, QPI_TCD_BYTES)` (`DMA_BUF_DEPTH` itself is a module parameter, default 1). Engine does **not** latch the request: FSM must keep it stable from `txn_valid` until `busy` low. Engine SCK is a registered toggle (**SCK = clk/2**); no `txn_ready` / no `wdone`.
+Request (not a TCD): `{cmd, addr, device_sel, byte_len}` via `qspi_pkg` (`qspi_cmd_t`, `qspi_addr_t`, `qspi_device_sel_t`, `QPI_BYTE_LEN_W` in `src/rtl/types.svh`). `qspi_addr_t` is **24-bit** to match the QPI address phase; device uses `addr[22:0]` (`A[22:0]`); **`addr[23]` unused** (drive 0). `device_sel` selects PSRAM 0/1 from `SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE` as appropriate; pad CE#s remain `ram_a_cs_n` / `ram_b_cs_n`. `byte_len` is `logic [QPI_BYTE_LEN_W-1:0]` with `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)` and `QPI_MAX_BYTES = max(DMA_BUF_DEPTH_MAX, QPI_TCD_BYTES)` (`DMA_BUF_DEPTH` itself is a module parameter; V1 tapeout and default sim: **5**). Engine does **not** latch the request: FSM must keep it stable from `txn_valid` until `busy` low. Engine SCK is a registered toggle (**SCK = clk/2**); no `txn_ready` / no `wdone`.
 
 | Signal | Dir | Contract |
 |---|---|---|

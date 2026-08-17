@@ -97,15 +97,10 @@ The six-wait-cycle part of `CHK-HS-OPCODE` is measured by the pin protocol decod
 | `CHK-CTRL-DATA-PAIR` | Between descriptor fetches, every payload read is followed by exactly one same-length payload write before another payload read or fetch. | na | required | top-observable at pins |
 | `CHK-ARB-GNT-NOT-BUSY` | On every sampled low-to-high transition of `bus_gnt`, internal `qspi_busy=0`. It remains 0 for the complete grant interval. | na | required | RTL-hierarchy-only |
 | `CHK-CTRL-STATE-VALID` | `curr_state`, `next_state`, and `stalled_state` are resolved values in `sys_control_state_t`; `stalled_state` is not overwritten while stalled. | na | required | RTL-hierarchy-only |
-| `CHK-CTRL-DATA-CNT` | Controller `data_cnt` never exceeds 22 during descriptor fetch or `2 * DMA_BUF_DEPTH` during payload movement, never underflows, and satisfies every dynamic-index precondition. | na | required | RTL-hierarchy-only |
-| `CHK-RST-INTERNAL` | After a rising `clk` edge sampled with `rst_n=0`, controller state is `SYS_CTRL_IDLE`, engine state is `QSPI_IDLE`, `qspi_busy=0`, request/stream pulses are 0, data counters are 0, RAM CE# registers are high, SCK is low, and first-fetch state is reset to device 0/address 0. | required subset | required | L0-port plus hierarchy at L0, RTL-hierarchy-only at L1 |
+| `CHK-CTRL-DATA-CNT` | **Retired (D31).** Former remaining-nibble counter `data_cnt` is gone; FETCH latches all 22 wire nibbles. Keep the ID; results are `na` at every DUT level. | na | na | retired |
+| `CHK-RST-INTERNAL` | After a rising `clk` edge sampled with `rst_n=0`, controller state is `SYS_CTRL_IDLE`, engine state is `QSPI_IDLE`, `qspi_busy=0`, request/stream pulses are 0, engine `cycle_cnt` is 0, RAM CE# registers are high, SCK is low, and first-fetch state is reset to device 0/address 0. | required subset | required | L0-port plus hierarchy at L0, RTL-hierarchy-only at L1 |
 
-`CHK-CTRL-DATA-CNT` applies these precise dynamic-index preconditions:
-
-- a descriptor `qspi_rdata_valid` capture requires `1 <= data_cnt <= 22`,
-- a payload `qspi_rdata_valid` capture requires `1 <= data_cnt <= 2 * accepted_byte_len`,
-- while driving write data, `1 <= data_cnt <= 2 * accepted_byte_len`, and
-- `qspi_wdata_next=1` while writing requires `data_cnt >= 2`.
+`CHK-CTRL-DATA-CNT` is retired. Do not reuse the ID. FETCH completion is `~qspi_busy`; every `qspi_rdata_valid` in FETCH is latched. Write-buffer part-selects are driven from `qspi_byte_len`, not a remaining-nibble count.
 
 For `CHK-CTRL-FETCH-HEAD`, the top-observable high-to-low transition of `DONE` identifies acceptance of the host driver's valid START protocol. The first following ASIC QPI transaction is checked only from top-level pins. The checker does not depend on the internal synchronized pulse or a synthesized hierarchy name.
 

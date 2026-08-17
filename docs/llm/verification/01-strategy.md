@@ -138,7 +138,7 @@ Every regression result records:
 - timing profile and overridden delay values
 - gate and SDF mode where applicable
 
-The intended buffer-depth sweep is `1, 2, 4, 8`, while the V1 implementation and tapeout configuration remain `DMA_BUF_DEPTH=1`. RTL exposes `DMA_BUF_DEPTH` as a module parameter on `tt_um_lahnb_sgdma` / `sys_controller` (package `DMA_BUF_DEPTH_MAX=8` sizes interface widths). Larger values test depth-agnostic correctness without changing the V1 tapeout configuration; the M5 sweep still depends on the sim Makefile wiring `-GDMA_BUF_DEPTH=N`.
+V1 tapeout and default sim/Make use `DMA_BUF_DEPTH=5`. RTL exposes `DMA_BUF_DEPTH` as a module parameter on `tt_um_lahnb_sgdma` / `sys_controller` (package `DMA_BUF_DEPTH_MAX=8` sizes interface widths). Verification may elaborate any integer `1..DMA_BUF_DEPTH_MAX` via Makefile `-G`/`-P`. The M5 depth sweep exercises depth-agnostic correctness across that range. Wave 4 2026-08-16 partial random regression is green at **N=5** / `TIMING_PROFILE=ideal` (Icarus seeds 1/2/3/5/8, Verilator 1/2; `coverage.json` + `stimulus.json` per seed under `test/runs/top/<sim>/n5/ideal/seed-<n>/`; seed-1 Icarus ≡ Verilator). `TC-DEPTH` (directed suite at each compile-time `DMA_BUF_DEPTH`), full `1..8` sweep, Verilator seeds 3/5/8, and `COV-*` / `COV-DEPTH*` closure remain open - do not claim M5 exit.
 
 ## Milestone ladder
 
@@ -196,8 +196,8 @@ Out of M2 (residuals, do not reopen the M2 gate):
 
 - CI L1 Icarus smoke job still open
 - M3: delays, `Q-LAUNCH` / `Q-RXEDGE`, `Q-CSP` / `Q-CHD` / `Q-TERM` (closed 2026-08-10; physical `T-HZ` remains post-M3 closure)
-- M4 formal `FP-*`
-- M5 random / `COV-*` and `TC-DEPTH` (harness must select `DMA_BUF_DEPTH` 2/4/8)
+- M4 formal `FP-*` (may proceed independently; not a gate on starting M5)
+- M5 random / `COV-*` and `TC-DEPTH` / `COV-DEPTH*` (Wave 4 2026-08-16 partial random at **N=5** only; full depth sweep and `COV-*` closure open; do not claim M5 exit)
 - Optional model-plane Z→0 retirement (`tb_top` / `tb_engine` float→0)
 - `test_qspi_pin_disposition` retains the intentional model-plane dispose contract (`assert_model_pin_disposition`); ordinary paths use `dispose_run` / pin
 - Ownership suite keeps one consolidated `@cocotb.test`; `TC-OWN-*` are sub-steps, not `TEST_FILTER` names (full re-split deferred)
@@ -236,7 +236,7 @@ Out of M3 (residuals, do not reopen the M3 gate):
 - Closed (2026-08-10 residual wave): delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*` after CE# rise cleanup - see `TC-RXEDGE-RACE-DEVICE-PLANE` / `04-timing-in-sim.md`
 - Margin gate asserts only fields present on a legal baseline; write-path baselines may omit CEM/CSP/CHD mins; boundary-pass margins near zero are expected by construction
 - Lifecycle intentional non-fails, incomplete-window diagnostics, and the `reset_truncated` authoring rule for forced-`rst_n=0` dispose windows: see `06-checkers.md`
-- CI L1 Icarus smoke job, M4 formal, M5 random / `COV-*` / `TC-DEPTH`, Z→0 retirement, BUS_GNT-aware CTRL/HS remain unchanged open items
+- CI L1 Icarus smoke job, M4 formal (independent track), M5 random / `COV-*` / `TC-DEPTH` / `COV-DEPTH*` (Wave 4 partial random at **N=5**; Verilator 3/5/8, full depth `1..8`, `COV-*` merge still open), Z→0 retirement, BUS_GNT-aware CTRL/HS remain unchanged open items
 
 ### M4 - Formal control-plane safety
 
@@ -250,17 +250,34 @@ Out of M3 (residuals, do not reopen the M3 gate):
 - bounded deadlock checks complete at documented depths
 - assumptions constrain only legal environment behavior and do not assume the property being proved
 
+**M4 status:** deferred for now. Formal stubs under `test/formal/` remain untouched; M4 may proceed independently later. Do not claim M4 pass.
+
 ### M5 - Randomized regression and coverage
 
-**Entry:** M2 through M4.
+**Entry:** M2 and M3 accepted. M4 is not a prerequisite; M4 may proceed on an independent track.
 
-**Exit:**
+**Status:** `wip` (partial evidence 2026-08-16; do not claim M5 exit).
+
+**Partial evidence (Wave 4 2026-08-16, tapeout **N=5**, `TIMING_PROFILE=ideal` with zero testbench transport placeholders):
+
+- Icarus constrained-random regression: `REGRESSION_SEEDS` 1, 2, 3, 5, 8 pass
+- Verilator constrained-random regression: seeds 1 and 2 pass (seeds 3, 5, 8 not yet run)
+- Per-seed artifacts: `coverage.json` and `stimulus.json` under `test/runs/top/<sim>/n5/ideal/seed-<n>/`
+- Cross-sim on seed 1: Icarus ≡ Verilator (69 ordered pin transactions; `CHK-*` and `Q-*` clean; `CHK-CTRL-DATA-CNT=na`)
+
+**Still open for M5 exit:**
+
+- Verilator seeds 3, 5, 8 at **N=5**
+- full `make depth` / `run_depth_sweep.sh` loop across `1..DMA_BUF_DEPTH_MAX` (`TC-DEPTH` directed suite at each compile-time `DMA_BUF_DEPTH`)
+- required `COV-*` (functional coverage point IDs) and `COV-DEPTH*` crosses: fragment merge and closure criteria
+
+**Exit (unchanged criteria):**
 
 - constrained-random descriptor chains and host request injection pass on Icarus
 - the designated high-volume suite passes on Verilator
 - failures reproduce from one printed seed and command
-- depth 1 passes its applicable suite
-- `DMA_BUF_DEPTH` values 2, 4, and 8 pass their applicable suite once the sim harness selects the module parameter; until the harness lands this M5 item remains `blocked`
+- tapeout depth `DMA_BUF_DEPTH=5` passes its applicable suite at default sim/Make settings
+- other depths across `1..DMA_BUF_DEPTH_MAX` pass their applicable suite once the sim harness selects the module parameter via `-G`/`-P`
 - required `COV-*` points and crosses meet closure criteria or have reviewed exclusions
 
 ### M6 - Gate-level and X checks

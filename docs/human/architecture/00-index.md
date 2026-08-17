@@ -21,7 +21,7 @@ Verbose agent context: `../../llm/03-architecture.md`, `../../llm/04-tcd-and-dat
 |---|---|---|
 | Top / host sync | [`blocks/host-interface.md`](blocks/host-interface.md) | Implemented: two-flop sync of MCU `START`/`BUS_REQ`; rising-edge qualify START |
 | Integrated system controller | [`blocks/host-interface.md`](blocks/host-interface.md), [`blocks/descriptor-fsm.md`](blocks/descriptor-fsm.md) | Implemented in `sys_controller`: host/mode + fetch/read/write/update |
-| Working registers | [`blocks/working-registers.md`](blocks/working-registers.md) | Implemented: 88 DFF TCD working set; device flags in `CTRL_FLAGS` |
+| Working registers | [`blocks/working-registers.md`](blocks/working-registers.md) | Implemented: 88 DFF TCD working set; live flags in `CTRL_FLAGS[7:4]`; reserved `[3:0]` latched, unused in V1 |
 | TCD format | [`blocks/tcd.md`](blocks/tcd.md) | Frozen + used by RTL/tests: 11-byte / device flags in `CTRL_FLAGS` + `QUIT` |
 | QSPI engine | [`blocks/qspi-engine.md`](blocks/qspi-engine.md) | Implemented in `qspi_engine.sv`: QPI master + D21 handshake; A/B CS; no flash opcodes V1 |
 | Byte ALU | [`blocks/alu.md`](blocks/alu.md) | **post-V1** stub |

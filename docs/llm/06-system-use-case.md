@@ -38,7 +38,7 @@ V1 ingress: **pre-staged buffers in PSRAM** (MCU wrote them before START). Live 
 
 Need: move N bytes across multiple extents / devices.
 
-Mechanism: when `TRANSFER_LEN` hits 0, fetch next TCD and continue until a `QUIT=1` TCD (`CTRL_FLAGS` bit 0).
+Mechanism: when `TRANSFER_LEN` hits 0, fetch next TCD and continue until a `QUIT=1` TCD (`CTRL_FLAGS` bit 4; D32).
 
 ### 2. Cross-device A↔B
 

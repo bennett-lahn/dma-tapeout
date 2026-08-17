@@ -161,13 +161,13 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 - Shrinks verification surface for the shuttle vs telemetry extras.
 - Keeps a clear implement-later path so telemetry-shaped ideas are not lost.
 
-**DFF / tile impact:** V1 pays **8 DFFs** for a `CTRL_FLAGS` byte (**4 used** for `QUIT` + three device selects per D24; `[7:4]` reserved). Post-V1 ALU/IMM/ring reintroduce further cost in the order above.
+**DFF / tile impact:** V1 memory TCD still has a `CTRL_FLAGS` byte. On-chip working flags are **8 DFFs** after D31 (`QUIT` + three device selects + reserved `[3:0]`). Post-V1 ALU/IMM/ring reintroduce further cost in the order above.
 
 ## D13 - `CTRL_FLAGS` device select (reject pointer MSB)
 
 **Decision (superseded for device/stop encoding by D19):**
 
-1. Re-add a full **`CTRL_FLAGS` byte** to the V1 TCD (**11 bytes** total; working metadata **88 DFFs**) - **still binding**.
+1. Re-add a full **`CTRL_FLAGS` byte** to the V1 **memory** TCD (**11 bytes** / 88 bits) - **still binding**. Interim 84-DFF skip of reserved is **superseded by D31**.
 2. ~~V1 device fields in `CTRL_FLAGS`.~~ **Superseded by D19:** device is `ptr[23]`; `CTRL_FLAGS` holds `QUIT` + reserved.
 3. ~~Do not steal `ptr[23]` for device select.~~ **Superseded by D19.**
 4. **`TRANSFER_LEN == 0`:** no-op descriptor - skip data moves; immediately follow `NEXT_TCD` (device from `NEXT_TCD[23]`) - **still binding**.
@@ -347,21 +347,25 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 1. **Revoke pointer-MSB device select (D19) for V1.** `SRC_PTR` / `DEST_PTR` / `NEXT_TCD` are **byte addresses** only. QSPI address phase uses `ptr[22:0]`; `ptr[23]` is unused (drive 0).
 2. **Three device-select flags** live in **`CTRL_FLAGS`**, taking former reserved bits so the TCD stays **11 bytes / 88 bits**:
 
-| Bits | Name | Encoding |
-|---|---|---|
-| 0 | `QUIT` | unchanged (D19/D23) |
-| 1 | `SRC_DEVICE` | device for reads of `SRC_PTR` (`0`=PSRAM 0, `1`=PSRAM 1) |
-| 2 | `DEST_DEVICE` | device for writes of `DEST_PTR` |
-| 3 | `NEXT_DEVICE` | device for the next FETCH of `NEXT_TCD` |
-| 7:4 | reserved | Write 0; post-V1 (was `[7:1]`; three bits claimed for device selects) |
+~~| Bits | Name | Encoding |~~
+~~|---|---|---|~~
+~~| 0 | `QUIT` | unchanged (D19/D23) |~~
+~~| 1 | `SRC_DEVICE` | device for reads of `SRC_PTR` (`0`=PSRAM 0, `1`=PSRAM 1) |~~
+~~| 2 | `DEST_DEVICE` | device for writes of `DEST_PTR` |~~
+~~| 3 | `NEXT_DEVICE` | device for the next FETCH of `NEXT_TCD` |~~
+~~| 7:4 | reserved | Write 0; post-V1 (was `[7:1]`; three bits claimed for device selects) |~~
+
+**Superseded by D32:** live flags occupy `CTRL_FLAGS[7:4]` (`NEXT_DEVICE` bit 7, `DEST_DEVICE` bit 6, `SRC_DEVICE` bit 5, `QUIT` bit 4); reserved is `[3:0]`. FETCH latches all 22 nibbles (D31).
 
 3. While bytes remain after a completed chunk, pointer increments bump only the address field (`[22:0]`); device flags are sticky for the life of that TCD (device does not change mid-descriptor). After the final chunk makes `TRANSFER_LEN=0`, the working pointers need not be incremented because that descriptor no longer consumes them.
 4. After a data (or no-op) TCD completes, the next FETCH uses `{NEXT_DEVICE, NEXT_TCD[22:0]}`.
-5. Working metadata remains **88 DFFs** / **11-byte** TCD (repack inside `CTRL_FLAGS`; no width growth).
+5. Working metadata is an **11-byte** TCD in memory. An interim working set dropped the 4 reserved flag flops (**84 DFFs**); **D31** restored the full **88-bit** latch and removed `data_cnt`.
 
-**Why:** One explicit device flag per pointer keeps SRC/DEST/NEXT independently selectable for cross-device chains without encoding device in address MSBs, while preserving the 88-bit working set.
+**Why:** One explicit device flag per pointer keeps SRC/DEST/NEXT independently selectable for cross-device chains without encoding device in address MSBs, while preserving the 11-byte memory record.
 
 **DFF / tile impact:** none vs prior 11-byte TCD (flags repack only). Supersedes D19 pointer-MSB device select and the earlier D24 draft that only moved `NEXT_DEVICE`.
+
+**Follow-up (working TCD):** an interim skip of `CTRL_FLAGS[3:0]` (84 DFFs + `data_cnt`) is **superseded by D31**. Working `tcd_t` latches all 11 bytes / 88 bits. Firmware still writes reserved `[3:0]` as 0; V1 control ignores those bits. Post-V1 can reuse the already-latched nibble.
 
 ## D25 - Big-endian TCD pointer fields
 
@@ -369,7 +373,7 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 1. The three 24-bit TCD pointer fields (`SRC_PTR`, `DEST_PTR`, and `NEXT_TCD`) use **big-endian byte order** in PSRAM: the most-significant byte is stored at the lowest address. Pointer `0x123456` is serialized as bytes `12 34 56`.
 2. The byte offsets and 11-byte TCD size do not change. `TRANSFER_LEN` remains at offset 6 and `CTRL_FLAGS` remains at offset 10.
-3. `CTRL_FLAGS` bit numbering does not change: `QUIT` is bit 0, followed by `SRC_DEVICE`, `DEST_DEVICE`, and `NEXT_DEVICE` in bits 1 through 3.
+~~3. `CTRL_FLAGS` bit numbering does not change: `QUIT` is bit 0, followed by `SRC_DEVICE`, `DEST_DEVICE`, and `NEXT_DEVICE` in bits 1 through 3.~~ **Superseded by D32:** live flags in `CTRL_FLAGS[7:4]`; reserved in `[3:0]`.
 4. Firmware must explicitly serialize pointer bytes into an 11-byte buffer. It must not copy native little-endian MCU integers or a padded C structure directly into PSRAM.
 5. This decision changes the firmware-visible memory format and documentation only. The existing RTL fetch ordering remains unchanged. Payload data remains byte-preserving and receives no endian conversion.
 
@@ -461,3 +465,46 @@ Detail: `02-constraints.md`, `11-timing-analysis.md`, human `architecture/limita
 **DFF / tile impact:** none; firmware / process decision only.
 
 Detail: `docs/human/architecture/firmware.md`, `docs/llm/12-firmware.md`.
+
+## D31 - Latch the full 11-byte TCD; drop `data_cnt`
+
+**Decision:**
+
+1. Working `tcd_t` latches all **11 bytes / 88 bits**, including `CTRL_FLAGS[3:0]` reserved as the packed LSB nibble after `quit`.
+2. FETCH LSB-inserts every `qspi_rdata_valid` nibble (22 wire nibbles). Transaction done remains `~qspi_busy`; that edge is not a data strobe.
+3. Remove controller `data_cnt` (the remaining-nibble counter that existed only to skip the last reserved nibble).
+4. Firmware still writes reserved `[3:0]` as 0. V1 control logic still ignores those bits. Post-V1 can reuse the already-latched nibble without restoring 4 DFFs.
+
+**Why:** Skipping the last nibble cost 5 counter DFFs plus skip compares to save 4 TCD flops. Net worse, and FETCH was the only consumer.
+
+**DFF / tile impact:** working TCD 84 → **88 DFFs**; remove 5 `data_cnt` DFFs and the skip compares. Net about **-1 DFF** vs the skip design. First harden (~158 DFFs) is not re-measured here.
+
+**Supersedes:** D24 follow-up that dropped reserved `[3:0]` from the working set.
+
+Detail: `docs/llm/04-tcd-and-datapath.md`, `docs/human/architecture/blocks/tcd.md`, `docs/human/architecture/blocks/working-registers.md`.
+
+## D32 - `CTRL_FLAGS` live flags in `[7:4]`; reserved in `[3:0]`
+
+**Decision:**
+
+1. **Memory byte `CTRL_FLAGS` (offset 10) bit map** matches packed `tcd_t` in `types.svh` and firmware serialization (D25 big-endian pointer byte order unchanged; **bit positions within the byte supersede D24 table and D25 item 3**):
+
+| Bits | Name | Encoding |
+|---|---|---|
+| 7 | `NEXT_DEVICE` | device for the next FETCH of `NEXT_TCD` (`0`=PSRAM 0, `1`=PSRAM 1) |
+| 6 | `DEST_DEVICE` | device for writes of `DEST_PTR` |
+| 5 | `SRC_DEVICE` | device for reads of `SRC_PTR` |
+| 4 | `QUIT` | `1` = after FETCH, go IDLE / DONE without executing this TCD (D19/D23); `0` = run (or no-op if `LEN==0`) |
+| 3:0 | reserved | Write 0; hardware latches these bits (D31); V1 control ignores them. Post-V1 (ALU / cond-stop / ring) can reuse this nibble. |
+
+2. **FETCH** LSB-inserts all **22 wire nibbles** into **88-bit** working `tcd_t` (D31). Wire nibble 21 is `CTRL_FLAGS[7:4]`; wire nibble 22 is `CTRL_FLAGS[3:0]` reserved. Transaction done remains `~qspi_busy`; that edge is not a data strobe.
+
+3. Historical **21-nibble skip + `data_cnt`** is superseded by D31; do not reopen.
+
+**Why:** RTL packed order (`next_tcd_device`, `dest_device`, `src_device`, `quit`, `reserved`) and firmware `CTRL_FLAGS` byte serialization already used this map. D24/D25 item 3 documented the pre-`types.svh` bit-0 layout; D32 freezes the implemented layout for agents and firmware.
+
+**DFF / tile impact:** none (documentation alignment with existing RTL / reference model).
+
+**Supersedes:** D24 `CTRL_FLAGS` bit map (`QUIT` bit 0, device bits 1-3, reserved `[7:4]`); D25 item 3 ("bit numbering does not change").
+
+Detail: `docs/llm/04-tcd-and-datapath.md`, `docs/human/architecture/blocks/tcd.md`, `docs/human/architecture/blocks/working-registers.md`.

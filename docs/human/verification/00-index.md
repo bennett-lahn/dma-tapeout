@@ -31,7 +31,7 @@ Monitors run every applicable L0/L1 test; missing hierarchy → `blocked`, never
 | Pin / ownership (`CHK-PIN-*`) | CS mutex, flash CS park, SIO dual-drive, SCK park, addr[23]=0, known SIO | `pass` (`via=pin` when monitor ran) |
 | Arbitration / reset (`CHK-ARB-*`, `CHK-RST-*`) | Grant OE quiet, park, busy/grant rules, reset OE/status/internal | `pass` on L1 DMA paths |
 | Handshake (`CHK-HS-*`) | txn start, req stable, WDATA/RDATA counts and known, pulse width, opcode | `pass` on DMA paths; off for MCU pass-through negatives |
-| Controller (`CHK-CTRL-*`) | req gate/shape, fetch head, data pair, state valid, data_cnt | `pass` on DMA paths; off for MCU pass-through negatives |
+| Controller (`CHK-CTRL-*`) | req gate/shape, fetch head, data pair, state valid; `CHK-CTRL-DATA-CNT` retired | `pass` on DMA paths; off for MCU pass-through negatives |
 
 Residuals: BUS_GNT-aware CTRL/HS so pass-through suites need not detach those monitors; model-plane dispose contract retained only in `test_qspi_pin_disposition`.
 
@@ -66,9 +66,10 @@ System Python is `python3`. Prefer suite Verilator 5.051 over older `/usr/local`
 | M2 exit (reference / scoreboard / directed / `CHK-*`) | `pass` | 2026-08-08 L1 Icarus: smoke; 13 directed + skipped `TC-DEPTH`; reset/bus 11/11; migrated M1 suites |
 | M3 exit (delay / launch / RX / lifecycle) | `pass` | 2026-08-10: `nominal` Icarus ≡ Verilator on timing + ownership + launch_rx; cleanup `TC-*`; see residuals |
 | `Q-LAUNCH`, `Q-RXEDGE`, `Q-CSP`/`Q-CHD`/`Q-TERM` | `pass` | M3 directed evidence; delay-rerun CEM/CPH/SIO-OWN also green |
-| M4-M6 implementation | `todo` | Next: M4 formal `FP-*` |
+| M4 formal (`FP-*`) | `todo` | Deferred for now; may proceed independently; stubs under `test/formal/` untouched - do not claim pass |
+| M5 random / `COV-*` / depth sweep | `wip` | Wave 4 2026-08-16 partial random green at **N=5** / `ideal`: Icarus seeds 1/2/3/5/8, Verilator 1/2 (`coverage.json` + `stimulus.json` under `test/runs/top/<sim>/n5/ideal/seed-<n>/`); seed-1 Icarus ≡ Verilator (69 txns, `CHK-*`/`Q-*` clean; `CHK-CTRL-DATA-CNT=na`). Still open: Verilator seeds 3/5/8; full `make depth` `1..8` (`TC-DEPTH`); `COV-*` / `COV-DEPTH*` fragment merge and closure |
 | SDF run | `blocked` | No compatible final-netlist SDF artifact is available yet |
-| `DMA_BUF_DEPTH=1,2,4,8` sweep | `blocked` | `TC-DEPTH` skipped in default directed module; harness must select depths for M5 |
+| `DMA_BUF_DEPTH` elaboration `1..8` | `wip` | Tapeout and default sim/Make depth **N=5**; `make depth` loops `1..DMA_BUF_DEPTH_MAX` with isolated build dirs |
 | M7 FPGA hardware validation | `todo` | Not started; requires an FPGA-synthesizable build and carrier-board bring-up with real MCU firmware |
 | `T-*` closure | `todo` | STA and demoboard evidence follow M6 |
 | CI smoke job | `todo` | Local smoke green; CI job still open |
@@ -84,8 +85,8 @@ System Python is `python3`. Prefer suite Verilator 5.051 over older `/usr/local`
 - Margin gate: asserts present legal-baseline fields; write-path may omit CEM/CSP/CHD mins; boundary-pass ≈0 by construction
 - Broader `PSRAM_TACLK_NS` / path sweep beyond nominal + documented endpoints is post-M3 if not already covered
 - Handshake incomplete-window stays diagnostic (no new ID); `_pending_start` ignore; no cleanup-only `Q-TERM`; `@tb_test` finally deferred
-- M4 formal `FP-*`
-- M5 random / `COV-*` and `TC-DEPTH` harness wiring
+- M4 formal `FP-*` (deferred; independent track; do not claim pass)
+- M5 random / `COV-*` and `TC-DEPTH` / `COV-DEPTH*` closure across `1..8` (Wave 4 partial random at **N=5** only; full `make depth` / `run_depth_sweep.sh` loop and `COV-*` merge not green; do not claim M5 exit)
 - Optional Z→0 retirement
 - Ownership per-case re-split (`TC-OWN-*` stay sub-steps)
 - BUS_GNT-aware CTRL/HS checkers (MCU pass-through negatives currently detach those monitors)

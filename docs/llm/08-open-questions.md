@@ -4,7 +4,7 @@ Unresolved items that block a frozen architecture. When one is decided, move the
 
 ## Q1 - Upper address bits for 24-bit PSRAM phases
 
-**Decided (V1 / D10 / D18 / D19 / D24):** full **24-bit** internal pointers (byte addresses). Device select is **`CTRL_FLAGS.SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`** (D24). QSPI address phase uses `ptr[22:0]` (`A[22:0]`); `ptr[23]` unused. Address `0x000000` is a **valid** location (fixed head on PSRAM 0). End-of-chain is `CTRL_FLAGS.QUIT`. Working TCD metadata **88 DFFs** (11-byte TCD; no head register). See `03-architecture.md` / `04-tcd-and-datapath.md`.
+**Decided (V1 / D10 / D18 / D19 / D24 / D31):** full **24-bit** internal pointers (byte addresses). Device select is **`CTRL_FLAGS.SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`** (D24). QSPI address phase uses `ptr[22:0]` (`A[22:0]`); `ptr[23]` unused. Address `0x000000` is a **valid** location (fixed head on PSRAM 0). End-of-chain is `CTRL_FLAGS.QUIT`. Working TCD metadata **88 DFFs** (full 11-byte memory TCD, including reserved `[3:0]`; no head register). See `03-architecture.md` / `04-tcd-and-datapath.md`. Packed field order is `types.svh`.
 
 ## Q2 - Who initializes PSRAM (reset + enter quad)?
 
@@ -78,7 +78,7 @@ Which conditions sticky-error vs ignore vs halt?
 
 ## Q13 - PSRAM device select encoding (dual-device)
 
-**Decided (D19 / D24):** device select is **`CTRL_FLAGS.SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`** (`0`=PSRAM0, `1`=PSRAM1). QSPI drives `A[22:0]` from `ptr[22:0]`; pointer MSBs unused. End-of-chain is **`CTRL_FLAGS.QUIT`**. Cross-device byte copy: read-then-write with only one CE# low at a time; no multi-outstanding for V1. Fixed head on PSRAM 0 at address 0 (D18). Working set remains **88 bits**.
+**Decided (D19 / D24 / D31):** device select is **`CTRL_FLAGS.SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`** (`0`=PSRAM0, `1`=PSRAM1). QSPI drives `A[22:0]` from `ptr[22:0]`; pointer MSBs unused. End-of-chain is **`CTRL_FLAGS.QUIT`**. Cross-device byte copy: read-then-write with only one CE# low at a time; no multi-outstanding for V1. Fixed head on PSRAM 0 at address 0 (D18). Working set is **88 bits** (full 11-byte TCD, including reserved `[3:0]`).
 
 ## Q14 - TCD pointer byte order
 

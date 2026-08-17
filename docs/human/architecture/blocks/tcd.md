@@ -2,7 +2,7 @@
 
 Status: **11-byte** layout with **big-endian 24-bit pointer fields** (D25); device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24); `QUIT` end-of-chain; fixed head (D18/D19/D24).
 
-Post-V1 ALU / cond-stop / ring (extend reserved flag bits `[7:4]`): `[../post-v1.md](../post-v1.md)`.
+Post-V1 ALU / cond-stop / ring (extend reserved flag bits `[3:0]`): `[../post-v1.md](../post-v1.md)`.
 
 ## Role
 
@@ -31,9 +31,9 @@ The three 24-bit pointer fields are **big-endian** (D25): firmware stores the mo
 | 7      | `NEXT_TCD`     | 24    | Next TCD byte address; device from `NEXT_DEVICE`; addr 0 is a valid link |
 | 10     | `CTRL_FLAGS`   | 8     | `QUIT`, `SRC_DEVICE`, `DEST_DEVICE`, `NEXT_DEVICE`, reserved                |
 
-Total **88 bits** (unchanged).
+Memory TCD is **88 bits** (11 bytes). Working `tcd_t` is **88 bits** (full record latched, D31).
 
-**RTL note:** `CTRL_FLAGS` is a memory/layout name for byte offset 10. In `tcd_t` (`src/rtl/types.svh`) those bits are flattened (`quit`, `src_device`, `dest_device`, `next_tcd_device`, `reserved`) - no nested ctrl-flags struct.
+**RTL note:** `CTRL_FLAGS` is a memory/layout name for byte offset 10. Packed `tcd_t` in `types.svh` is the layout: `src_ptr`, `dest_ptr`, `transfer_len`, `next_tcd`, `next_tcd_device`, `dest_device`, `src_device`, `quit`, `reserved`. FETCH reads 22 nibbles and latches all of them. Live flags are `CTRL_FLAGS[7:4]`; reserved is `[3:0]`.
 
 Firmware must serialize the record explicitly:
 
@@ -61,16 +61,16 @@ Do not write a native little-endian MCU integer or padded C structure directly i
 
 | Bits | Name       | Encoding                                                     |
 | ---- | ---------- | ------------------------------------------------------------ |
-| 0    | `QUIT`     | `1` = IDLE / DONE after fetching TCD (no execute); `0` = run |
-| 1    | `SRC_DEVICE`  | `0` = SRC on PSRAM 0; `1` = SRC on PSRAM 1                   |
-| 2    | `DEST_DEVICE` | `0` = DEST on PSRAM 0; `1` = DEST on PSRAM 1                 |
-| 3    | `NEXT_DEVICE` | `0` = next TCD on PSRAM 0; `1` = next TCD on PSRAM 1         |
-| 7:4  | reserved   | Write 0; post-V1                                             |
+| 7    | `NEXT_DEVICE` | `0` = next TCD on PSRAM 0; `1` = next TCD on PSRAM 1         |
+| 6    | `DEST_DEVICE` | `0` = DEST on PSRAM 0; `1` = DEST on PSRAM 1                 |
+| 5    | `SRC_DEVICE`  | `0` = SRC on PSRAM 0; `1` = SRC on PSRAM 1                   |
+| 4    | `QUIT`     | `1` = IDLE / DONE after fetching TCD (no execute); `0` = run |
+| 3:0  | reserved   | Write 0. Hardware latches these bits (D31); V1 control ignores them. Post-V1 can reuse this nibble. |
 
 
 After FETCH, if `QUIT=1`, go **IDLE** / **DONE** (no copy). The next accepted **START** always begins again at **`0x000000` on PSRAM 0** (fixed head; D23) - it does not resume mid-chain.
 
-`STATE_FETCH` burst-reads these **11 bytes** (first: addr 0 / PSRAM 0; later: `NEXT_TCD` on `NEXT_DEVICE`) into the working registers (held-CE#).
+`STATE_FETCH` burst-reads these **11 bytes** (first: addr 0 / PSRAM 0; later: `NEXT_TCD` on `NEXT_DEVICE`) into the working registers (held-CE#). All 22 wire nibbles are latched, including the reserved last nibble of byte 10 (`CTRL_FLAGS[3:0]`).
 
 Firmware may place TCDs on convenient alignments (e.g. 16-byte); hardware still consumes exactly 11 bytes per record.
 
@@ -86,8 +86,7 @@ loop:
         byte = READ(SRC_PTR)     # CS from SRC_DEVICE
         WRITE(DEST_PTR, byte)    # CS from DEST_DEVICE
         TRANSFER_LEN -= 1
-        if TRANSFER_LEN > 0:
-            SRC_PTR[22:0] += 1; DEST_PTR[22:0] += 1
+        SRC_PTR += N; DEST_PTR += N   # RTL; consumed only if TRANSFER_LEN remains
         # Final-step pointer values are not consumed after length reaches zero.
         # V1: each READ/WRITE is N=1 byte; CE# rises each txn (no tCEM slicer)
     fetch_ptr = NEXT_TCD

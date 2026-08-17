@@ -216,7 +216,7 @@ GitHub harden for this project class uses `tt-gds-action` on the **ttihp26b** br
 
 ## Buffer-depth study (optional; not normal harden)
 
-[`scripts/buffer-study/README.md`](../../scripts/buffer-study/README.md) wraps this runbook for an optional `DMA_BUF_DEPTH` / `N` (on-chip RX-TX scratch depth) area vs QPI throughput study (`harden`, `max-fit`, `throughput`, `recommend`). Patched RTL copies set depth and `DMA_BUF_DEPTH_MAX` to the same `N`; canonical `src/rtl/` remains V1 `N=1`. LibreLane runs use unique tags such as `runs/bufstudy_1x1_n8_*` and must never clobber `runs/wokwi`. `test/` is unused except import-only reference scoring. Do **not** treat study max-fit / recommend as shuttle signoff; keep using the sequence in this document for V1.
+[`scripts/buffer-study/README.md`](../../scripts/buffer-study/README.md) wraps this runbook for an optional `DMA_BUF_DEPTH` / `N` (on-chip RX-TX scratch depth) area vs QPI throughput study (`harden`, `max-fit`, `throughput`). Patched RTL copies set depth and `DMA_BUF_DEPTH_MAX` to the same `N`; canonical `src/rtl/` remains V1 `N=1`. LibreLane runs use unique tags such as `runs/bufstudy_1x1_n8_*` and must never clobber `runs/wokwi`. `test/` is unused except import-only reference scoring. Do **not** treat study max-fit as shuttle signoff; keep using the sequence in this document for V1.
 
 ## Related docs
 

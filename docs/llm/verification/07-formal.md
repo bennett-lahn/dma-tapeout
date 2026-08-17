@@ -168,7 +168,7 @@ Every `.sby` job must print or preserve the set of active assumptions. Each assu
 Some address and deep reachability checks need firmware-legal TCD contents. A separately named profile may constrain only descriptor nibbles actually sampled during FETCH so that:
 
 - pointer bit 23 is zero
-- reserved `CTRL_FLAGS[7:4]` is zero
+- reserved `CTRL_FLAGS[3:0]` is zero in firmware-legal stimulus (the DUT latches that last nibble; V1 control ignores it, so nonzero reserved must not change `QUIT` / device flags)
 - complete TCD, source, and destination ranges remain within `0x000000..0x7FFFFF`
 - a bounded scenario contains the specific length, device flags, and quit or next link needed by a cover goal
 
@@ -208,7 +208,7 @@ Depths are starting guidance, not guaranteed closure depths. `prove 32/64` means
 
 | ID | Required condition | Harness | Method and starting depth |
 |---|---|---|---|
-| `FP-RST-SYS` | A sampled reset puts `sys_controller` in IDLE with `done=1`, `bus_gnt=0`, zero data count, no pending write, and fixed-head state restored. | integration | BMC 8, prove 16 |
+| `FP-RST-SYS` | A sampled reset puts `sys_controller` in IDLE with `done=1`, `bus_gnt=0`, no pending write, and fixed-head state restored. | integration | BMC 8, prove 16 |
 | `FP-RST-QSPI` | A sampled reset puts the engine in IDLE with `busy=0`, SCK low, both RAM CE# high, and response pulses low. | engine and integration | BMC 8, prove 16 |
 | `FP-RST-OE` | `rst_n=0` implies every top-level `uio_oe` bit is 0. | top | BMC 4, prove 8 |
 | `FP-SYS-STATE` | The controller state and retained stall state are valid enum values after reset. | integration | prove 16 |
@@ -229,8 +229,8 @@ Depths are starting guidance, not guaranteed closure depths. `prove 32/64` means
 | `FP-RVALID-COUNT` | A completed legal read emits exactly `2 * accepted_byte_len` `rdata_valid` pulses. | engine and integration | BMC 128, prove 64 |
 | `FP-WNEXT-COUNT` | A completed legal write emits exactly `2 * accepted_byte_len - 1` `wdata_next` pulses. | engine and integration | BMC 128, prove 64 |
 | `FP-QSPI-COUNT` | Engine phase counters never overflow and remain within the bound for the active command and accepted length. | engine | BMC 96, prove 64 |
-| `FP-DATA-COUNT` | Controller `data_cnt` never underflows, never exceeds TCD length in FETCH, and never exceeds `2 * DMA_BUF_DEPTH` in data movement. | integration | BMC 384, prove 64 |
-| `FP-DYNAMIC-INDEX` | Every dynamic data-buffer or TCD part-select is reached only with a nonzero in-range count. | integration | BMC 384, prove 64 |
+| `FP-DATA-COUNT` | **Retired (D31).** Former controller `data_cnt` bounds. Keep the ID; do not prove it. | integration | na |
+| `FP-DYNAMIC-INDEX` | Every dynamic data-buffer part-select (`used_bits` from accepted `byte_len`) is reached only with a nonzero in-range index. TCD fetch has no skip index. | integration | BMC 384, prove 64 |
 | `FP-STALL-RESUME` | A stall records one legal origin and, after `bus_req` falls, resumes that origin without inventing a transaction. | integration | BMC 192, prove 64 |
 | `FP-UPDATE-ONCE` | One completed write causes at most one transfer-length update, and a BUS_REQ stall around UPDATE cannot repeat or skip that update. | integration | BMC 384, prove 96 |
 | `FP-QUIT-IDLE` | After a fetched descriptor with `quit=1` reaches NEW_OP, no data transaction is issued and the controller returns to IDLE. | integration | BMC 192, prove 64 |
@@ -262,7 +262,7 @@ Cross-FSM assertions are unlikely to close by induction if only the final proper
 - `write_pending` distinguishes the read and write half of one chunk.
 - `stalled_state` is written only when entering STALL and remains stable while stalled.
 - active fetch address and device are captured before FETCH and remain stable through that fetch.
-- data count ranges are state-specific.
+- write-buffer `used_bits` stays in range for the accepted length.
 - a request shadow agrees with controller outputs throughout engine busy.
 
 ### Cross-FSM helpers
@@ -355,7 +355,7 @@ Split property groups if one SMT problem becomes difficult:
 
 One giant job obscures the failing ID and can make induction harder. Each required property must still run in at least one integration configuration containing the real engine.
 
-SMT state size is driven by the 88-bit TCD, data buffer, counters, request shadows, and top-level synchronizers. Avoid adding a formal PSRAM array for Option B. Symbolic `sio_in` is sufficient for control safety and keeps the proof focused. Full memory semantics remain a simulation responsibility.
+SMT state size is driven by the 84-bit working TCD, data buffer, counters, request shadows, and top-level synchronizers. Avoid adding a formal PSRAM array for Option B. Symbolic `sio_in` is sufficient for control safety and keeps the proof focused. Full memory semantics remain a simulation responsibility.
 
 ## Liveness and proof caveats
 

@@ -353,7 +353,7 @@ Also enforce ASIC firmware-facing limits when building TCDs: `TRANSFER_LEN ≤ 2
 | 3..5 | `DEST_PTR` |
 | 6 | `TRANSFER_LEN` |
 | 7..9 | `NEXT_TCD` |
-| 10 | `CTRL_FLAGS`: bit0 `QUIT`, bit1 `SRC_DEVICE`, bit2 `DEST_DEVICE`, bit3 `NEXT_DEVICE`, bits 7:4 = 0 |
+| 10 | `CTRL_FLAGS`: bit7 `NEXT_DEVICE`, bit6 `DEST_DEVICE`, bit5 `SRC_DEVICE`, bit4 `QUIT`, bits 3:0 = 0 (reserved; firmware writes 0; ASIC latches them, V1 control ignores them) |
 
 ```python
 def pack_tcd(src, dest, length, nxt, flags) -> bytes:

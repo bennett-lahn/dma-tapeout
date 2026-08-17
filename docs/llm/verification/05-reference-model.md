@@ -30,7 +30,7 @@ Represent one decoded descriptor as an immutable value with these fields:
 | `src_device` | `int` | `0` or `1` |
 | `dest_device` | `int` | `0` or `1` |
 | `next_device` | `int` | `0` or `1` |
-| `reserved` | `int` | `0..15`, valid V1 stimulus requires `0` |
+| `reserved` | `int` | `0..15`, valid V1 stimulus requires `0`. Last field of the software value and last nibble of the 11-byte record (`CTRL_FLAGS[3:0]`); also the packed LSB of RTL `tcd_t` (D31). The DUT latches it; V1 control ignores it. |
 
 Python `bool` is a subclass of `int`, so range validation must explicitly reject booleans for integer fields. Encoding must reject negative values, oversized values, non-integers, pointer bit 23 set, and nonzero reserved bits. It must not mask invalid input into range.
 
@@ -58,7 +58,7 @@ All three pointer fields are unsigned 24-bit values serialized most-significant 
 | 7 | `(next_tcd >> 16) & 0xFF` |
 | 8 | `(next_tcd >> 8) & 0xFF` |
 | 9 | `next_tcd & 0xFF` |
-| 10 | `(reserved << 4) | (next_device << 3) | (dest_device << 2) | (src_device << 1) | quit` |
+| 10 | `(next_device << 7) | (dest_device << 6) | (src_device << 5) | (quit << 4) | reserved` |
 
 `encode_tcd(tcd)` returns a `bytes` object of length 11. `decode_tcd(encode_tcd(tcd)) == tcd` is required for every valid V1 TCD.
 
@@ -74,7 +74,7 @@ src_device    = 1
 dest_device   = 0
 next_device   = 1
 reserved      = 0
-bytes         = 12 34 56 23 45 67 89 34 56 78 0A
+bytes         = 12 34 56 23 45 67 89 34 56 78 A0
 ```
 
 ### Memory representation
@@ -158,7 +158,7 @@ The following rules are deliberate:
 - A later TCD fetch reads current memory. A preceding copy may therefore modify a descriptor that has not yet been fetched.
 - A normal run completes only by fetching a quit descriptor. Budget exhaustion and invalid memory/TCD input are model errors, not normal completion.
 
-For the V1 tapeout configuration `dma_buf_depth=1`. The reference model accepts other positive depths for the intended `1, 2, 4, 8` sweep; RTL selects depth via module parameter `DMA_BUF_DEPTH`.
+For the V1 tapeout configuration `dma_buf_depth=5`. The reference model accepts any positive depth up to `DMA_BUF_DEPTH_MAX` for the M5 `1..8` sweep; RTL selects depth via module parameter `DMA_BUF_DEPTH`.
 
 ## Normalized transaction log
 

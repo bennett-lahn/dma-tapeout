@@ -1,6 +1,6 @@
 # Working Registers
 
-Status: implemented as the working TCD fields inside `sys_controller.sv` (88 DFFs; widths follow the V1 24-bit / **11-byte** TCD freeze, D18/D19/D24). No head pointer.
+Status: implemented as the working TCD fields inside `sys_controller.sv` (88 DFFs; full 11-byte record; widths follow D18/D19/D24/D31/D32). No head pointer.
 
 ## Role
 
@@ -14,13 +14,14 @@ Hold only the **currently executing TCD** on-chip. Static multi-channel register
 | `DEST_PTR` | 24 | Dest byte address (`[22:0]` on wire; `[23]` unused / 0) |
 | `TRANSFER_LEN` | 8 | Bytes remaining in this descriptor (0 = no-op) |
 | `NEXT_TCD` | 24 | Next descriptor byte address (`[22:0]` on wire; `[23]` unused / 0) |
-| `QUIT` | 1 | End-of-chain after fetch (CTRL_FLAGS bit 0) |
-| `SRC_DEVICE` | 1 | Source device (CTRL_FLAGS bit 1) |
-| `DEST_DEVICE` | 1 | Dest device (CTRL_FLAGS bit 2) |
-| `NEXT_DEVICE` | 1 | Next-TCD device (CTRL_FLAGS bit 3) |
-| reserved | 4 | CTRL_FLAGS `[7:4]`; write 0 |
+| `NEXT_DEVICE` | 1 | Next-TCD device (`CTRL_FLAGS` bit 7) |
+| `DEST_DEVICE` | 1 | Dest device (`CTRL_FLAGS` bit 6) |
+| `SRC_DEVICE` | 1 | Source device (`CTRL_FLAGS` bit 5) |
+| `QUIT` | 1 | End-of-chain after fetch (`CTRL_FLAGS` bit 4) |
 
-**Memory layout:** last TCD byte is still called **`CTRL_FLAGS`** (offset 10). **RTL** (`tcd_t` in `types.svh`) flattens those bits as members of the working TCD struct - there is no nested ctrl-flags typedef.
+`CTRL_FLAGS[3:0]` reserved is the last nibble of the 11-byte TCD. Hardware latches it (D31); V1 control ignores it. Firmware still writes 0.
+
+**Memory layout:** last TCD byte is still called **`CTRL_FLAGS`** (offset 10). Packed `tcd_t` in `types.svh` is the layout: `next_tcd_device`, `dest_device`, `src_device`, `quit` occupy `CTRL_FLAGS[7:4]` (packed LSB of that nibble = `quit`); `reserved` is `CTRL_FLAGS[3:0]` (packed LSB of `tcd_t`).
 
 Device selects (D24):
 
@@ -32,16 +33,18 @@ Device selects (D24):
 
 Encoding for each: `0`=PSRAM 0, `1`=PSRAM 1. Pointer MSBs are **not** device selects.
 
-Approximate working metadata: **88 DFFs** (unchanged: 24+24+8+24+8), plus:
+Approximate working metadata: **88 DFFs** (24+24+8+24+8 flags), plus:
 
-- **Data buffer** between read and write (**1 byte / 8 DFFs for V1**; D20)
+- **Data buffer** between read and write (**1 byte / 8 DFFs for V1**, nibble shift register; D20)
 - FSM state flops
 - QSPI shifter / bit counters
 - Error sticky bits
 
 ### Data buffer depth (D20)
 
-V1 implements a **1-byte** RX→TX hold. **Correctness must not depend on buffer depth:** the descriptor FSM and QSPI engine should treat depth as a parameter `N` (V1: `N=1`). A later deeper scratch (for fewer cmd+addr reissues) must remain a pure performance / DFF trade, not a semantic change to TCD fields, pointer updates, or cross-device CS rules. Short held CE# pulses at `N=1` also make `tCEM` / Linear Burst page slicing a non-goal until **`N ≥ 60`** (`tCEM` 4 us / read @ 33 MHz SCK) or **`N ≥ 1026`** (two page crosses) - see [`descriptor-fsm.md`](descriptor-fsm.md).
+V1 implements a **1-byte** RX→TX hold as a nibble shift register (LSB-insert on READ, drop the MSB nibble on WRITE). **Correctness must not depend on buffer depth:** the descriptor FSM and QSPI engine should treat depth as a parameter `N` (V1: `N=1`). A later deeper scratch (for fewer cmd+addr reissues) must remain a pure performance / DFF trade, not a semantic change to TCD fields, pointer updates, or cross-device CS rules. Short held CE# pulses at `N=1` also make `tCEM` / Linear Burst page slicing a non-goal until **`N ≥ 60`** (`tCEM` 4 us / read @ 33 MHz SCK) or **`N ≥ 1026`** (two page crosses) - see [`descriptor-fsm.md`](descriptor-fsm.md).
+
+TCD FETCH is also a shift register: all 22 wire nibbles into `tcd_t`, including the last nibble (`CTRL_FLAGS[3:0]` reserved).
 
 No on-chip head pointer (fixed start at `0x000000` / PSRAM 0). No ALU immediate in V1. Post-V1 register growth: [`../post-v1.md`](../post-v1.md).
 

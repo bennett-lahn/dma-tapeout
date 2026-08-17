@@ -138,7 +138,7 @@ Chunk-size formula vs SPI SCK: llm twin.
 - MCU endianness does not affect payload data. Payload bytes are copied unchanged, with no byte swapping.
 - `TRANSFER_LEN` and `CTRL_FLAGS` are single-byte fields. One data TCD can request at most 255 bytes; use another linked TCD for additional bytes.
 - Set `CTRL_FLAGS.SRC_DEVICE`, `DEST_DEVICE`, and `NEXT_DEVICE` for the corresponding pointer. Device selection is not encoded in a pointer bit (D24).
-- Write reserved `CTRL_FLAGS[7:4]` bits as zero.
+- Write reserved `CTRL_FLAGS[3:0]` bits as zero (last nibble of the 11-byte TCD). The ASIC latches them (working TCD is 88 bits); V1 control ignores them.
 - `TRANSFER_LEN=0` is a no-op that follows `NEXT_TCD`; it does not end the chain.
 
 ### TCD install

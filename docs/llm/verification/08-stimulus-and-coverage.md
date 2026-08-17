@@ -40,7 +40,7 @@ IDs identify required behavior, not Python function names. One implementation ma
 | `TC-RESET-IDLE`   | L1    | Reset from IDLE and while BUS_GNT is active                                                                                               | DONE returns high, BUS_GNT clears, all shared OE clears during reset, and post-reset START uses the fixed head                                | M2                                |
 | `TC-RESET-ACTIVE` | L1    | Reset during every controller state and each externally visible QPI phase                                                                 | Transaction may be truncated by reset, but CE# and OE become reset-safe, working state clears, and no spontaneous resume occurs               | M2                                |
 | `TC-RESET-REPEAT` | L1    | Run one directed chain to normal quit completion, assert and release `rst_n` from IDLE, re-initialize source and destination memory identically, then run the identical chain again with a fresh START | The second run's ordered transaction log and final memory are byte-for-byte identical to the first run; no working state, counter, or pointer carries over across the reset boundary | M2                                |
-| `TC-DEPTH`        | L1    | Run the applicable directed suite at `DMA_BUF_DEPTH=1,2,4,8`                                                                              | Final memory and transaction lengths follow `k=min(N, remaining)` with no depth-specific functional change                                    | M5, blocked on sim harness wiring; skipped in default `tests.test_dma_directed` |
+| `TC-DEPTH`        | L1    | Run the applicable directed suite at each compile-time `DMA_BUF_DEPTH` in `1..DMA_BUF_DEPTH_MAX` (8), including tapeout **N=5**, via `make depth` or `test/scripts/run_depth_sweep.sh` (one isolated compile per depth; not a cocotb function in `tests.test_dma_directed`) | Final memory and transaction lengths follow `k=min(N, remaining)` with no depth-specific functional change                                    | M5; harness wired; do not claim pass until the full `1..8` loop is green |
 
 
 `TC-OVERLAP` records actual V1 byte or chunk ordering. Firmware must not infer stronger overlap semantics than the architecture provides.
@@ -49,7 +49,7 @@ IDs identify required behavior, not Python function names. One implementation ma
 
 All M2 rows in the table above (everything except `TC-DEPTH`) are `pass` at L1 Icarus under `ideal` / seed 1 / depth 1:
 
-- Descriptor/data: `tests.test_dma_directed` (13 cases; `dma_buf_depth_sweep` / `TC-DEPTH` skipped for M5 so the module exits 0)
+- Descriptor/data: `tests.test_dma_directed` (13 cases); `TC-DEPTH` (directed suite at each compile-time `DMA_BUF_DEPTH`) is M5-only via `make depth` / `run_depth_sweep.sh`, not a case inside that module
 - START / bus / reset: `tests.test_reset_and_bus` (11/11)
 - Shared helpers: `test/common/directed.py` (install, read-back, done-wait, dual-axis compare, dispose window)
 - Makefile `make directed` default filter enumerates the 13 directed function names and excludes the skipped depth sweep (do not use a dishonest bare `TEST_FILTER=directed`)
@@ -115,7 +115,7 @@ Generate only firmware-legal chains for the main correctness regression:
 - fixed head at `0x000000` on PSRAM0
 - subsequent TCDs on either device, including address zero as a legal link when it does not create an unintended loop
 - 24-bit pointer bit 23 clear and complete ranges inside `0x000000..0x7FFFFF`
-- big-endian pointer serialization and reserved `CTRL_FLAGS[7:4]` zero
+- big-endian pointer serialization and reserved `CTRL_FLAGS[3:0]` zero (firmware contract; the DUT latches that last nibble and ignores it in V1)
 - independently selected source, destination, and next devices
 - initialized source bytes and deterministic sentinels around destination ranges
 - acyclic chains unless a dedicated reset-termination experiment deliberately generates a runaway chain
@@ -171,9 +171,13 @@ Required invariants are independent of injection point:
 
 ## `DMA_BUF_DEPTH` sweep
 
-RTL exposes `DMA_BUF_DEPTH` as a module parameter (default 1; package `DMA_BUF_DEPTH_MAX=8`). `TC-DEPTH`, `COV-DEPTH`, `COV-DEPTH-LEN`, and `COV-DEPTH-DEVICE` remain `blocked` until the sim harness selects depths 2, 4, and 8.
+RTL exposes `DMA_BUF_DEPTH` as a module parameter (package `DMA_BUF_DEPTH_MAX=8`; V1 tapeout and default sim/Make use **N=5**). Verification elaborates any integer `1..DMA_BUF_DEPTH_MAX` via Makefile `-G`/`-P`.
 
-After that prerequisite, compile and run depths `1`, `2`, `4`, and `8` in isolated build directories. Depth 1 remains the V1 tapeout configuration. Larger depths are verification configurations for depth-agnostic correctness and do not change the frozen tapeout configuration.
+`TC-DEPTH` (directed suite at each compile-time `DMA_BUF_DEPTH`) is the harness loop `make depth` or `test/scripts/run_depth_sweep.sh`: one isolated compile and directed run per depth, not a dedicated cocotb test in `tests.test_dma_directed`. Do not claim `TC-DEPTH` pass until every depth in `1..8` passes that loop.
+
+`COV-DEPTH` (compile-time depth bins), `COV-DEPTH-LEN`, and `COV-DEPTH-DEVICE` sample from `coverage.json` written per directed window via `CoverageSampler` in `test/common/directed.py`; each compiled `N` hits the matching `COV-DEPTH` bin when its directed run passes. Closure requires all eight depth bins and their crosses; do not claim `COV-DEPTH*` pass until the sweep is green.
+
+Compile and run depths `1` through `8` in isolated build directories. Depth **5** is the V1 tapeout configuration; other depths are verification configurations for depth-agnostic correctness and do not change the frozen tapeout configuration.
 
 At every depth:
 
@@ -183,7 +187,7 @@ At every depth:
 - check full chunks, a partial final chunk, exact nibble counts, and pointer updates
 - isolate compile products by depth and record the elaborated depth in the run artifact
 
-Once enabled, the depth sweep does not exercise the known `tCEM` threshold because 8 is below the first failing read depth of 60 at the target SCK.
+The depth sweep does not exercise the known `tCEM` threshold because 8 is below the first failing read depth of 60 at the target SCK.
 
 ## Functional coverage catalog
 
@@ -209,9 +213,9 @@ Coverage is sampled from decoded transactions, host-visible behavior, reference-
 | `COV-START-RESULT` | START context x capture result                    | idle accepted, idle uncaptured short pulse, active ignored, request/grant ignored, held-high single capture | 100 percent                                                                 |
 | `COV-RESET-STATE`  | Reset assertion x controller state                | all eight encoded states                                                                                    | 100 percent                                                                 |
 | `COV-RESET-PHASE`  | Reset assertion x external QPI phase              | idle/pad, command, address, wait, read data, write data, termination                                        | 100 percent                                                                 |
-| `COV-DEPTH`        | Compile-time depth                                | `1`, `2`, `4`, `8`                                                                                          | All bins with assigned suite passing; currently `blocked` on harness wiring |
-| `COV-DEPTH-LEN`    | Depth x length class                              | every applicable `COV-LEN` corner at every depth                                                            | 100 percent; currently `blocked` on harness wiring                          |
-| `COV-DEPTH-DEVICE` | Depth x source/destination tuple                  | all four tuples at every depth                                                                              | 100 percent; currently `blocked` on harness wiring                          |
+| `COV-DEPTH`        | Compile-time depth                                | `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8` (each integer `1..DMA_BUF_DEPTH_MAX`; bin `5` is tapeout **N=5**) | All bins with assigned suite passing; harness wired via `make depth`; do not claim closure until green |
+| `COV-DEPTH-LEN`    | Depth x length class                              | every applicable `COV-LEN` corner at every depth `1..8`                                                     | 100 percent; do not claim closure until green sweep                         |
+| `COV-DEPTH-DEVICE` | Depth x source/destination tuple                  | all four tuples at every depth `1..8`                                                                       | 100 percent; do not claim closure until green sweep                         |
 
 
 
@@ -242,7 +246,7 @@ Examples of legitimate exclusions are `N-1=0` duplicating the zero bin at depth 
 ## Regression allocation
 
 - Icarus is authoritative for the full required directed suite, four-state behavior, and a representative random seed set.
-- Verilator runs the high-volume legal random suite at L1 and, once the harness wires the parameter, all four depths.
+- Verilator runs the high-volume legal random suite at L1 and, once assigned, the depth sweep across `1..DMA_BUF_DEPTH_MAX`.
 - Every Verilator-only failure is reduced and reproduced on Icarus, or classified with a retained tool-divergence reproducer.
 - L2 reuses only the high-value subset defined in `09-gate-level-and-x.md`; L2 does not reopen M5 functional coverage.
 

@@ -182,7 +182,7 @@ Equivalent Make targets (after `source test/env.sh` and `cd test`):
 | `GATES` | unset | TT-compatible gate-level selector; `yes` implies `LEVEL=gl` |
 | `SEED` | `1` | unsigned test seed printed at start and failure |
 | `TEST_FILTER` | empty | cocotb test-name regular expression |
-| `DMA_BUF_DEPTH` | `1` | Compile-time module parameter override for the 1/2/4/8 sweep (`-GDMA_BUF_DEPTH=N`) |
+| `DMA_BUF_DEPTH` | `5` | Compile-time module parameter override for tapeout and default sim (`-GDMA_BUF_DEPTH=N`; any integer `1..DMA_BUF_DEPTH_MAX`) |
 | `TIMING_PROFILE` | `ideal` | named timing parameter set |
 | `WAVES` | `auto` | `auto`, `always`, or `never` |
 | `SDF` | unset | optional SDF path for L2 |
@@ -193,16 +193,16 @@ Examples (after `source test/env.sh`):
 
 ```sh
 test/scripts/run_test.sh LEVEL=engine SIM=icarus TEST_FILTER=qspi SEED=17
-test/scripts/run_test.sh LEVEL=top SIM=verilator SEED=4231 DMA_BUF_DEPTH=1
+test/scripts/run_test.sh LEVEL=top SIM=verilator SEED=4231 DMA_BUF_DEPTH=5
 cd test && make test LEVEL=gl SIM=icarus GATES=yes NETLIST=gate_level_netlist.v
 cd test && make random LEVEL=top SIM=verilator SEED=4231 TIMING_PROFILE=nominal
 ```
 
-`DMA_BUF_DEPTH` is a module parameter on `tt_um_lahnb_sgdma` / `sys_controller` (default 1). Package `DMA_BUF_DEPTH_MAX` in `src/rtl/types.svh` sizes `qpi_byte_len_t` / cycle counters for the 1..8 sweep. The Makefile should pass `-GDMA_BUF_DEPTH=$(DMA_BUF_DEPTH)` (or the simulator equivalent) and reject values outside `1..DMA_BUF_DEPTH_MAX`.
+`DMA_BUF_DEPTH` is a module parameter on `tt_um_lahnb_sgdma` / `sys_controller` (V1 tapeout and default sim: **5**). Package `DMA_BUF_DEPTH_MAX` in `src/rtl/types.svh` sizes `qpi_byte_len_t` / cycle counters for elaboration `1..8`. The Makefile passes `-GDMA_BUF_DEPTH=$(DMA_BUF_DEPTH)` (or the simulator equivalent) and rejects values outside `1..DMA_BUF_DEPTH_MAX`.
 
 The Makefile maps `TEST_FILTER` to cocotb 2.x `COCOTB_TEST_FILTER` and lists modules through `COCOTB_TEST_MODULES`. Do not use removed legacy environment names.
 
-`make directed` sets `COCOTB_TEST_MODULES=tests.test_smoke,tests.test_qspi,tests.test_dma_directed,tests.test_reset_and_bus` and, unless the caller overrides `TEST_FILTER`, applies a quoted regex of the 13 descriptor/data directed function names (not a bare substring `directed`, which would dishonestly miss or mis-select cases). `TC-DEPTH` / `dma_buf_depth_sweep` stays skipped for M5. Ownership negatives use `TEST_FILTER=ownership_shared_bus_negatives` only; `TC-OWN-*` are sub-steps inside that one test.
+`make directed` sets `COCOTB_TEST_MODULES=tests.test_smoke,tests.test_qspi,tests.test_dma_directed,tests.test_reset_and_bus` and, unless the caller overrides `TEST_FILTER`, applies a quoted regex of the 13 descriptor/data directed function names (not a bare substring `directed`, which would dishonestly miss or mis-select cases). `TC-DEPTH` / `dma_buf_depth_sweep` and `COV-DEPTH*` remain deferred until M5 harness wiring lands - do not claim those IDs pass yet. Ownership negatives use `TEST_FILTER=ownership_shared_bus_negatives` only; `TC-OWN-*` are sub-steps inside that one test.
 
 ## Build and artifact isolation
 
@@ -240,8 +240,8 @@ The same seed plus the same RTL revision, simulator/version, level, buffer depth
 Every failure prints one copy-paste reproduction command. For example:
 
 ```text
-REPRO: source <repo>/test/env.sh && cd <repo>/test && make test LEVEL=top SIM=verilator TEST_FILTER=test_dma_random SEED=4231 DMA_BUF_DEPTH=1 TIMING_PROFILE=nominal
-REPRO: source <repo>/test/env.sh && <repo>/test/scripts/run_test.sh LEVEL=top SIM=verilator TEST_FILTER=test_dma_random SEED=4231 DMA_BUF_DEPTH=1 TIMING_PROFILE=nominal
+REPRO: source <repo>/test/env.sh && cd <repo>/test && make test LEVEL=top SIM=verilator TEST_FILTER=test_dma_random SEED=4231 DMA_BUF_DEPTH=5 TIMING_PROFILE=nominal
+REPRO: source <repo>/test/env.sh && <repo>/test/scripts/run_test.sh LEVEL=top SIM=verilator TEST_FILTER=test_dma_random SEED=4231 DMA_BUF_DEPTH=5 TIMING_PROFILE=nominal
 ```
 
 Pytest collection order is not a source of randomness. When one pytest process executes multiple random cases, each case derives a child seed from the base seed and stable test identity, and reports both values.

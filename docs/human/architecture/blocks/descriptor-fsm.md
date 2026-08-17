@@ -21,10 +21,10 @@ Do **not** float CS/SCK between DMA transactions. Do **not** reclaim SIO drive i
 ## V1 states
 
 1. `IDLE` - DONE high; ASIC parks bus (`~BUS_GNT`: CS high / SCK low); accept the top-level-qualified one-`clk` **START** pulse with **`~BUS_REQ`**. A START pulse in every other state is ignored and not queued.
-2. `STATE_FETCH` - QPI read **11 bytes** into working regs. First fetch (every START): `0x000000` / PSRAM 0; later: `NEXT_TCD` on `NEXT_DEVICE`. If `QUIT=1` → **IDLE** (next START starts at fixed head again).
+2. `STATE_FETCH` - QPI read **11 bytes** into working regs (nibble shift register; all 22 wire nibbles latched, including `CTRL_FLAGS[3:0]` reserved). First fetch (every START): `0x000000` / PSRAM 0; later: `NEXT_TCD` on `NEXT_DEVICE`. If `QUIT=1` → **IDLE** (next START starts at fixed head again).
 3. `STATE_READ` - read up to buffer depth `N` source bytes from `SRC_PTR` into the data buffer (V1: `N=1`; skipped if `TRANSFER_LEN == 0`)
 4. `STATE_WRITE` - write buffered bytes to `DEST_PTR` (same `N`)
-5. `STATE_UPDATE` - decrement `TRANSFER_LEN`; if length remains, increment SRC/DEST address bits (device flags sticky) and loop to READ. If length hits 0, the working pointers may retain the final transaction addresses because they are no longer consumed; go FETCH for the next TCD on `NEXT_DEVICE`
+5. `STATE_UPDATE` - decrement `TRANSFER_LEN`; pointers already advanced by `N` on READ/WRITE exit (don't-care on the final chunk). If length remains, loop to READ. If length hits 0, go FETCH for the next TCD on `NEXT_DEVICE`
 
 No `STATE_PROCESS` / ALU in V1. Post-V1 may insert process / cond-stop after READ: [`../post-v1.md`](../post-v1.md).
 

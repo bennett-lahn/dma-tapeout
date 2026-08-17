@@ -15,7 +15,7 @@ Post-V1 (ALU, `COND_STOP`, ring, flash): [`10-post-v1-features.md`](10-post-v1-f
 | End of chain | Fetched TCD with **`CTRL_FLAGS.QUIT=1`** → IDLE / DONE (no execute); next START fetches fixed head again (D23) |
 | Address 0 | **Valid** TCD/buffer address (not null) |
 | Reachable window | Full APS6404L range (`A[22:0]`, 8 MB) per device |
-| DFF cost | Working TCD **88 DFFs** (no head pointer) |
+| DFF cost | Working TCD **88 DFFs** (no head pointer; full 11-byte record including reserved `[3:0]`) |
 
 ## Transfer Control Descriptor (TCD)
 
@@ -29,7 +29,7 @@ A TCD is a packed record stored in PSRAM. The ASIC fetches it into working regis
 | 3 | `DEST_PTR` | 24 | Byte addr; device from `DEST_DEVICE` |
 | 6 | `TRANSFER_LEN` | 8 | Bytes to move; **`0` = no-op** (follow next immediately) |
 | 7 | `NEXT_TCD` | 24 | Next descriptor byte address; device from `NEXT_DEVICE`; addr 0 is a normal link |
-| 10 | `CTRL_FLAGS` | 8 | Memory byte: `QUIT` + `SRC_DEVICE` + `DEST_DEVICE` + `NEXT_DEVICE` + reserved. RTL flattens into `tcd_t` members (no nested ctrl struct). |
+| 10 | `CTRL_FLAGS` | 8 | Memory byte: live flags in `[7:4]`, reserved in `[3:0]`. RTL `tcd_t` latches the whole byte (no nested ctrl struct). |
 
 `STATE_FETCH` burst-reads **11 bytes** into working registers (held-CE#).
 
@@ -51,15 +51,19 @@ Exact firmware serialization:
 | 9 | `NEXT_TCD[7:0]` |
 | 10 | `CTRL_FLAGS[7:0]` |
 
-### `CTRL_FLAGS` (V1 / D19 / D24)
+### `CTRL_FLAGS` (V1 / D19 / D24 names; bit positions from `types.svh`)
+
+Layout follows packed `tcd_t` in `src/rtl/types.svh` (first field = MSB). Hardware latches `reserved[3:0]` after `quit`; that nibble is the last nibble of the 11-byte record.
 
 | Bits | Name | Encoding |
 |---|---|---|
-| 0 | `QUIT` | `1` = go IDLE / DONE after fetch (do not execute); `0` = run |
-| 1 | `SRC_DEVICE` | `0` = SRC on PSRAM 0; `1` = SRC on PSRAM 1 |
-| 2 | `DEST_DEVICE` | `0` = DEST on PSRAM 0; `1` = DEST on PSRAM 1 |
-| 3 | `NEXT_DEVICE` | `0` = next TCD on PSRAM 0; `1` = next TCD on PSRAM 1 |
-| 7:4 | reserved | Write 0; available for post-V1 (ALU / cond-stop / ring) |
+| 7 | `NEXT_DEVICE` | `0` = next TCD on PSRAM 0; `1` = next TCD on PSRAM 1 |
+| 6 | `DEST_DEVICE` | `0` = DEST on PSRAM 0; `1` = DEST on PSRAM 1 |
+| 5 | `SRC_DEVICE` | `0` = SRC on PSRAM 0; `1` = SRC on PSRAM 1 |
+| 4 | `QUIT` | `1` = go IDLE / DONE after fetch (do not execute); `0` = run |
+| 3:0 | reserved | Write 0. Hardware latches these bits (D31); V1 control ignores them. Post-V1 (ALU / cond-stop / ring) can reuse this nibble. |
+
+Memory TCD stays **11 bytes / 88 bits**. Working `tcd_t` is **88 bits**: packed order is `src_ptr`, `dest_ptr`, `transfer_len`, `next_tcd`, `next_tcd_device`, `dest_device`, `src_device`, `quit`, `reserved` (packed LSB nibble = reserved). FETCH is MSB-first (22 wire nibbles); every nibble is latched. The flags nibble (`CTRL_FLAGS[7:4]`) is the 21st wire nibble; reserved (`CTRL_FLAGS[3:0]`) is the 22nd.
 
 **Quit / DONE (D19/D23):** after fetch, if `QUIT==1`, go IDLE / DONE without executing that TCD's copy. Never assert both CS lines for a quit TCD. The next accepted **START** begins a new run from **`0x000000` on PSRAM 0** (fixed head); the engine does not resume mid-chain.
 
@@ -69,7 +73,7 @@ No in-flight ALU, ring wrap, or conditional stop in V1.
 
 ### Pointer updates (V1)
 
-After a completed copy step of `k` bytes (`k = min(N, TRANSFER_LEN)`; V1 `N=1`), decrement `TRANSFER_LEN` by `k`. If bytes remain, advance **`SRC_PTR[22:0] += k`** and **`DEST_PTR[22:0] += k`** before the next step (linear only); device flags remain unchanged. When the completed step is the final step and the remaining length becomes zero, the working pointers may retain the addresses used by that final transaction because the descriptor is complete and those values are no longer consumed.
+After a completed copy step of `k` bytes (`k = min(N, TRANSFER_LEN)`; V1 `N=1`), decrement `TRANSFER_LEN` by `k`. RTL advances `SRC_PTR` by `N` on READ exit and `DEST_PTR` by `N` on WRITE exit (shared adder). When more bytes remain, `k = N` so that matches the spec. On the final chunk the new pointer values are don't-care (descriptor complete; next FETCH overwrites the working TCD). Device flags stay sticky.
 
 No fixed-src/fixed-dest, no ring. (Fill/gather return with post-V1 flag extensions.)
 
@@ -91,9 +95,7 @@ loop:
         buf[0..k) = READ(SRC_PTR, k)   # CS from SRC_DEVICE; addr SRC_PTR[22:0]
         WRITE(DEST_PTR, buf[0..k))     # CS from DEST_DEVICE; may be other device
         TRANSFER_LEN -= k
-        if TRANSFER_LEN > 0:
-            SRC_PTR[22:0] += k
-            DEST_PTR[22:0] += k
+        SRC_PTR += N; DEST_PTR += N   # RTL; consumed only if TRANSFER_LEN remains (then k was N)
         # Final-step pointer values are don't-care once TRANSFER_LEN reaches 0.
         # V1 N=1: CE# rises every short txn; tCEM / page slicer not required
     fetch_ptr = NEXT_TCD
@@ -102,7 +104,7 @@ loop:
 
 No host **ABORT** pin (D23): stop a runaway DMA with **`rst_n`**. Mid-run bus yield uses **BUS_REQ** / **BUS_GNT** (D22). While `~BUS_GNT`, ASIC parks the shared bus (D26); board has **10 kΩ** CS pull-ups. Firmware contract: `docs/human/architecture/firmware.md`.
 
-**Data buffer (D20):** V1 implements `N=1` (8 DFFs). FSM / QSPI path must remain correct for any `N >= 1`; deepening the scratch is optional performance work, not a protocol or TCD change. Short held CE# pulses also make APS6404L `tCEM` and Linear Burst one-page-cross rules non-binding for V1 (see human [`descriptor-fsm.md`](../human/architecture/blocks/descriptor-fsm.md)).
+**Data buffer (D20):** V1 implements `N=1` (8 DFFs) as a nibble shift register (LSB-insert on READ, drop MSB nibble on WRITE). FSM / QSPI path must remain correct for any `N >= 1`; deepening the scratch is optional performance work, not a protocol or TCD change. Working TCD fetch is also a shift register: all 22 wire nibbles into `tcd_t` (D31). Short held CE# pulses also make APS6404L `tCEM` and Linear Burst one-page-cross rules non-binding for V1 (see human [`descriptor-fsm.md`](../human/architecture/blocks/descriptor-fsm.md)).
 
 **FSM ↔ QSPI (D21):** start with `txn_valid` only when `~busy` (no `txn_ready` / no `wdone`). Engine does not latch the request; FSM holds `{cmd, addr, device_sel, byte_len}`. `byte_len` width is `QPI_BYTE_LEN_W` from `qspi_pkg`. Writes: first nibble on `wdata` with `txn_valid`; `wdata_next` then asserts iff another nibble is needed to finish that transaction, for exactly `2 * byte_len - 1` pulses. When `wdata_next` asserts, the next nibble must be on `wdata` before the next `clk` (same-cycle) to preserve SPI/SIO setup. It never asserts after the final nibble or outside the active write. The engine ends after `2 * byte_len` SCK. SCK = clk/2. Detail: [`03-architecture.md`](03-architecture.md) / human [`qspi-engine.md`](../human/architecture/blocks/qspi-engine.md).
 

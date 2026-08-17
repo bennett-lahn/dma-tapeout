@@ -12,21 +12,22 @@ Signoff requires reproducible evidence for the exact RTL or netlist revision and
 - [ ] Every required `FP-*` safety property proves with the real `qspi_engine`; helper invariants are asserted and proved, required covers produce witnesses, and bounded deadlock checks pass.
 - [ ] Formal assumptions are audited and do not duplicate their conclusions.
 - [ ] Icarus passes the full required suite and Verilator passes its assigned directed and high-volume subset.
-- [ ] `DMA_BUF_DEPTH=1,2,4,8` passes the assigned M5 suite and required `COV-DEPTH*` crosses.
+- [ ] Depths across `1..DMA_BUF_DEPTH_MAX` (8) pass the assigned M5 suite at tapeout depth **N=5** by default and via Makefile `-G`/`-P` overrides; `TC-DEPTH` (directed suite at each compile-time `DMA_BUF_DEPTH`) via `make depth` / `run_depth_sweep.sh`; required `COV-DEPTH*` crosses (`COV-DEPTH*`: functional coverage bins for buffer-depth elaboration, sampled from directed `coverage.json` per compiled `N`) meet closure once the full sweep is green.
 - [ ] No unresolved reproducible seed or unreviewed exclusion remains.
 - [ ] Every waiver names an owner, rationale, affected configuration, risk, and expiration condition.
 
 Current blockers to this gate (M0-M3 simulation exits are green as of 2026-08-10):
 
-- M4 formal and M5 random / `COV-*` not started.
-- The depth sweep / `TC-DEPTH` cannot run until the sim harness selects module parameter `DMA_BUF_DEPTH`. Default directed module skips that case; tapeout remains depth 1.
+- M4 formal deferred (may proceed independently; do not claim pass).
+- M5 random / `COV-*` and depth sweep in progress. Wave 4 2026-08-16 partial random green at **N=5** / `ideal`: Icarus seeds 1/2/3/5/8, Verilator seeds 1/2 (`CHK-*`/`Q-*` clean; seed-1 cross-sim match). Still open: Verilator seeds 3/5/8; `TC-DEPTH` / `COV-DEPTH*` (`COV-*` functional coverage point IDs) closure across all integers `1..8` via `make depth` - do not claim those IDs or M5 exit pass until green.
+- V1 tapeout and default sim/Make `DMA_BUF_DEPTH` is **N=5** (elaboration `1..8` via Makefile).
 - CI L1 Icarus smoke job still open.
 - M3 follow-ups (not freeze blockers by themselves): margin-gate field presence / boundary ≈0; physical `T-*`. Delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*` is closed (`TC-RXEDGE-RACE-DEVICE-PLANE`).
 
 ## Final-netlist and shuttle freeze
 
 - [ ] RTL verification freeze is complete.
-- [ ] M6 passes on the final `DMA_BUF_DEPTH=1` netlist using the required Icarus L2 test subset and IHP cell models.
+- [ ] M6 passes on the final `DMA_BUF_DEPTH=5` netlist using the required Icarus L2 test subset and IHP cell models.
 - [ ] M7 FPGA hardware validation passes on the carrier board with real MCU firmware and real PSRAM devices.
 - [ ] Reset, `BUS_REQ` and `BUS_GNT`, shared output enables, chip selects, and sampled data have no unexplained post-reset X or Z behavior.
 - [ ] Verilator X-initial and X-assignment experiments have no unexplained seed-dependent divergence.

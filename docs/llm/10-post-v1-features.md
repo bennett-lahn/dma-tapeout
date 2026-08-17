@@ -28,8 +28,8 @@ Bulk A↔B memcpy does not need it. Costs TCD bits or an `IMM` byte, working-reg
 ### Implement later
 
 1. **Add module** `dma_byte_alu` (combinational 8-bit): ops pass / invert / XOR imm / ADD / SUB.
-2. **Extend existing `CTRL_FLAGS`** (V1 uses bits 0..3 for `QUIT` / `SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; reserves `[7:4]`) with ALU op select / ADD vs SUB, and prefer a dedicated **`IMM` byte** (12-byte TCD if flags+imm; or pack tiny imm into flags).
-3. **Working registers:** already latch `CTRL_FLAGS`; add `IMM` (+8 DFFs).
+2. **Extend existing `CTRL_FLAGS`** (V1 uses bits 7:4 for `NEXT_DEVICE` / `DEST_DEVICE` / `SRC_DEVICE` / `QUIT`; reserves `[3:0]`) with ALU op select / ADD vs SUB, and prefer a dedicated **`IMM` byte** (12-byte TCD if flags+imm; or pack tiny imm into flags).
+3. **Working registers:** V1 latches the full `CTRL_FLAGS` byte (D31): live flags in `[7:4]` (`next_tcd_device`, `dest_device`, `src_device`, `quit`); reserved `[3:0]` is already on-chip (latched; V1 control ignores). Post-V1 ALU/cond/ring can reuse that nibble without restoring +4 DFFs (D32). Add `IMM` (+8 DFFs).
 4. **FSM:** restore `STATE_PROCESS` between `STATE_READ` and `STATE_WRITE` (or fold combo ALU into the READ→WRITE path with a registered hold). Descriptor **fetch bypasses** the ALU.
 5. **Datapath:** `byte = ALU(rx_hold, op, IMM)` then WRITE.
 6. **Verify:** each op vs software model; fetch path unchanged; IMM=0 edge cases.
@@ -163,7 +163,7 @@ Read: medium (opcodes + timing). Write: medium–high (program/erase/BUSY). Last
 
 ## Interaction with V1 baseline
 
-V1 TCD is an **11-byte** memmove record with device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`) and `QUIT`, plus reserved bits `[7:4]`. Post-V1 features that need more flags/`IMM` **extend** that byte (and optionally grow the TCD); plan a single compatible extension rather than a parallel layout.
+V1 TCD is an **11-byte** memmove record with device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`) and `QUIT`. `[3:0]` reserved is latched in working `tcd_t` (D31) but unused by V1 control (firmware writes 0). Post-V1 features that need more flags/`IMM` **extend** that nibble (no extra restore of 4 DFFs) and/or grow the TCD; plan a single compatible extension rather than a parallel layout.
 
 Device select stays in `CTRL_FLAGS` device bits (D24); do not move device back into pointer MSBs unless a later encoding forces it.
 

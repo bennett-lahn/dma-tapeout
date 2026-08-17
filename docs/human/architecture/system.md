@@ -84,7 +84,7 @@ External store is **two** APS6404L-class QSPI PSRAMs (byte-addressable) on the P
 | End of chain | **`CTRL_FLAGS.QUIT=1`** → IDLE / DONE (no execute); next START from fixed head |
 | Window | Full device range usable by DMA (APS6404L: `A[22:0]` → 8 MB) per device |
 
-**DFF cost:** working TCD metadata is **88 DFFs** (no head pointer).
+**DFF cost:** working TCD metadata is **88 DFFs** (full 11-byte memory TCD, including reserved `[3:0]`; no head pointer).
 
 ### Logical memory map (firmware convention, not hardware-enforced)
 

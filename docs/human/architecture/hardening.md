@@ -99,4 +99,4 @@ Fits **1x1** at 66 MHz; DFF budget comfortable (~158 / ~500 soft), area on 1x1 i
 
 ## Buffer-depth study (optional; not V1 harden)
 
-Optional area vs QPI throughput toolkit: [`../../../scripts/buffer-study/README.md`](../../../scripts/buffer-study/README.md) (`study.py` subcommands `harden`, `max-fit`, `throughput`, `recommend`). It patches **copies** of RTL so `DMA_BUF_DEPTH` (on-chip RX-TX scratch depth `N`) equals `DMA_BUF_DEPTH_MAX`; canonical `src/rtl/` stays at `N=1` for V1. `test/` is import-only. Do **not** run this as part of a normal harden / shuttle signoff; use the sequence above for V1. Verbose twin notes the same pointer.
+Optional area vs QPI throughput toolkit: [`../../../scripts/buffer-study/README.md`](../../../scripts/buffer-study/README.md) (`study.py` subcommands `harden`, `max-fit`, `throughput`). It patches **copies** of RTL so `DMA_BUF_DEPTH` (on-chip RX-TX scratch depth `N`) equals `DMA_BUF_DEPTH_MAX`; canonical `src/rtl/` stays at `N=1` for V1. `test/` is import-only. Do **not** run this as part of a normal harden / shuttle signoff; use the sequence above for V1. Verbose twin notes the same pointer.

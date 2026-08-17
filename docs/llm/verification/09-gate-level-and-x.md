@@ -43,7 +43,7 @@ The required subset is:
 | `TC-RESET-IDLE`, `TC-RESET-ACTIVE`              | Initialization and reset recovery across gate storage elements     |
 
 
-Run the final tapeout depth, `DMA_BUF_DEPTH=1`. Larger-depth RTL configurations are for L1 sweeps via the module parameter; they are not required at L2 unless separate netlists are intentionally hardened.
+Run the final tapeout depth, `DMA_BUF_DEPTH=5`. Other depths across `1..DMA_BUF_DEPTH_MAX` are for L1 sweeps via the module parameter; they are not required at L2 unless separate netlists are intentionally hardened.
 
 L2 tests use only top-level pins, resolved shared-bus signals, decoded QPI transactions, final memory, and ordered transaction logs as pass criteria. They must not depend on RTL hierarchy, source enum values, internal register names, or synthesis-generated instance names.
 

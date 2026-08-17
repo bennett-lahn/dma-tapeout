@@ -1,6 +1,6 @@
 # Roadmap
 
-**Current focus (2026-08):** Phase 2. V1 feature RTL is in place; cocotb **M0–M3** accepted. Next checklist items are M4 formal, sticky error / `uo_out` packing, CI smoke, and firmware bring-up toward M7. Phase 0–1 are complete.
+**Current focus (2026-08):** Phase 2. V1 feature RTL is in place; cocotb **M0–M3** accepted. **M5** (randomized regression, `COV-*` closure, buffer-depth sweep) is the active verification track from accepted M2/M3; **M4** formal (`FP-*`) may proceed independently later - do not claim M4 pass. V1 tapeout `DMA_BUF_DEPTH` is **N=5** (default sim/Make depth 5). Remaining checklist: sticky error / `uo_out` packing, CI smoke, firmware bring-up toward M7. Phase 0–1 are complete.
 
 ## Phase 0 - Planning
 
@@ -17,7 +17,7 @@
 - [x] Freeze MCU-owned enter/exit QPI; ASIC QPI opcodes `0xEB` / `0x02` only - D17
 - [x] Freeze pass-through request/grant: `ui_in[2]=BUS_REQ`, `uo_out[1]=BUS_GNT` (MCU priority; atomic QPI) - D22
 - [x] Revoke ABORT; kill via `rst_n`; quit → IDLE then next START from addr 0 - D23
-- [x] Device selects in `CTRL_FLAGS` (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`); 88-bit TCD unchanged - D24
+- [x] Device selects in `CTRL_FLAGS` (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`); 11-byte / 88-bit memory TCD unchanged - D24 (working set later 88 DFFs; reserved latched, D31)
 
 ## Phase 1 - Skeleton RTL
 
@@ -40,8 +40,8 @@ Feature path (fetch / copy / chain / cross-device) and verification through M3 a
 - [x] M1 - protocol policing, L0 QPI directed tests, and Icarus/Verilator agreement (behavioral `Q-*` under `ideal`; residual: model-plane Z→0, CI smoke still open; delays / `Q-LAUNCH` / `Q-RXEDGE` closed at M3)
 - [x] M2 - reference model, dual-axis scoreboard, directed `TC-*` (24 cases; `TC-DEPTH` deferred to M5), always-on `CHK-*`, pin monitor (`via=pin`); Acceptance 2026-08-08
 - [x] M3 - delay layer, setup/hold sweeps, launch/RX edge checks, centralized pending-item lifecycle; Acceptance 2026-08-10 (physical `T-*` remain post-M3; residual-wave TB fixes for device-plane `Q-RXEDGE` race + Verilator `Q-LAUNCH` `asic_sck_oe` gate landed without reopening M3)
-- [ ] M4 - formal safety proofs and cover reachability
-- [ ] M5 - randomized regression and coverage closure; buffer-depth sweep blocked pending sim harness `DMA_BUF_DEPTH` wiring (`TC-DEPTH` skipped in default directed module)
+- [ ] M4 - formal safety proofs and cover reachability (deferred; may proceed independently; do not claim pass)
+- [ ] M5 - randomized regression and coverage closure; buffer-depth sweep (Wave 4 2026-08-16: random **partial** green at tapeout **N=5** / `TIMING_PROFILE=ideal` - Icarus seeds 1/2/3/5/8, Verilator seeds 1/2, `CHK-*`/`Q-*` clean, seed-1 Icarus ≡ Verilator; `TC-DEPTH` directed suite at each compile-time `DMA_BUF_DEPTH` and `COV-*` functional coverage closure still open - do not claim M5 exit)
 - [ ] CI smoke job (L1 Icarus)
 - [ ] Firmware library + demoboard bring-up for M7 readiness (MicroPython under `firmware/`; host-side `firmware/tests` may start earlier; demoboard HIL still Phase 3 / M7)
 

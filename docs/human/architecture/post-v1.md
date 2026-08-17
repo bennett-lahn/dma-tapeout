@@ -11,4 +11,4 @@ Not in the V1 ship set. Full sketches: [`../../llm/10-post-v1-features.md`](../.
 
 ## V1 reminder
 
-V1 is a descriptor **bulk mover** across dual PSRAM (pass-through, QSPI, TCD chain with `CTRL_FLAGS` device selects + `QUIT`, A↔B). No ALU, no ring, no cond-stop, no ASIC flash.
+V1 is a descriptor **bulk mover** across dual PSRAM (pass-through, QSPI, TCD chain with `CTRL_FLAGS` device selects + `QUIT`, A↔B). No ALU, no ring, no cond-stop, no ASIC flash. Reserved `CTRL_FLAGS[3:0]` is latched in the working TCD (D31) and unused by V1 control; post-V1 ALU/cond/ring can reuse that nibble.
