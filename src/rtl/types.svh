@@ -74,22 +74,23 @@ typedef enum logic [2:0] {
    ,STALL
 } sys_control_state_t;
 
-// 11-byte / 88-bit TCD. Last byte is CTRL_FLAGS in memory (QUIT + device selects + reserved);
-// Packed LSB = CTRL_FLAGS bit 0 (`quit`); matches D24 flag bit map.
+// Working TCD: 88 bits = the 11-byte memory record. Packed LSB nibble is
+// CTRL_FLAGS[3:0] reserved (latched; V1 control ignores it). next/dest/src
+// device then quit occupy CTRL_FLAGS[7:4] (D24/D31). Packed LSB of the flags
+// nibble is quit.
 typedef struct packed {
    qspi_addr_t     src_ptr;
    qspi_addr_t     dest_ptr;
    logic     [7:0] transfer_len;
    qspi_addr_t     next_tcd;
-   // CTRL_FLAGS (TCD byte offset 10): bits [7:4]=reserved, [3]=NEXT, [2]=DEST, [1]=SRC, [0]=QUIT
-   logic     [3:0] reserved;
    qspi_device_sel_t  next_tcd_device;
    qspi_device_sel_t  dest_device;
    qspi_device_sel_t  src_device;
    logic           quit;
+   logic     [3:0] reserved;
 } tcd_t;
 
-// Length of TCD in nibbles
+// Hardware nibble count (22). Wire FETCH is 22 nibbles (11 bytes).
 localparam int unsigned TCD_LEN = $bits(tcd_t) / 4;
 
 endpackage: sys_control_pkg

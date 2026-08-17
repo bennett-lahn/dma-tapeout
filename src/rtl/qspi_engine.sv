@@ -56,12 +56,15 @@ module qspi_engine
 
 qspi_state_t curr_state;
 qspi_state_t next_state;
+logic sio_oe_reg;
 
 logic [QPI_CYCLE_CNT_W-1:0] cycle_cnt; // 0-indexed count of # of sclk cycles in current state
 logic sclk_will_rise;
 logic sclk_will_fall;
 logic cs_n_next;
 logic sclk_en;
+
+assign sio_oe = {4{sio_oe_reg}};
 
 // Next state control
 always_comb begin
@@ -165,13 +168,13 @@ end
 
 always_ff @(posedge clk) begin
    if (~rst_n) begin
-      sio_oe <= '0;
+      sio_oe_reg <= '0;
    end else begin
       if (next_state == WAIT || next_state == READ_DATA || 
           cmd == QSPI_CMD_FAST_READ && (next_state == SCLK_OFF || next_state == CS_OFF))
-         sio_oe <= {4{1'b0}};
+         sio_oe_reg <= 1'b0;
       else
-         sio_oe <= {4{1'b1}};
+         sio_oe_reg <= 1'b1;
    end
 end
 

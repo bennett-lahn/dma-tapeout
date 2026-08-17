@@ -34,12 +34,11 @@ module sys_controller
    import qspi_pkg::qspi_addr_t;
    import qspi_pkg::qspi_device_sel_t;
    import qspi_pkg::qpi_byte_len_t;
-   import qspi_pkg::qpi_payload_nibble_cnt_t;
    import qspi_pkg::DMA_BUF_DEPTH_MAX;
    import qspi_pkg::QPI_TCD_BYTES;
    import qspi_pkg::QSPI_PSRAM0;
 #(
-   parameter int unsigned DMA_BUF_DEPTH = 1 // N (D20); V1 tapeout = 1
+   parameter int unsigned DMA_BUF_DEPTH = 5 // N (D20); V1 tapeout = 5
 )(
    input   logic       clk
    ,input  logic       rst_n
@@ -69,6 +68,9 @@ generate
       $error("sys_controller: DMA_BUF_DEPTH must be in 1 .. DMA_BUF_DEPTH_MAX");
 endgenerate
 
+localparam int unsigned BUF_BITS = 8 * DMA_BUF_DEPTH;
+localparam logic [7:0] DMA_BUF_DEPTH_VALUE = 8'(DMA_BUF_DEPTH);
+
 sys_control_state_t curr_state;
 sys_control_state_t next_state;
 sys_control_state_t stalled_state;
@@ -77,14 +79,30 @@ tcd_t task_ctrl_desc;
 qspi_addr_t active_fetch_addr;
 qspi_device_sel_t active_fetch_device;
 logic write_pending;
-logic [8*DMA_BUF_DEPTH-1:0] data_buffer;
-
-// Nibbles remaining in the current TCD or data payload
-qpi_payload_nibble_cnt_t data_cnt;
-
-localparam logic [7:0] DMA_BUF_DEPTH_VALUE = 8'(DMA_BUF_DEPTH);
+logic [BUF_BITS-1:0] data_buffer;
 
 assign qspi_txn_valid = (curr_state == NEW_OP || curr_state == NEW_FETCH) && (next_state == READ || next_state == WRITE || next_state == FETCH);
+
+// Reuse 24-bit incrementer; READ exit updates src, WRITE exit updates dest.
+qspi_addr_t ptr_base;
+qspi_addr_t addr_increment;
+assign ptr_base = (curr_state == READ) ? task_ctrl_desc.src_ptr : task_ctrl_desc.dest_ptr;
+assign addr_increment = ptr_base + 24'(DMA_BUF_DEPTH_VALUE);
+
+// Write nibble from the occupied low 8*k bits (LSB-insert on READ).
+// Clamp to BUF_BITS: FETCH drives byte_len=11, but wdata isn't used then.
+// wdata_next looks one nibble ahead (same-cycle; shift is NBA).
+localparam int unsigned OCC_W = $clog2(BUF_BITS + 1);
+logic [OCC_W-1:0] used_bits;
+always_comb begin
+   if (qspi_byte_len == '0 || qspi_byte_len > qpi_byte_len_t'(DMA_BUF_DEPTH))
+      used_bits = OCC_W'(BUF_BITS);
+   else
+      used_bits = OCC_W'(8 * qspi_byte_len);
+end
+assign qspi_wdata = qspi_wdata_next
+   ? data_buffer[used_bits - OCC_W'('d5) -: 4]
+   : data_buffer[used_bits - OCC_W'('d1) -: 4];
 
 // Drive SPI device select
 always_comb begin
@@ -146,33 +164,16 @@ always_comb begin
    endcase
 end
 
-// qspi_wdata logic
-always_comb begin
-   if (curr_state != WRITE && next_state == WRITE) begin
-      // Preset wdata to first nibble in previous read. For reads less than DMA_BUF_DEPTH_VALUE,
-      // the MSB of buffer are unused first
-      qspi_wdata = data_buffer[(8 * qspi_byte_len) - 1 -: 4];
-   end else if (curr_state == WRITE) begin
-      if (qspi_wdata_next)
-         // Fetch wdata a cycle before data_cnt updates
-         qspi_wdata = data_buffer[(4 * (data_cnt - 1)) - 1 -: 4];
-      else
-         qspi_wdata = data_buffer[(4 * data_cnt) - 1 -: 4];
-   end else begin
-      qspi_wdata = '0;
-   end
-end
-
 // FSM states
-
+//
 // IDLE: Transition to fetch when start is asserted
 // NEW_FETCH: Prepare for next TCD read. Start QSPI transaction
 // NEW_OP: Start read/write transaction, depending on TCD.
 // FETCH: Execute TCD read. Transition to NEW_OP when TCD read is complete.
-// READ: Execute read. Transition to UPDATE when read is complete.
+// READ: Execute read. Transition to NEW_OP when read is complete.
 // WRITE: Execute write. Transition to UPDATE when write is complete.
-// UPDATE: Update TCD specs. Transfer to NEW_OP/NEW_FETCH depending on updated values
-// STALL: Give MCU I/O priority until request is complete. Only transition to from idle, NEW_FETCH,
+// UPDATE: Update TRANSFER_LEN. Transfer to NEW_OP/NEW_FETCH depending on remaining length
+// STALL: Give MCU I/O priority until request is complete. Only transition from idle, NEW_FETCH,
 // NEW_OP, UPDATE
 
 // State control
@@ -250,7 +251,6 @@ end
 // Data read / indexing and TCD management
 always_ff @(posedge clk) begin
    if (~rst_n) begin
-      data_cnt <= '0;
       task_ctrl_desc <= '0;
       write_pending <= '0;
       data_buffer <= '0;
@@ -259,10 +259,8 @@ always_ff @(posedge clk) begin
    end else begin
       unique case (curr_state)
          SYS_CTRL_IDLE, STALL: begin
-            data_cnt <= '0;
          end
-         NEW_FETCH: begin 
-            data_cnt <= qpi_payload_nibble_cnt_t'(TCD_LEN);
+         NEW_FETCH: begin
             active_fetch_addr <= task_ctrl_desc.next_tcd;
             active_fetch_device <= task_ctrl_desc.next_tcd_device;
          end
@@ -271,44 +269,36 @@ always_ff @(posedge clk) begin
                // Reset TCD register so it points to address 0 of PSRAM 0
                task_ctrl_desc.next_tcd <= '0;
                task_ctrl_desc.next_tcd_device <= QSPI_PSRAM0;
-            end else if (task_ctrl_desc.transfer_len < DMA_BUF_DEPTH_VALUE) begin
-               data_cnt <= qpi_payload_nibble_cnt_t'(2 * task_ctrl_desc.transfer_len);
-            end else begin
-               data_cnt <= qpi_payload_nibble_cnt_t'(2 * DMA_BUF_DEPTH);
             end
          end
          FETCH: begin
-            if (qspi_rdata_valid && data_cnt != '0) begin
-               task_ctrl_desc[(4*data_cnt)-1 -: 4] <= qspi_rdata;
-               data_cnt <= data_cnt - 'd1;
-            end
+            // LSB-insert so the first wire nibble lands at src_ptr MSB.
+            // All 22 wire nibbles (11 bytes) are latched, including reserved.
+            if (qspi_rdata_valid && next_state == FETCH)
+               task_ctrl_desc <= {task_ctrl_desc[$bits(tcd_t)-5:0], qspi_rdata};
          end
          READ: begin
-            if (qspi_rdata_valid && data_cnt != '0) begin
-               data_buffer[(4*data_cnt)-1 -: 4] <= qspi_rdata;
-               data_cnt <= data_cnt - 'd1;
-            end
-            if (next_state != READ)
+            if (qspi_rdata_valid && next_state == READ)
+               data_buffer <= {data_buffer[BUF_BITS-5:0], qspi_rdata};
+            if (next_state != READ) begin
+               task_ctrl_desc.src_ptr <= addr_increment;
                write_pending <= 1'b1;
+            end
          end
          WRITE: begin
             if (qspi_wdata_next)
-               data_cnt <= data_cnt - 'd1;
-            if (next_state != WRITE)
+               data_buffer <= {data_buffer[BUF_BITS-5:0], 4'b0};
+            if (next_state != WRITE) begin
                write_pending <= 1'b0;
+               task_ctrl_desc.dest_ptr <= addr_increment;
+            end
          end
          UPDATE: begin
-            data_cnt <= '0;
             if (stalled_state != UPDATE) begin
-               if (task_ctrl_desc.transfer_len > DMA_BUF_DEPTH_VALUE) begin
+               if (task_ctrl_desc.transfer_len > DMA_BUF_DEPTH_VALUE)
                   task_ctrl_desc.transfer_len <= task_ctrl_desc.transfer_len - DMA_BUF_DEPTH_VALUE;
-                  task_ctrl_desc.src_ptr <= task_ctrl_desc.src_ptr + 24'(DMA_BUF_DEPTH_VALUE);
-                  task_ctrl_desc.dest_ptr <= task_ctrl_desc.dest_ptr + 24'(DMA_BUF_DEPTH_VALUE);
-               end else begin
+               else
                   task_ctrl_desc.transfer_len <= '0;
-                  // Do not update src_ptr / dest_ptr. The transfer is complete, so updated values
-                  // are not needed.
-               end
             end
          end
       endcase
@@ -349,15 +339,15 @@ endmodule
 // === Testing ===
 //
 // Assertions:
-// - data_cnt never exceeds TCD_LEN during FETCH or 2*DMA_BUF_DEPTH during data
-//   movement, never underflows, and is nonzero before every dynamic part-select.
+// - FETCH latches all 22 wire nibbles into task_ctrl_desc; reserved occupies
+//   the packed LSB nibble and is unused by V1 control.
 // - qspi_txn_valid is a one-cycle pulse and implies !qspi_busy && !bus_req.
 // - cmd, addr, device_sel, and byte_len obey the selected stability contract.
 // - BUS_GNT implies the ASIC has released uio_oe and no transaction is active.
 // - The two RAM chip selects are never active together.
 // - Requested address should never exceed PSRAM address limits (assuming TCD/firmware is correct)
 // - The highest bit of addresses should always be 0.
-// - During WRITE, data_cnt >= 1, and qspi_wdata_next |-> data_cnt >= 2
+// - During WRITE, wdata_next never asserts after the final nibble.
 //
 // Directed tests:
 // - Decode a known 11-byte descriptor to prove byte/nibble ordering and flags.

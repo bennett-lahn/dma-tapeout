@@ -20,7 +20,7 @@
 module tt_um_lahnb_sgdma
    import qspi_pkg::*;
 #(
-  parameter int unsigned DMA_BUF_DEPTH = 1 // N (D20); V1 tapeout = 1; sim sweep via -G
+  parameter int unsigned DMA_BUF_DEPTH = 5 // N (D20); V1 tapeout = 5; sim sweep via -G
 )(
   input  wire [7:0] ui_in     // Dedicated inputs
   ,output wire [7:0] uo_out    // Dedicated outputs
