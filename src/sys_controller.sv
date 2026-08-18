@@ -4,7 +4,7 @@
 //
 // --- Host pins (TT map; inputs qualified by top level into clk) ---
 // ui_in[0]  START     - one-clk pulse after top-level sync and rising-edge detect
-// ui_in[1]  reserved (ABORT removed; kill via rst_n)
+// ui_in[1]  unused (tied 0 at MCU; D34)
 // ui_in[2]  BUS_REQ   - MCU wants bidirectional uio
 // uo_out[0] DONE      - integrated controller idle
 // uo_out[1] BUS_GNT   - MCU has been granted uio control

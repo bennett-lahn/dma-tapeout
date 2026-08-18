@@ -9,7 +9,7 @@
 // rst_n        in   sync active-low reset
 // txn_valid    in   1-clk start pulse; legal only when ~busy
 // cmd          in   QSPI_CMD_FAST_READ / QSPI_CMD_WRITE (hold until ~busy)
-// addr         in   24-bit QPI address phase; addr[23]=0); A[22:0] in addr[22:0]
+// addr         in   24-bit QPI address phase; addr[23] don't-care (D35); A[22:0] in addr[22:0]
 // device_sel      in   QSPI_PSRAM0/1 -> which ram_*_cs_n
 // byte_len     in   payload bytes this CE#; width QPI_BYTE_LEN_W; hold until ~busy
 // wdata        in   write nibble; must be valid on txn_valid; when wdata_next

@@ -8,9 +8,9 @@
  *
  * Pin map (docs/human/architecture/blocks/host-interface.md):
  *   ui_in[0]  START            uo_out[0]  DONE
- *   ui_in[1]  reserved         uo_out[1]  BUS_GNT
- *   ui_in[2]  BUS_REQ          uo_out[7:2] reserved (status / DFT)
- *   ui_in[7:3] reserved
+ *   ui_in[1]  unused (0)       uo_out[1]  BUS_GNT
+ *   ui_in[2]  BUS_REQ          uo_out[7:2] unused (0)
+ *   ui_in[7:3] unused (0)
  *   uio[0] flash CS, uio[1:2] SIO0/1, uio[3] SCK, uio[4:5] SIO2/3,
  *   uio[6] RAM A CS, uio[7] RAM B CS
  */
@@ -128,7 +128,7 @@ sys_controller #(
 // sys_controller, so no extra glitch-guard flop is needed here.
 assign uo_out[0]   = done;
 assign uo_out[1]   = bus_gnt;
-assign uo_out[7:2] = 6'b0; // reserved (status / DFT - open)
+assign uo_out[7:2] = 6'b0; // unused (D34)
 
 // uio pad mapping (uio[0] flash CS, [1:2]/[4:5] SIO0-3, [3] SCK, [6:7] RAM A/B CS)
 assign sio_in = {uio_in[5], uio_in[4], uio_in[2], uio_in[1]};

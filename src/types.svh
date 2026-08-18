@@ -28,7 +28,8 @@ function automatic logic [2:0] qspi_wait_cycles(input qspi_cmd_t cmd);
 endfunction
 
 // QPI address phase is 24 bits on the wire. APS6404L only uses A[22:0];
-// addr[23] is unused (drive 0). Device select is device_sel, not addr[23].
+// addr[23] is don't-care (D35; may be any value). Device select is device_sel,
+// not addr[23].
 typedef logic [23:0] qspi_addr_t;
 
 // Which PSRAM device (CTRL_FLAGS device bits / device_sel). Not a pad CE# - engine maps this to ram_*_cs_n.
@@ -37,8 +38,8 @@ typedef enum logic {
    ,QSPI_PSRAM1 = 1'b1
 } qspi_device_sel_t;
 
-// Actual buffer depth N is module parameter DMA_BUF_DEPTH (default 1) in
-// tt_um_lahnb_sgdma / sys_controller. When hardening, depth and max depth should be the same.
+// Actual buffer depth N is module parameter DMA_BUF_DEPTH (default 5) in
+// tt_um_lahnb_sgdma / sys_controller. V1 tapeout is N=5. When hardening, depth and max depth should be the same.
 localparam int unsigned DMA_BUF_DEPTH_MAX = 8; // verification sweep ceiling (D20)
 localparam int unsigned QPI_TCD_BYTES = 11; // Must be > 2 for qspi_engine correctness
 localparam int unsigned QPI_MAX_BYTES =
