@@ -29,6 +29,7 @@ from reference.generator import (
     GeneratorError,
     TcdSpec,
     build_directed_chain,
+    len_addr_corner_specs,
 )
 from reference.scoreboard import Scoreboard
 from reference.tcd import TCD_BYTES, decode_tcd, validate_tcd
@@ -227,9 +228,19 @@ def test_chain_length_stays_inside_the_bias_bounds():
 
 def test_transfer_length_resolves_depth_relative_corners():
     generator = ChainGenerator(13, dma_buf_depth=4)
-    lengths = {generator.transfer_length() for _ in range(200)}
+    lengths = {generator.transfer_length() for _ in range(400)}
     assert lengths <= set(range(256))
     assert 0 in lengths or 1 in lengths
+    assert {7, 8, 9} & lengths  # 2N-1 / 2N / 2N+1 at depth 4
+
+
+def test_len_addr_corner_specs_hit_src_zero_and_highest_next():
+    specs = len_addr_corner_specs(5)
+    assert [spec.transfer_len for spec in specs] == [9, 10, 11]
+    chain = build_directed_chain(specs, seed=99, dma_buf_depth=5)
+    head = chain.executable[0]
+    assert head.src_device == 1 and head.src_ptr == 0
+    assert head.next_tcd >= 0x7FFC00
 
 
 def test_bias_override_narrows_one_dimension():

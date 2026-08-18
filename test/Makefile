@@ -30,7 +30,9 @@ SIM                 ?= icarus
 LEVEL               ?= top
 SEED                ?= 1
 TEST_FILTER         ?=
-DMA_BUF_DEPTH       ?= 1
+# Package ceiling from src/rtl/types.svh (D20). Tapeout default matches RTL N=5.
+DMA_BUF_DEPTH_MAX   ?= 8
+DMA_BUF_DEPTH       ?= 5
 TIMING_PROFILE      ?= ideal
 WAVES               ?= auto
 TOPLEVEL_LANG       ?= verilog
@@ -83,17 +85,21 @@ ifneq ($(WAVES),auto)
   endif
 endif
 
-# Buffer-depth sweep harness: M5 wires -GDMA_BUF_DEPTH; scaffold allows 1 only.
-ifeq ($(DMA_BUF_DEPTH),1)
-  # ok
-else ifeq ($(DMA_BUF_DEPTH),2)
-  $(error DMA_BUF_DEPTH=2 blocked: sim harness sweep not wired (M5); use DMA_BUF_DEPTH=1)
-else ifeq ($(DMA_BUF_DEPTH),4)
-  $(error DMA_BUF_DEPTH=4 blocked: sim harness sweep not wired (M5); use DMA_BUF_DEPTH=1)
-else ifeq ($(DMA_BUF_DEPTH),8)
-  $(error DMA_BUF_DEPTH=8 blocked: sim harness sweep not wired (M5); use DMA_BUF_DEPTH=1)
-else
-  $(error DMA_BUF_DEPTH must be 1 until M5 sweep is wired (got '$(DMA_BUF_DEPTH)'))
+# L2 default: keep waves (02-platform.md). Caller may still set never/always.
+ifeq ($(LEVEL),gl)
+  ifeq ($(WAVES),auto)
+    override WAVES := always
+  endif
+endif
+
+# Accept any integer in 1..DMA_BUF_DEPTH_MAX (not restricted to powers of two).
+_DMA_BUF_DEPTH_OK := $(shell \
+  echo '$(DMA_BUF_DEPTH)' | grep -Eq '^[0-9]+$$' \
+  && [ '$(DMA_BUF_DEPTH)' -ge 1 ] \
+  && [ '$(DMA_BUF_DEPTH)' -le $(DMA_BUF_DEPTH_MAX) ] \
+  && echo ok)
+ifeq ($(_DMA_BUF_DEPTH_OK),)
+  $(error DMA_BUF_DEPTH must be an integer in 1..$(DMA_BUF_DEPTH_MAX) (got '$(DMA_BUF_DEPTH)'))
 endif
 
 # ---------------------------------------------------------------------------
@@ -126,6 +132,7 @@ export SEED
 export LEVEL
 export DUT_LEVEL
 export DMA_BUF_DEPTH
+export DMA_BUF_DEPTH_MAX
 export TIMING_PROFILE
 export WAVES
 export RUN_DIR
@@ -135,11 +142,19 @@ export COCOTB_REDUCED_LOG_FMT
 export COCOTB_RESULTS_FILE    := $(RUN_DIR)/results.xml
 
 ifneq ($(TEST_FILTER),)
-  export COCOTB_TEST_FILTER := $(TEST_FILTER)
+  export COCOTB_TEST_FILTER := '$(TEST_FILTER)'
+endif
+ifeq ($(TEST_FILTER),)
+  unexport COCOTB_TEST_FILTER
 endif
 
-# Default module list; smoke/directed/random targets override as needed.
-COCOTB_TEST_MODULES ?= tests.test_smoke
+# Default module list; smoke/directed/random/gl_test targets override as needed.
+# GATES=yes / LEVEL=gl runs the L2 directed subset, not full random.
+ifeq ($(LEVEL),gl)
+  COCOTB_TEST_MODULES ?= tests.test_gate_level
+else
+  COCOTB_TEST_MODULES ?= tests.test_smoke
+endif
 
 # ---------------------------------------------------------------------------
 # Simulator / compile arguments
@@ -148,10 +163,16 @@ COCOTB_TEST_MODULES ?= tests.test_smoke
 COMPILE_ARGS        += -I$(SRC_RTL)
 COMPILE_ARGS        += -I$(TB_DIR)
 
-# Module parameter override for future depth sweep (M5). Syntax is
+# Module parameter override for depth sweep (M5). Syntax is
 # simulator-specific: Verilator uses -G, Icarus uses -P<top>.<param>=<value>.
-# tb_engine (L0) has no DMA_BUF_DEPTH parameter, so only pass it for L1/L2 tops.
-ifneq ($(LEVEL),engine)
+# tb_engine (L0) has no DMA_BUF_DEPTH parameter.
+# L2 uses a flattened N=5 netlist: do not pass -Ptb_gl.DMA_BUF_DEPTH (that
+# does not resynthesize the gate DUT). Python still sees DMA_BUF_DEPTH=5.
+ifeq ($(LEVEL),gl)
+  ifneq ($(DMA_BUF_DEPTH),5)
+    $(error L2 netlist is elaborated at DMA_BUF_DEPTH=5; got $(DMA_BUF_DEPTH). Passing another depth does not resynthesize the gate DUT)
+  endif
+else ifneq ($(LEVEL),engine)
   ifeq ($(SIM),verilator)
     COMPILE_ARGS    += -GDMA_BUF_DEPTH=$(DMA_BUF_DEPTH)
   else
@@ -177,11 +198,17 @@ ifeq ($(GATES),yes)
   VERILOG_SOURCES   += $(PWD)/$(NETLIST)
 
   ifeq ($(wildcard $(PWD)/$(NETLIST)),)
-    $(warning NETLIST $(PWD)/$(NETLIST) not found; L2 runs are blocked until netlist exists)
+    $(error NETLIST $(PWD)/$(NETLIST) not found; copy the N=5 unpowered nl view via test/scripts/run_gl.sh. L2 is blocked, not a pass)
   endif
 
+  export NETLIST
+  NETLIST_SHA256    := $(shell sha256sum "$(PWD)/$(NETLIST)" 2>/dev/null | cut -d" " -f1)
+  export NETLIST_SHA256
+  export PDK_ROOT
+
   ifneq ($(SDF),)
-    # Simulator-specific SDF wiring deferred to M6 (09-gate-level-and-x.md).
+    # SDF remains blocked until a qualified annotation run exists.
+    # Defining this does not make a zero-delay GL run an SDF pass.
     COMPILE_ARGS    += -DSDF_ANNOTATE=\"$(SDF)\"
   endif
 
@@ -239,6 +266,11 @@ _print_config:
 	@echo "SIM_BUILD=$(SIM_BUILD)"
 	@echo "COCOTB_TEST_MODULES=$(COCOTB_TEST_MODULES)"
 	@echo "PYTHON=$(PYTHON)  VIRTUAL_ENV=$${VIRTUAL_ENV:-<unset>}"
+	@if [ "$(LEVEL)" = gl ]; then \
+	  echo "NETLIST=$(NETLIST) SHA256=$${NETLIST_SHA256:-<missing>}"; \
+	  echo "PDK_ROOT=$(PDK_ROOT)"; \
+	  echo "SDF=$(if $(SDF),$(SDF),<unset>) (zero-delay functional GL is not an SDF pass; SDF remains blocked unless qualified)"; \
+	fi
 	@$(MAKE) -s _print_versions
 
 _print_versions:
@@ -263,7 +295,7 @@ doctor:
 # Primary targets (02-platform.md)
 # ---------------------------------------------------------------------------
 
-.PHONY: default test smoke directed random regression formal waves
+.PHONY: default test smoke directed depth random regression formal waves gl_test
 
 default: test
 
@@ -271,7 +303,9 @@ test: sim_prep
 	@$(MAKE) sim 2>&1 | tee "$(RUN_DIR)/run.log"; \
 	 exit=$${PIPESTATUS[0]}; \
 	 if [ -f "$(PWD)/dump.fst" ]; then mv -f "$(PWD)/dump.fst" "$(RUN_DIR)/dump.fst"; fi; \
-	 if [ -f "$(PWD)/results.xml" ] && [ "$(PWD)/results.xml" != "$(RUN_DIR)/results.xml" ]; then \
+	 if [ -f "$(RUN_DIR)/results.xml" ]; then \
+	   cp -f "$(RUN_DIR)/results.xml" "$(PWD)/results.xml"; \
+	 elif [ -f "$(PWD)/results.xml" ] && [ "$(PWD)/results.xml" != "$(RUN_DIR)/results.xml" ]; then \
 	   cp -f "$(PWD)/results.xml" "$(RUN_DIR)/results.xml"; \
 	 fi; \
 	 $(MAKE) -s _print_repro; \
@@ -282,23 +316,63 @@ smoke:
 		COCOTB_TEST_MODULES=tests.test_smoke \
 		TEST_FILTER=smoke
 
-# M2 directed cases in tests.test_dma_directed (exclude M5 dma_buf_depth_sweep).
-# Keep parentheses quoted on the recipe line; bare ( breaks bash before make sees it.
-DIRECTED_TEST_FILTER ?= ^(tcd_big_endian_flags|same_device_psram0|same_device_psram1|cross_device_0_to_1|cross_device_1_to_0|multi_tcd_chain|next_device_alternate|transfer_length_corners|quit_descriptor_priority|empty_chain_at_head|restart_after_completion|wide_address_space|overlapping_same_device_ranges)$$
+# TT GATES=yes adapter: L2 directed subset at flattened N=5, TIMING_PROFILE=ideal.
+# Official Tiny Tapeout action greps test/results.xml (copied after every test).
+gl_test:
+	$(MAKE) test LEVEL=gl GATES=yes SIM=icarus \
+		DMA_BUF_DEPTH=5 TIMING_PROFILE=ideal \
+		COCOTB_TEST_MODULES=tests.test_gate_level \
+		RUN_DIR="$(PWD)/runs/gl/icarus/n5/ideal/seed-$(SEED)" \
+		SIM_BUILD="$(PWD)/sim_build/gl/icarus/n5/ideal"
 
+# M2 directed cases in tests.test_dma_directed.
+# COV-DEPTH filled by make depth.
+# Run the whole module; cocotb filters fullname module.name.
 directed:
 	$(MAKE) test \
-		COCOTB_TEST_MODULES=tests.test_smoke,tests.test_qspi,tests.test_dma_directed,tests.test_reset_and_bus \
-		TEST_FILTER="$(if $(TEST_FILTER),$(TEST_FILTER),$(DIRECTED_TEST_FILTER))"
+		COCOTB_TEST_MODULES=tests.test_dma_directed \
+		TEST_FILTER=$(if $(TEST_FILTER),$(TEST_FILTER),)
+
+# TC-DEPTH harness: isolated directed build per depth in 1..DMA_BUF_DEPTH_MAX.
+# Compile-time parameter; not a single cocotb process that recompiles.
+# Pass RUN_DIR/SIM_BUILD explicitly: parent exports RUN_DIR for the default
+# depth, and `?=` would otherwise keep that sticky path across the loop.
+depth:
+	@set -euo pipefail; \
+	 for n in $$(seq 1 $(DMA_BUF_DEPTH_MAX)); do \
+	   echo "=== TC-DEPTH: DMA_BUF_DEPTH=$$n / $(DMA_BUF_DEPTH_MAX) ==="; \
+	   $(MAKE) directed DMA_BUF_DEPTH=$$n \
+	     RUN_DIR="$(PWD)/runs/$(LEVEL)/$(SIM)/n$$n/$(TIMING_PROFILE)/seed-$(SEED)" \
+	     SIM_BUILD="$(PWD)/sim_build/$(LEVEL)/$(SIM)/n$$n/$(TIMING_PROFILE)"; \
+	 done; \
+	 echo "TC-DEPTH: all depths 1..$(DMA_BUF_DEPTH_MAX) passed"
+
+# One-seed constrained-random legal chain (tests.test_dma_random).
+# Tapeout default DMA_BUF_DEPTH=5 and TIMING_PROFILE=ideal come from the
+# Makefile defaults above; do not override them here.
+RANDOM_TEST_FILTER ?= random_legal_chain
 
 random:
 	$(MAKE) test \
 		COCOTB_TEST_MODULES=tests.test_dma_random \
-		TEST_FILTER=$(if $(TEST_FILTER),$(TEST_FILTER),random)
+		TEST_FILTER=$(if $(TEST_FILTER),$(TEST_FILTER),$(RANDOM_TEST_FILTER))
+
+# Representative seed list (Icarus authoritative). Override with
+# REGRESSION_SEEDS="1 2 3" REGRESSION_SIMS="icarus verilator".
+REGRESSION_SEEDS ?= 1 2 3 5 8
+REGRESSION_SIMS  ?= icarus
 
 regression:
-	@echo "TODO(M2+): run configured seed list and simulator matrix (see 02-platform.md CI matrix)"
-	@exit 1
+	@set -euo pipefail; \
+	 for sim in $(REGRESSION_SIMS); do \
+	   for seed in $(REGRESSION_SEEDS); do \
+	     echo "=== regression SIM=$$sim SEED=$$seed DMA_BUF_DEPTH=$(DMA_BUF_DEPTH) TIMING_PROFILE=$(TIMING_PROFILE) ==="; \
+	     $(MAKE) random SIM=$$sim SEED=$$seed \
+	       RUN_DIR="$(PWD)/runs/$(LEVEL)/$$sim/n$(DMA_BUF_DEPTH)/$(TIMING_PROFILE)/seed-$$seed" \
+	       SIM_BUILD="$(PWD)/sim_build/$(LEVEL)/$$sim/n$(DMA_BUF_DEPTH)/$(TIMING_PROFILE)"; \
+	   done; \
+	 done; \
+	 echo "regression: $(REGRESSION_SIMS) x $(REGRESSION_SEEDS) passed"
 
 formal:
 	@echo "TODO(M4): SymbiYosys jobs under test/formal/ (see docs/llm/verification/07-formal.md)"

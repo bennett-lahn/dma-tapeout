@@ -23,6 +23,7 @@ from common.dispose import REQUIRE, dispose_run
 from common.host import pulse_start
 from models.psram import QSPI_CMD_WRITE
 from monitors.qspi import sck_is_parked
+from reference.tcd import Tcd, encode_tcd
 
 FILL = 0x00
 DONE_BIT = 0x1
@@ -39,42 +40,6 @@ POST_SRC_BYTE = 0x5A
 _MID_TXN_TIMEOUT_CYCLES = 256
 _ENGINE_WRITE_LEN = 11
 _ENGINE_WRITE_ADDR = 0x003100
-
-
-def _build_tcd(
-    src_ptr: int,
-    dest_ptr: int,
-    transfer_len: int,
-    next_tcd: int,
-    *,
-    src_device: int = 0,
-    dest_device: int = 0,
-    next_device: int = 0,
-    quit: bool = False,
-    reserved: int = 0,
-) -> bytes:
-    ctrl_flags = (
-        ((reserved & 0xF) << 4)
-        | ((next_device & 1) << 3)
-        | ((dest_device & 1) << 2)
-        | ((src_device & 1) << 1)
-        | (1 if quit else 0)
-    )
-    return bytes(
-        [
-            (src_ptr >> 16) & 0xFF,
-            (src_ptr >> 8) & 0xFF,
-            src_ptr & 0xFF,
-            (dest_ptr >> 16) & 0xFF,
-            (dest_ptr >> 8) & 0xFF,
-            dest_ptr & 0xFF,
-            transfer_len & 0xFF,
-            (next_tcd >> 16) & 0xFF,
-            (next_tcd >> 8) & 0xFF,
-            next_tcd & 0xFF,
-            ctrl_flags,
-        ]
-    )
 
 
 def _repro(config: dict, test: str) -> str:
@@ -118,8 +83,16 @@ def _dispose_reset_window(bringup, *, test: str, log, repro: str) -> list:
 
 
 def _load_smoke_chain(psram0, *, src_byte: int) -> None:
-    tcd_head = _build_tcd(SRC_ADDR, DST_ADDR, 1, NEXT_TCD_ADDR, quit=False)
-    tcd_quit = _build_tcd(0, 0, 0, 0, quit=True)
+    tcd_head = encode_tcd(
+        Tcd(
+            src_ptr=SRC_ADDR,
+            dest_ptr=DST_ADDR,
+            transfer_len=1,
+            next_tcd=NEXT_TCD_ADDR,
+            quit=False,
+        )
+    )
+    tcd_quit = encode_tcd(Tcd(quit=True))
     psram0.write(TCD_HEAD_ADDR, tcd_head)
     psram0.write(NEXT_TCD_ADDR, tcd_quit)
     psram0.write(SRC_ADDR, bytes([src_byte]))
@@ -223,6 +196,13 @@ async def _q_rst_top(dut, config: dict) -> None:
 
     bringup.clear()
     bringup.clear_transactions()
+    # PendingLedger.carryover intentionally survives monitor.clear() (used by
+    # TC-PENDING-SURVIVES-CLEAR). Drop abort-window RESET-TRUNCATED carryover
+    # here so the post-reset FORBID dispose only sees the fresh chain.
+    for monitor in bringup.monitors:
+        pending = getattr(monitor, "pending", None)
+        if pending is not None:
+            pending.carryover.clear()
 
     _load_smoke_chain(psram0, src_byte=POST_SRC_BYTE)
     await pulse_start(dut)
@@ -327,6 +307,10 @@ async def _q_rst_engine(dut, config: dict) -> None:
     await RisingEdge(dut.clk)
     bringup.clear()
     bringup.clear_transactions()
+    for monitor in bringup.monitors:
+        pending = getattr(monitor, "pending", None)
+        if pending is not None:
+            pending.carryover.clear()
 
     # Subsequent legal short write must complete cleanly.
     payload = bytes([0xA5])

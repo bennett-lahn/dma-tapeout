@@ -7,7 +7,7 @@
 `timescale 1ns / 1ps
 
 module tb_gl #(
-   parameter int unsigned DMA_BUF_DEPTH = 1
+   parameter int unsigned DMA_BUF_DEPTH = 5
 );
 
    // -------------------------------------------------------------------------
@@ -139,13 +139,13 @@ module tb_gl #(
    // -------------------------------------------------------------------------
    // Gate-level DUT
    // Makefile adds: -DGL_TEST -DFUNCTIONAL -DSIM, NETLIST, sg13g2_io/stdcell.
-   // TODO(M6): confirm synthesized top instance name matches tt_um_lahnb_sgdma.
-   // Do not invent a netlist here; test/Makefile supplies $(NETLIST).
+   // Flattened N=5 netlist: no DMA_BUF_DEPTH parameter. Makefile must not
+   // pass -Ptb_gl.DMA_BUF_DEPTH as if that resynthesizes the gate DUT.
+   // SDF remains blocked; this wrapper has no $sdf_annotate. A zero-delay
+   // functional GL run is not an SDF pass (09-gate-level-and-x.md).
    // -------------------------------------------------------------------------
 `ifdef GL_TEST
-   tt_um_lahnb_sgdma #(
-      .DMA_BUF_DEPTH(DMA_BUF_DEPTH)
-   ) dut (
+   tt_um_lahnb_sgdma dut (
       .ui_in   (ui_in)
       ,.uo_out  (uo_out)
       ,.uio_in  (uio_in)
@@ -164,11 +164,13 @@ module tb_gl #(
    // -------------------------------------------------------------------------
    // Waveform dump (L2 default WAVES=always per policy)
    // -------------------------------------------------------------------------
+`ifndef WAVES_DISABLE
    initial begin
       $dumpfile("dump.fst");
       $dumpvars(0, tb_gl);
       #1;
    end
+`endif
 
 endmodule
 

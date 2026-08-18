@@ -22,7 +22,7 @@ Test-case IDs:
     TC-QNEG-PHASE
     TC-QNEG-DUMMY
     TC-QNEG-NIBBLE-ODD
-    TC-QNEG-ADDR23
+    TC-ADDR23-DONTCARE
     TC-QNEG-SIO-X
     TC-QNEG-ADDR-RANGE
     TC-QNEG-DRIVE-DESEL
@@ -38,7 +38,6 @@ from common.dispose import dispose_run, expect
 from common.host import QpiPassthroughMaster, assert_bus_req
 from models.psram import (
     PSRAM_ADDR_MASK,
-    Q_ADDR23,
     Q_ADDR_RANGE,
     Q_DRIVE_DESEL,
     Q_DUMMY,
@@ -51,7 +50,7 @@ from models.psram import (
     SIO_UIO_BITS,
     format_violations,
 )
-from monitors.qspi import CHK_PIN_ADDR23_ZERO, CHK_PIN_KNOWN
+from monitors.qspi import CHK_PIN_KNOWN
 
 QSPI_CMD_QUAD_WRITE = 0x38  # device-supported, outside the frozen V1 allowlist
 
@@ -286,8 +285,8 @@ async def qpi_negative_odd_data_nibble(dut):
 
 
 @cocotb.test()
-async def qpi_negative_address_bit23(dut):
-    """TC-QNEG-ADDR23: ``A[23]`` set fails before any memory access."""
+async def qpi_address_bit23_dontcare(dut):
+    """TC-ADDR23-DONTCARE: ``A[23]`` is masked; access proceeds on ``A[22:0]`` (D35)."""
     config = parse_run_config()
     repro = _repro(config, "addr23")
     dut._log.info(repro)
@@ -296,24 +295,21 @@ async def qpi_negative_address_bit23(dut):
 
     await master.frame(0, QSPI_CMD_WRITE, 0x800040, write_data=b"\x5A")
 
-    records = _model_records(bringup)
-    assert "0x800040" in records[0].detail, f"wire address missing: {records[0]}"
-    assert psram0.read(0x000040, 1) == bytes([FILL]), "A[23] frame reached memory"
-    assert psram0.agent.transactions[-1].data_nibbles == 0
-    dut._log.info(
-        "TC-QNEG-ADDR23 recorded: %s", format_violations(records) or "<none>"
+    assert psram0.read(0x000040, 1) == b"\x5A", (
+        "D35: A[23] must be ignored and the write must land at A[22:0]=0x000040. "
+        + repro
     )
+    assert not any(record.code == "Q-ADDR23" for record in _model_records(bringup)), (
+        "D35: Q-ADDR23 must not fire. " + repro
+    )
+    dut._log.info("TC-ADDR23-DONTCARE: write at 0x800040 reached 0x000040")
 
     await _finish(
         bringup,
         master,
         dut,
-        test="TC-QNEG-ADDR23",
+        test="TC-ADDR23-DONTCARE",
         repro=repro,
-        expect_fail=[
-            expect(Q_ADDR23, count=1),
-            expect(CHK_PIN_ADDR23_ZERO, count=1),
-        ],
     )
 
 

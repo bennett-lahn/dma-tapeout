@@ -1,15 +1,16 @@
-"""M1 T9 disposition for ``CHK-PIN-ADDR23-ZERO`` and ``CHK-PIN-KNOWN``.
+"""M1 T9 disposition for ``CHK-PIN-KNOWN``.
 
-Path: model-side pin decode already proves these catalog rows via ``Q-ADDR23``
-and ``Q-SIO-X`` (see ``monitors.qspi.dispose_model_pin_checks``). This module
-prints explicit pass/fail dispositions and proves each ID can fail. It is the
-intentional model-plane dispose contract test: attach/clock/reset come from
+Path: model-side pin decode proves the catalog row via ``Q-SIO-X``
+(see ``monitors.qspi.dispose_model_pin_checks``). This module prints explicit
+pass/fail dispositions and proves the ID can fail. It is the intentional
+model-plane dispose contract test: attach/clock/reset come from
 :func:`common.bringup.bring_up_top` with ``pin_monitor=False``, then
 :func:`monitors.qspi.assert_model_pin_disposition` judges via model ``Q-*``.
 
+``CHK-PIN-ADDR23-ZERO`` / ``Q-ADDR23`` are retired by D35 (``A[23]`` don't-care).
+
 Test-case IDs:
-    TC-PIN-DISP-PASS   - legal traffic leaves both IDs pass
-    TC-PIN-DISP-ADDR23 - ``A[23]`` set → ``CHK-PIN-ADDR23-ZERO=fail`` via ``Q-ADDR23``
+    TC-PIN-DISP-PASS   - legal traffic leaves KNOWN pass
     TC-PIN-DISP-KNOWN  - SIO X in a host-driven write → ``CHK-PIN-KNOWN=fail``
                          via ``Q-SIO-X``
 
@@ -24,7 +25,6 @@ from common.bringup import bring_up_top
 from common.config import parse_run_config
 from common.host import QpiPassthroughMaster
 from models.psram import (
-    Q_ADDR23,
     Q_SIO_X,
     QSPI_CMD_FAST_READ,
     QSPI_CMD_WRITE,
@@ -32,7 +32,6 @@ from models.psram import (
     format_violations,
 )
 from monitors.qspi import (
-    CHK_PIN_ADDR23_ZERO,
     CHK_PIN_KNOWN,
     MODEL_DISPOSE_VIA,
     assert_model_pin_disposition,
@@ -70,7 +69,7 @@ def _clear_agent_logs(*psrams) -> None:
 
 @cocotb.test()
 async def pin_dispose_legal_frames_pass(dut):
-    """TC-PIN-DISP-PASS: legal write/read leave ADDR23 and KNOWN as pass."""
+    """TC-PIN-DISP-PASS: legal write/read leave KNOWN as pass."""
     config = parse_run_config()
     repro = _repro(config, "pin_dispose_legal_frames_pass")
     dut._log.info(repro)
@@ -85,36 +84,10 @@ async def pin_dispose_legal_frames_pass(dut):
         psram0, psram1, log=dut._log, test="TC-PIN-DISP-PASS"
     )
     dut._log.info(
-        "TC-PIN-DISP-PASS: %s=%s %s=%s",
-        CHK_PIN_ADDR23_ZERO,
-        MODEL_DISPOSE_VIA[CHK_PIN_ADDR23_ZERO],
+        "TC-PIN-DISP-PASS: %s=%s",
         CHK_PIN_KNOWN,
         MODEL_DISPOSE_VIA[CHK_PIN_KNOWN],
     )
-
-
-@cocotb.test()
-async def pin_dispose_addr23_fails(dut):
-    """TC-PIN-DISP-ADDR23: ``Q-ADDR23`` disposes ``CHK-PIN-ADDR23-ZERO=fail``."""
-    config = parse_run_config()
-    repro = _repro(config, "pin_dispose_addr23_fails")
-    dut._log.info(repro)
-
-    psram0, psram1, master = await _bring_up(dut)
-    await master.frame(0, QSPI_CMD_WRITE, 0x800040, write_data=b"\x5A")
-
-    records = list(psram0.agent.violations) + list(psram1.agent.violations)
-    assert any(record.code == Q_ADDR23 for record in records), (
-        "TC-PIN-DISP-ADDR23: expected Q-ADDR23: " + format_violations(records)
-    )
-    assert_model_pin_disposition(
-        psram0,
-        psram1,
-        log=dut._log,
-        expect_fail=(CHK_PIN_ADDR23_ZERO,),
-        test="TC-PIN-DISP-ADDR23",
-    )
-    assert psram0.read(0x000040, 1) == bytes([FILL]), "A[23] frame reached memory"
 
 
 def _sio_uio_mask(*sio_indices: int) -> int:

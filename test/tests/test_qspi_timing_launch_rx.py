@@ -35,6 +35,7 @@ Test-case IDs:
 import os
 
 import cocotb
+from cocotb.simtime import get_sim_time
 from cocotb.triggers import NextTimeStep, ReadOnly, RisingEdge, Timer
 
 from common.bringup import bring_up_engine
@@ -48,6 +49,8 @@ _LAUNCH_ADDRESS = 0x000680
 _RX_ADDRESS = 0x0006C0
 _RX_PAYLOAD = bytes((0x91, 0x2E, 0x47))
 _BOUNDARY_TACLK_NS = (2.0, 5.5)
+_RACE_D_OUT_CE_NS = 20.0
+_RACE_D_OUT_SCK_NS = 0.0
 
 
 def _repro(config: dict, test_filter: str) -> str:
@@ -172,6 +175,22 @@ def _require_sweep_endpoint(bringup) -> float:
     return requested
 
 
+def _device_plane_race_window_ready(bringup) -> bool:
+    """True when sweep + D_OUT_* match the directed post-rise race point.
+
+    ``D_OUT_CE_NS`` / ``D_OUT_SCK_NS`` are the DUT-to-device CE# and SCK
+    transport delays (from ``TB_TCO_*`` + ``TB_FLIGHT_OUT_*``). The race
+    point needs a non-zero CE# delay with zero SCK delay so a late
+    device-plane launch can land after DUT-plane CE# rise cleanup.
+    """
+    if bringup.timing_profile != "sweep":
+        return False
+    return (
+        bringup.timing_params["D_OUT_CE_NS"] == _RACE_D_OUT_CE_NS
+        and bringup.timing_params["D_OUT_SCK_NS"] == _RACE_D_OUT_SCK_NS
+    )
+
+
 async def _inject_sio_change_while_sck_high(dut, *, timeout_edges: int = 128) -> None:
     """Replace the L0 ASIC SIO drive during an active high SCK half-cycle."""
     for _ in range(timeout_edges):
@@ -284,6 +303,111 @@ async def qspi_rxedge_directed(dut):
                     f"(must be > 0). {summary}"
                 )
     dispose_run(monitor, test=test, log=dut._log, repro=repro)
+
+
+@cocotb.test()
+async def qspi_rxedge_device_plane_race(dut):
+    """TC-RXEDGE-RACE-DEVICE-PLANE: post-rise launch is scope-audited once."""
+    config = parse_run_config()
+    repro = _repro(config, "qspi_rxedge_device_plane_race")
+    dut._log.info(repro)
+
+    bringup, monitor = await _bring_up_timing(dut)
+    if not _device_plane_race_window_ready(bringup):
+        # Endpoint / other sweep cells omit the race TB_* overrides; vacuous
+        # pass keeps the full-module suite green. The dedicated race cell sets
+        # TB_TCO_CE_NS=20 (and zero SCK path delay) so this body runs.
+        dut._log.info(
+            "TC-RXEDGE-RACE-DEVICE-PLANE: skip (need TIMING_PROFILE=sweep "
+            "D_OUT_CE_NS=%.1f D_OUT_SCK_NS=%.1f; observed profile=%s "
+            "D_OUT_CE_NS=%.1f D_OUT_SCK_NS=%.1f)",
+            _RACE_D_OUT_CE_NS,
+            _RACE_D_OUT_SCK_NS,
+            bringup.timing_profile,
+            bringup.timing_params["D_OUT_CE_NS"],
+            bringup.timing_params["D_OUT_SCK_NS"],
+        )
+        return
+    bringup.psram1.write(_RX_ADDRESS, _RX_PAYLOAD)
+    wrapper = monitor._timed_devices[1]
+
+    read_task = cocotb.start_soon(
+        engine_qpi_read(dut, device=1, address=_RX_ADDRESS, length=len(_RX_PAYLOAD))
+    )
+    await RisingEdge(dut.psram1_ce_n)
+    await ReadOnly()
+    await Timer(0.1, unit="ns")
+    assert wrapper.agent.phase == "DATA", (
+        "TC-RXEDGE-RACE-DEVICE-PLANE: DUT-plane CE# rise ended the read "
+        "before the delayed device-plane CE# commit"
+    )
+
+    # D_OUT_CE_NS (DUT-to-device CE# delay) defers the device-plane commit for
+    # 20 ns after this DUT-plane CE# rise. Inject a device-plane SCK fall in
+    # that window, after the DUT-plane scope-close, to model its transport event.
+    # The raw model's selected property follows the DUT pin, so invoking its
+    # normal response path here would also manufacture an unrelated read-stale
+    # outcome. Q-RXEDGE consumes this append-only device-plane event stream.
+    race_time_fs = int(get_sim_time(unit="fs"))
+    wrapper.timing_events.append(
+        {
+            "kind": "read-launch",
+            "generation": wrapper._generation,
+            "nibble": 0xA,
+            "source_fall_fs": race_time_fs,
+            "device_fall_fs": race_time_fs,
+        }
+    )
+    monitor._collect_timed_events(in_reset=False)
+    assert len(monitor._rx_pending) == 1, (
+        "TC-RXEDGE-RACE-DEVICE-PLANE: late device-plane launch did not open "
+        "the intended Q-RXEDGE pending item"
+    )
+
+    await Timer(_RACE_D_OUT_CE_NS + 1.0, unit="ns")
+    monitor._collect_timed_events(in_reset=False)
+    await read_task
+
+    scope_findings = monitor.violations_for(timing.Q_RXEDGE)
+    assert len(scope_findings) == 1, (
+        "TC-RXEDGE-RACE-DEVICE-PLANE: expected one scope-close audit for "
+        f"the injected nibble, observed {len(scope_findings)}"
+    )
+    assert "reason=scope-close" in scope_findings[0].detail, (
+        "TC-RXEDGE-RACE-DEVICE-PLANE: late launch was not audited at the "
+        "device-plane CE# commit"
+    )
+    assert not monitor._rx_pending, (
+        "TC-RXEDGE-RACE-DEVICE-PLANE: late pending item leaked past the "
+        "device-plane CE# commit"
+    )
+
+    following = await engine_qpi_read(
+        dut, device=1, address=_RX_ADDRESS, length=len(_RX_PAYLOAD)
+    )
+    assert following.nibbles == bytes_to_nibbles(_RX_PAYLOAD), (
+        "TC-RXEDGE-RACE-DEVICE-PLANE: following CE# session captured "
+        f"{following.nibbles}, expected {bytes_to_nibbles(_RX_PAYLOAD)}"
+    )
+    assert not monitor._rx_pending, (
+        "TC-RXEDGE-RACE-DEVICE-PLANE: prior-session pending item matched "
+        "a capture in the following CE# session"
+    )
+    assert len(monitor.violations_for(timing.Q_RXEDGE)) == 1, (
+        "TC-RXEDGE-RACE-DEVICE-PLANE: following CE# session created a "
+        "duplicate finding for the injected nibble"
+    )
+    dispose_run(
+        monitor,
+        test="TC-RXEDGE-RACE-DEVICE-PLANE",
+        expect_fail=[expect(timing.Q_RXEDGE, count=1)],
+        log=dut._log,
+        repro=repro,
+    )
+    assert len(monitor.violations_for(timing.Q_RXEDGE)) == 1, (
+        "TC-RXEDGE-RACE-DEVICE-PLANE: dispose duplicated the scope-close "
+        "finding for the injected nibble"
+    )
 
 
 @cocotb.test()

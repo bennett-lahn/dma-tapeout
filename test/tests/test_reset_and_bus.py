@@ -48,14 +48,26 @@ from common.config import parse_run_config
 from common.directed import (
     DONE_BIT,
     auto_timeout_ns as _auto_timeout_ns,
+    commit_l1_window as _commit_l1_window,
     compare_and_dispose as _compare_and_dispose,
     install_chain as _install_chain,
+    l1_adapter as _l1_adapter,
     run_context as _run_context,
     wait_for_done_pulse as _wait_for_done_pulse,
     wait_until_done as _wait_until_done,
 )
 from common.dispose import REVIEW, dispose_run
 from common.host import BUS_REQ_BIT, START_BIT, assert_bus_req, pulse_start
+from common.injection import (
+    START_PHASE_BINS,
+    SYNC_LATENCY_CYCLES,
+    classify_start_phase,
+    inject_bus_req,
+    inject_bus_req_at_new_fetch,
+    offset_for_phase_bin,
+    resolve_clk_period_ns,
+)
+from monitors.timing import Q_LAUNCH
 from monitors.handshake import (
     QSPI_ENGINE_STATES,
     SYS_CONTROL_FETCH,
@@ -78,9 +90,31 @@ _GRANT_TIMEOUT_CYCLES = 2_000
 _RESET_SETTLE_CYCLES = 5
 _POST_RELEASE_IDLE_CYCLES = 10
 
+
+def _assert_no_ordinary_qlaunch(bringup, *, window: str, repro: str) -> None:
+    """Grant-park OE release must not produce ordinary Q-LAUNCH.
+
+    ``Q-LAUNCH`` (driven SIO/OE changes only while SCK is low, with modeled
+    setup/hold) applies while the ASIC drives SCK; ``BUS_GNT`` park clears
+    ``asic_sck_oe`` and is owned by arbitration / reset OE checks instead.
+    """
+    ce = getattr(bringup, "ce", None)
+    if ce is None:
+        return
+    hits = [
+        event
+        for event in ce.events
+        if event.check_id == Q_LAUNCH and not event.reset_truncated
+    ]
+    assert not hits, (
+        f"{window}: grant-park OE release produced ordinary Q-LAUNCH "
+        f"(ASIC SCK OE off is not a launch window): {hits[0]}. {repro}"
+    )
+
 # qspi_pkg::qspi_state_t names (src/rtl/types.svh) resolved through the same
 # dict monitors.handshake already owns, so no magic numbers are duplicated.
 _ENGINE_STATE_BY_NAME = {name: code for code, name in QSPI_ENGINE_STATES.items()}
+_QSPI_CS_ON = _ENGINE_STATE_BY_NAME["CS_ON"]
 _QSPI_SEND_CMD_1 = _ENGINE_STATE_BY_NAME["SEND_CMD_1"]
 _QSPI_SEND_ADDR = _ENGINE_STATE_BY_NAME["SEND_ADDR"]
 _QSPI_WAIT = _ENGINE_STATE_BY_NAME["WAIT"]
@@ -227,7 +261,48 @@ async def _pulse_start_with_bus_req_at_new_fetch(dut) -> None:
     await RisingEdge(dut.clk)
 
 
-async def _bus_req_cycle(dut, trigger=None, *, repro: str) -> None:
+def _sample_ctrl_qpi(dut):
+    """Return ``(controller_state, qpi_phase)`` encodings at this instant."""
+    return (
+        int(_controller(dut).curr_state.value),
+        int(_engine(dut).curr_state.value),
+    )
+
+
+async def _record_bus_after_sync(
+    dut, adapter, *, observed_state=None, observed_phase=None
+) -> None:
+    """Wait the two-flop latency, then record COV-BUS-STATE / COV-BUS-PHASE.
+
+    ``COV-BUS-STATE`` is BUS_REQ synchronized assertion x controller state;
+    ``COV-BUS-PHASE`` is the same edge x QPI phase. One-cycle bins update
+    ``curr_state`` in the same NBA as the synchronized request, so callers
+    pass the targeted name when ReadOnly would already show the next state.
+    """
+    if adapter is None:
+        return
+    for index in range(SYNC_LATENCY_CYCLES):
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        if index == SYNC_LATENCY_CYCLES - 1:
+            state, phase = _sample_ctrl_qpi(dut)
+            adapter.record_bus_assertion(
+                observed_state if observed_state is not None else state,
+                observed_phase if observed_phase is not None else phase,
+            )
+        await NextTimeStep()
+
+
+async def _bus_req_cycle(
+    dut,
+    trigger=None,
+    *,
+    repro: str,
+    adapter=None,
+    observed_state=None,
+    observed_phase=None,
+    resume_origin=None,
+) -> None:
     """One assert/catch/grant/release BUS_REQ cycle with atomicity checks.
 
     *trigger*, when given, is an unstarted coroutine (e.g.
@@ -238,6 +313,18 @@ async def _bus_req_cycle(dut, trigger=None, *, repro: str) -> None:
     if trigger is not None:
         await trigger
         await assert_bus_req(dut, hold=True)
+        await _record_bus_after_sync(
+            dut,
+            adapter,
+            observed_state=observed_state,
+            observed_phase=observed_phase,
+        )
+    elif adapter is not None:
+        state, phase = _sample_ctrl_qpi(dut)
+        adapter.record_bus_assertion(
+            observed_state if observed_state is not None else state,
+            observed_phase if observed_phase is not None else phase,
+        )
 
     await _await_controller_state(dut, (SYS_CONTROL_STALL,), repro=repro)
 
@@ -267,6 +354,47 @@ async def _bus_req_cycle(dut, trigger=None, *, repro: str) -> None:
             break
     else:
         raise AssertionError(f"BUS_GNT never released after BUS_REQ release. {repro}")
+    if adapter is not None and resume_origin is not None:
+        adapter.record_bus_resume(resume_origin)
+
+
+async def _bus_req_targeted(
+    dut,
+    *,
+    repro: str,
+    adapter=None,
+    target_state=None,
+    target_phase=None,
+    new_fetch: bool = False,
+    resume_origin=None,
+):
+    """Assert BUS_REQ so the synchronized edge lands in a short state or phase."""
+    if new_fetch:
+        record = await inject_bus_req_at_new_fetch(dut, release=False)
+    else:
+        record = await inject_bus_req(
+            dut,
+            target_state=target_state,
+            target_phase=target_phase,
+            release=False,
+        )
+    if adapter is not None:
+        state = "NEW_FETCH" if new_fetch else (target_state or record.observed_state)
+        phase = target_phase if target_phase is not None else record.observed_phase
+        if state is not None:
+            adapter.record_bus_assertion(state, phase)
+    assert _bus_gnt(dut) == 1, f"BUS_GNT never asserted after targeted BUS_REQ. {repro}"
+    assert int(dut.uio_oe.value) == 0, f"uio_oe not clear under BUS_GNT. {repro}"
+    await assert_bus_req(dut, hold=False)
+    for _ in range(_GRANT_TIMEOUT_CYCLES):
+        await RisingEdge(dut.clk)
+        if _bus_gnt(dut) == 0:
+            break
+    else:
+        raise AssertionError(f"BUS_GNT never released after targeted BUS_REQ. {repro}")
+    if adapter is not None and resume_origin is not None:
+        adapter.record_bus_resume(resume_origin)
+    return record
 
 
 # -- reset stimulus -----------------------------------------------------------
@@ -347,6 +475,9 @@ async def _reset_mid_run(
             await _await_engine_state(dut, (target,), repro=repro)
 
     txn_count = 0 if bringup.pin is None else len(bringup.pin.transactions())
+    adapter = _l1_adapter(config, test=window)
+    state, phase = _sample_ctrl_qpi(dut)
+    adapter.record_reset(state, phase)
     for agent in bringup.agents:
         agent.note_reset()
     dut.rst_n.value = 0
@@ -363,6 +494,7 @@ async def _reset_mid_run(
         ).compare_reset_prefix(bringup.pin.transactions())
 
     dispose_run(bringup, test=window, log=dut._log, reset_truncated=REVIEW, repro=repro)
+    _commit_l1_window(config, test=window, checkers_ok=True, scoreboard_ok=True)
 
     await _release_reset(dut)
 
@@ -402,6 +534,7 @@ async def start_while_active(dut):
     repro = _repro(config, "start_while_active")
     dut._log.info(repro)
 
+    adapter = _l1_adapter(config, test=test)
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
         [
@@ -416,6 +549,7 @@ async def start_while_active(dut):
     for label, states in _ACTIVE_START_TARGETS:
         await _await_controller_state(dut, states, repro=repro)
         await pulse_start(dut)
+        adapter.record_start_result("active_ignored")
         state = int(_controller(dut).curr_state.value)
         assert state != SYS_CONTROL_NEW_FETCH, (
             f"{test}: START during {label} was accepted (curr_state jumped "
@@ -429,6 +563,7 @@ async def start_while_active(dut):
     )
     await _await_controller_state(dut, (SYS_CONTROL_STALL,), repro=repro)
     await pulse_start(dut)
+    adapter.record_start_result("req_gnt_ignored")
     state = int(_controller(dut).curr_state.value)
     assert state == SYS_CONTROL_STALL, (
         f"{test}: START during STALL left STALL early (curr_state={state}). "
@@ -473,6 +608,7 @@ async def start_held_high(dut):
     repro = _repro(config, "start_held_high")
     dut._log.info(repro)
 
+    adapter = _l1_adapter(config, test=test)
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
         [TcdSpec(transfer_len=4, pattern=PATTERN_INCREMENT)], seed=3010
@@ -481,6 +617,7 @@ async def start_held_high(dut):
 
     current = int(dut.ui_in.value)
     dut.ui_in.value = current | (1 << START_BIT)
+    adapter.record_start_result("held_high_single")
     try:
         await with_timeout(_wait_for_done_pulse(dut), _auto_timeout_ns(chain), "ns")
     except SimTimeoutError:
@@ -514,7 +651,6 @@ async def start_held_high(dut):
 # TC-START-PHASE
 # =============================================================================
 
-_START_PHASE_OFFSETS_NS = (1.0, 3.0, 5.0, 7.0, 9.0)  # early, near-before, on-edge, near-after, late
 _START_LONG_HOLD_NS = 35.0  # capture-required: >= 3 full clk periods
 _START_SHORT_HOLD_NS = 2.0  # capture-uncertain: sub-period
 _START_PHASE_WINDOW_CYCLES = 40
@@ -523,7 +659,7 @@ _START_PHASE_WINDOW_CYCLES = 40
 async def _raw_start_pulse(dut, *, phase_ns: float, hold_ns: float) -> None:
     """Assert then release raw START at a sub-cycle *phase_ns* after a clk edge."""
     await RisingEdge(dut.clk)
-    await Timer(phase_ns, unit="ns")
+    await Timer(max(phase_ns, 0.001), unit="ns")
     current = int(dut.ui_in.value)
     dut.ui_in.value = current | (1 << START_BIT)
     await Timer(hold_ns, unit="ns")
@@ -564,15 +700,19 @@ async def start_phase_sweep(dut):
     repro = _repro(config, "start_phase_sweep")
     dut._log.info(repro)
 
+    adapter = _l1_adapter(config, test=test)
+    period_ns = resolve_clk_period_ns()
     chain = build_directed_chain([TcdSpec(transfer_len=1, pattern=PATTERN_INCREMENT)], seed=3501)
     accepted_short = 0
     uncaptured_short = 0
 
-    for phase_ns in _START_PHASE_OFFSETS_NS:
+    for phase_bin in START_PHASE_BINS:
+        phase_ns = offset_for_phase_bin(phase_bin, period_ns)
+        assert classify_start_phase(phase_ns, period_ns) == phase_bin
         # Capture-required: long hold must always produce exactly one pulse.
         bringup = await bring_up_top(dut)
         _install_chain(bringup, chain)
-        window = f"{test}[long,phase={phase_ns}ns]"
+        window = f"{test}[long,phase={phase_bin}]"
         count = await _raw_start_pulse_and_count(
             dut, phase_ns=phase_ns, hold_ns=_START_LONG_HOLD_NS
         )
@@ -580,6 +720,8 @@ async def start_phase_sweep(dut):
             f"{window}: capture-required pulse produced {count} accepted "
             f"edge(s), expected exactly 1. {repro}"
         )
+        adapter.record_start_phase(phase_bin)
+        adapter.record_start_result("idle_accepted")
         try:
             await with_timeout(
                 _wait_until_done(dut), _auto_timeout_ns(chain), "ns"
@@ -592,7 +734,7 @@ async def start_phase_sweep(dut):
         # never a partial or repeated command.
         bringup = await bring_up_top(dut)
         _install_chain(bringup, chain)
-        window = f"{test}[short,phase={phase_ns}ns]"
+        window = f"{test}[short,phase={phase_bin}]"
         count = await _raw_start_pulse_and_count(
             dut, phase_ns=phase_ns, hold_ns=_START_SHORT_HOLD_NS
         )
@@ -600,8 +742,10 @@ async def start_phase_sweep(dut):
             f"{window}: short pulse produced {count} accepted edge(s), "
             f"expected 0 or 1. {repro}"
         )
+        adapter.record_start_phase(phase_bin)
         if count == 1:
             accepted_short += 1
+            adapter.record_start_result("idle_accepted")
             try:
                 await with_timeout(
                     _wait_until_done(dut), _auto_timeout_ns(chain), "ns"
@@ -614,16 +758,36 @@ async def start_phase_sweep(dut):
             await _compare_and_dispose(dut, bringup, chain, test=window, config=config, repro=repro)
         else:
             uncaptured_short += 1
+            adapter.record_start_result("idle_uncaptured")
             assert _done(dut) == 1, (
                 f"{window}: uncaptured short pulse still left DONE low. {repro}"
             )
             dispose_run(bringup, test=window, log=dut._log, repro=repro)
+            _commit_l1_window(config, test=window, checkers_ok=True, scoreboard_ok=True)
+
+    if uncaptured_short == 0:
+        # Mid-cycle 1 ns pulse cannot reach a rising clk sampling edge.
+        bringup = await bring_up_top(dut)
+        _install_chain(bringup, chain)
+        window = f"{test}[short,forced-uncaptured]"
+        count = await _raw_start_pulse_and_count(
+            dut, phase_ns=period_ns / 2.0, hold_ns=1.0
+        )
+        assert count == 0, (
+            f"{window}: mid-cycle 1 ns pulse produced {count} accepted "
+            f"edge(s), expected 0. {repro}"
+        )
+        adapter.record_start_phase(classify_start_phase(period_ns / 2.0, period_ns))
+        adapter.record_start_result("idle_uncaptured")
+        uncaptured_short = 1
+        dispose_run(bringup, test=window, log=dut._log, repro=repro)
+        _commit_l1_window(config, test=window, checkers_ok=True, scoreboard_ok=True)
 
     dut._log.info(
         "%s passed: %d capture-required phase(s) (each single-pulse), short "
         "pulses captured=%d uncaptured=%d",
         test,
-        len(_START_PHASE_OFFSETS_NS),
+        len(START_PHASE_BINS),
         accepted_short,
         uncaptured_short,
     )
@@ -642,12 +806,14 @@ async def bus_req_from_idle(dut):
     repro = _repro(config, "bus_req_from_idle")
     dut._log.info(repro)
 
+    adapter = _l1_adapter(config, test=test)
     bringup = await bring_up_top(dut)
     assert _done(dut) == 1 and _bus_gnt(dut) == 0, (
         f"{test}: bring-up did not settle in IDLE before BUS_REQ. " + repro
     )
 
     await assert_bus_req(dut, hold=True)
+    await _record_bus_after_sync(dut, adapter, observed_state=SYS_CONTROL_IDLE)
     await _await_controller_state(dut, (SYS_CONTROL_STALL,), repro=repro)
     for _ in range(_GRANT_TIMEOUT_CYCLES):
         await RisingEdge(dut.clk)
@@ -657,9 +823,11 @@ async def bus_req_from_idle(dut):
         raise AssertionError(f"{test}: BUS_GNT never asserted from IDLE. {repro}")
     assert int(dut.uio_oe.value) == 0, f"{test}: uio_oe not clear under grant. {repro}"
     assert _done(dut) == 1, f"{test}: DONE dropped while stalled from IDLE. {repro}"
+    _assert_no_ordinary_qlaunch(bringup, window=f"{test}[grant-park]", repro=repro)
 
     # START while request/grant is high is ignored and not queued.
     await pulse_start(dut)
+    adapter.record_start_result("req_gnt_ignored")
     state = int(_controller(dut).curr_state.value)
     assert state == SYS_CONTROL_STALL, (
         f"{test}: START accepted while BUS_REQ/BUS_GNT active (curr_state="
@@ -673,6 +841,7 @@ async def bus_req_from_idle(dut):
             break
     else:
         raise AssertionError(f"{test}: BUS_GNT never released. {repro}")
+    adapter.record_bus_resume(SYS_CONTROL_IDLE)
     assert _done(dut) == 1, f"{test}: DONE not 1 after release from idle stall. {repro}"
 
     # A fresh edge in IDLE now starts normally.
@@ -696,6 +865,7 @@ async def bus_req_at_boundaries(dut):
     repro = _repro(config, "bus_req_at_boundaries")
     dut._log.info(repro)
 
+    adapter = _l1_adapter(config, test=test)
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
         [
@@ -708,18 +878,30 @@ async def bus_req_at_boundaries(dut):
 
     # NEW_FETCH: BUS_REQ synchronized to land exactly as the head fetch opens.
     await _pulse_start_with_bus_req_at_new_fetch(dut)
-    await _bus_req_cycle(dut, None, repro=repro)
-
-    # NEW_OP: assert during the now-resumed head FETCH (ignored there; caught
-    # once FETCH hands off to NEW_OP).
     await _bus_req_cycle(
-        dut, _await_controller_state(dut, (SYS_CONTROL_FETCH,), repro=repro), repro=repro
+        dut,
+        None,
+        repro=repro,
+        adapter=adapter,
+        observed_state="NEW_FETCH",
+        resume_origin=SYS_CONTROL_NEW_FETCH,
     )
 
-    # UPDATE: assert during the resumed payload WRITE (ignored there; caught
-    # once WRITE hands off to UPDATE).
-    await _bus_req_cycle(
-        dut, _await_controller_state(dut, (SYS_CONTROL_WRITE,), repro=repro), repro=repro
+    # NEW_OP / UPDATE: inject so the synchronized edge lands in the one-cycle
+    # bin (await-then-assert would sample FETCH / WRITE instead).
+    await _bus_req_targeted(
+        dut,
+        repro=repro,
+        adapter=adapter,
+        target_state="NEW_OP",
+        resume_origin=SYS_CONTROL_NEW_OP,
+    )
+    await _bus_req_targeted(
+        dut,
+        repro=repro,
+        adapter=adapter,
+        target_state="UPDATE",
+        resume_origin=SYS_CONTROL_UPDATE,
     )
 
     try:
@@ -742,6 +924,7 @@ async def bus_req_during_transaction(dut):
     repro = _repro(config, "bus_req_during_transaction")
     dut._log.info(repro)
 
+    adapter = _l1_adapter(config, test=test)
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
         [TcdSpec(transfer_len=5, src_device=0, dest_device=1, pattern=PATTERN_INCREMENT)],
@@ -751,13 +934,22 @@ async def bus_req_during_transaction(dut):
 
     await pulse_start(dut)
     await _bus_req_cycle(
-        dut, _await_controller_state(dut, (SYS_CONTROL_FETCH,), repro=repro), repro=repro
+        dut,
+        _await_controller_state(dut, (SYS_CONTROL_FETCH,), repro=repro),
+        repro=repro,
+        adapter=adapter,
     )
     await _bus_req_cycle(
-        dut, _await_controller_state(dut, (SYS_CONTROL_READ,), repro=repro), repro=repro
+        dut,
+        _await_controller_state(dut, (SYS_CONTROL_READ,), repro=repro),
+        repro=repro,
+        adapter=adapter,
     )
     await _bus_req_cycle(
-        dut, _await_controller_state(dut, (SYS_CONTROL_WRITE,), repro=repro), repro=repro
+        dut,
+        _await_controller_state(dut, (SYS_CONTROL_WRITE,), repro=repro),
+        repro=repro,
+        adapter=adapter,
     )
 
     try:
@@ -772,12 +964,14 @@ async def bus_req_during_transaction(dut):
 # =============================================================================
 
 _BUS_PHASE_SEQUENCE = (
-    ("command", _QSPI_SEND_CMD_1),
-    ("address", _QSPI_SEND_ADDR),
-    ("write_data", _QSPI_WRITE_DATA),
-    ("dummy", _QSPI_WAIT),
-    ("read_data", _QSPI_READ_DATA),
-    ("padding", _QSPI_SCLK_OFF),
+    ("CS_ON", _QSPI_CS_ON, "inject"),
+    ("command", _QSPI_SEND_CMD_1, "await"),
+    ("address", _QSPI_SEND_ADDR, "await"),
+    ("write_data", _QSPI_WRITE_DATA, "await"),
+    ("dummy", _QSPI_WAIT, "await"),
+    ("read_data", _QSPI_READ_DATA, "await"),
+    ("padding", _QSPI_SCLK_OFF, "await"),
+    ("CS_OFF", _QSPI_CS_OFF, "inject"),
 )
 
 
@@ -789,6 +983,7 @@ async def bus_req_during_qpi_phase(dut):
     repro = _repro(config, "bus_req_during_qpi_phase")
     dut._log.info(repro)
 
+    adapter = _l1_adapter(config, test=test)
     bringup = await bring_up_top(dut)
     # Two multi-chunk TCDs give many fetch/read/write CE# intervals; each
     # sequential target below lands on whichever upcoming interval is the
@@ -796,17 +991,26 @@ async def bus_req_during_qpi_phase(dut):
     # through intervals that lack it, e.g. WRITE_DATA has no WAIT/READ_DATA).
     chain = build_directed_chain(
         [
-            TcdSpec(transfer_len=3, src_device=0, dest_device=1, pattern=PATTERN_INCREMENT),
-            TcdSpec(transfer_len=3, src_device=1, dest_device=0, pattern=PATTERN_INCREMENT),
+            TcdSpec(transfer_len=8, src_device=0, dest_device=1, pattern=PATTERN_INCREMENT),
+            TcdSpec(transfer_len=8, src_device=1, dest_device=0, pattern=PATTERN_INCREMENT),
         ],
         seed=4301,
     )
     _install_chain(bringup, chain)
 
     await pulse_start(dut)
-    for label, phase in _BUS_PHASE_SEQUENCE:
+    for label, phase, how in _BUS_PHASE_SEQUENCE:
+        if how == "inject":
+            await _bus_req_targeted(
+                dut, repro=repro, adapter=adapter, target_phase=phase
+            )
+            continue
         await _bus_req_cycle(
-            dut, _await_engine_state(dut, (phase,), repro=repro), repro=repro
+            dut,
+            _await_engine_state(dut, (phase,), repro=repro),
+            repro=repro,
+            adapter=adapter,
+            observed_phase=phase,
         )
 
     try:
@@ -829,6 +1033,7 @@ async def bus_req_repeat_cycles(dut):
     repro = _repro(config, "bus_req_repeat_cycles")
     dut._log.info(repro)
 
+    adapter = _l1_adapter(config, test=test)
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
         [
@@ -842,19 +1047,31 @@ async def bus_req_repeat_cycles(dut):
     await pulse_start(dut)
     # Head fetch.
     await _bus_req_cycle(
-        dut, _await_controller_state(dut, (SYS_CONTROL_FETCH,), repro=repro), repro=repro
+        dut,
+        _await_controller_state(dut, (SYS_CONTROL_FETCH,), repro=repro),
+        repro=repro,
+        adapter=adapter,
     )
     # First payload write.
     await _bus_req_cycle(
-        dut, _await_controller_state(dut, (SYS_CONTROL_WRITE,), repro=repro), repro=repro
+        dut,
+        _await_controller_state(dut, (SYS_CONTROL_WRITE,), repro=repro),
+        repro=repro,
+        adapter=adapter,
     )
     # Second descriptor's fetch.
     await _bus_req_cycle(
-        dut, _await_controller_state(dut, (SYS_CONTROL_FETCH,), repro=repro), repro=repro
+        dut,
+        _await_controller_state(dut, (SYS_CONTROL_FETCH,), repro=repro),
+        repro=repro,
+        adapter=adapter,
     )
     # Quit descriptor's fetch: a request adjacent to completion.
     await _bus_req_cycle(
-        dut, _await_controller_state(dut, (SYS_CONTROL_FETCH,), repro=repro), repro=repro
+        dut,
+        _await_controller_state(dut, (SYS_CONTROL_FETCH,), repro=repro),
+        repro=repro,
+        adapter=adapter,
     )
 
     try:
@@ -882,11 +1099,17 @@ async def reset_from_idle(dut):
     assert _done(dut) == 1 and _bus_gnt(dut) == 0, (
         f"{test}[idle]: bring-up did not settle in IDLE before reset. " + repro
     )
+    adapter = _l1_adapter(config, test=f"{test}[idle]")
+    state, phase = _sample_ctrl_qpi(dut)
+    adapter.record_reset(state, phase)
     for agent in bringup.agents:
         agent.note_reset()
     dut.rst_n.value = 0
     await _assert_reset_safe(dut, window=f"{test}[idle]")
-    dispose_run(bringup, test=f"{test}[idle]", log=dut._log, repro=repro)
+    dispose_run(
+        bringup, test=f"{test}[idle]", log=dut._log, reset_truncated=REVIEW, repro=repro
+    )
+    _commit_l1_window(config, test=f"{test}[idle]", checkers_ok=True, scoreboard_ok=True)
     await _release_reset(dut)
 
     # Post-reset START uses the fixed head, independent of stale state.
@@ -906,12 +1129,29 @@ async def reset_from_idle(dut):
             break
     else:
         raise AssertionError(f"{test}[granted]: BUS_GNT never asserted. {repro}")
+    assert int(dut.uio_oe.value) == 0, (
+        f"{test}[granted]: uio_oe not clear under BUS_GNT. {repro}"
+    )
+    _assert_no_ordinary_qlaunch(bringup2, window=f"{test}[granted-park]", repro=repro)
 
+    # Clear bring-up residue so [granted] dispose covers only the forced-reset
+    # window (REVIEW for any RESET-TRUNCATED findings).
+    bringup2.clear()
+    adapter = _l1_adapter(config, test=f"{test}[granted]")
+    state, phase = _sample_ctrl_qpi(dut)
+    adapter.record_reset(state, phase)
     for agent in bringup2.agents:
         agent.note_reset()
     dut.rst_n.value = 0
     await _assert_reset_safe(dut, window=f"{test}[granted]")
-    dispose_run(bringup2, test=f"{test}[granted]", log=dut._log, repro=repro)
+    dispose_run(
+        bringup2,
+        test=f"{test}[granted]",
+        log=dut._log,
+        reset_truncated=REVIEW,
+        repro=repro,
+    )
+    _commit_l1_window(config, test=f"{test}[granted]", checkers_ok=True, scoreboard_ok=True)
     await _release_reset(dut)
 
     bringup2.clear()
@@ -1001,11 +1241,17 @@ async def reset_then_identical_rerun(dut):
     assert _done(dut) == 1 and _bus_gnt(dut) == 0, (
         f"{test}: not settled in IDLE after epoch 1 before reset. " + repro
     )
+    adapter = _l1_adapter(config, test=f"{test}[reset]")
+    state, phase = _sample_ctrl_qpi(dut)
+    adapter.record_reset(state, phase)
     for agent in bringup.agents:
         agent.note_reset()
     dut.rst_n.value = 0
     await _assert_reset_safe(dut, window=f"{test}[reset]")
-    dispose_run(bringup, test=f"{test}[reset]", log=dut._log, repro=repro)
+    dispose_run(
+        bringup, test=f"{test}[reset]", log=dut._log, reset_truncated=REVIEW, repro=repro
+    )
+    _commit_l1_window(config, test=f"{test}[reset]", checkers_ok=True, scoreboard_ok=True)
     await _release_reset(dut)
 
     # Re-initialize source and destination memory identically, then rerun.

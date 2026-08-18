@@ -504,6 +504,28 @@ def test_self_pointing_chain_exhausts_the_fetch_budget():
     assert "0:0x000000" in str(error.value)
 
 
+def test_pointer_bit23_is_masked_for_memory_access():
+    """D35: ptr[23] don't-care; oracle uses A[22:0] for fetches and copies."""
+    from reference.tcd import PTR_BIT23
+
+    memory = image()
+    src = SRC_ADDR | PTR_BIT23
+    dest = DST_ADDR | PTR_BIT23
+    place(
+        memory,
+        0,
+        0x000000,
+        Tcd(src_ptr=src, dest_ptr=dest, transfer_len=4, next_tcd=QUIT_ADDR | PTR_BIT23),
+    )
+    place(memory, 0, QUIT_ADDR, Tcd(quit=True))
+    memory.write(0, SRC_ADDR, b"\x11\x22\x33\x44")
+    result = interpret_chain(memory, 1)
+    assert result.final_memory.read(0, DST_ADDR, 4) == b"\x11\x22\x33\x44"
+    data_reads = [txn for txn in result.transactions if txn.kind == "DATA_READ"]
+    assert data_reads[0].address == SRC_ADDR
+    assert result.path[-1] == (0, QUIT_ADDR)
+
+
 def test_transaction_budget_exhaustion_is_reported():
     memory = image()
     place(
@@ -522,7 +544,7 @@ def test_invalid_descriptor_stops_before_data_transactions():
     raw = bytearray(
         encode_tcd(Tcd(src_ptr=SRC_ADDR, dest_ptr=DST_ADDR, transfer_len=4, next_tcd=QUIT_ADDR))
     )
-    raw[10] |= 0x10  # nonzero reserved: representable, not legal V1 stimulus
+    raw[10] |= 0x01  # nonzero reserved: representable, not legal V1 stimulus
     memory.write(0, 0x000000, bytes(raw))
     place(memory, 0, QUIT_ADDR, Tcd(quit=True))
     with pytest.raises(TcdError) as error:

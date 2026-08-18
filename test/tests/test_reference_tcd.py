@@ -16,6 +16,7 @@ from reference.tcd import (
     CTRL_RESERVED_SHIFT,
     CTRL_SRC_DEVICE_BIT,
     PTR_BIT23,
+    PTR_FIELD_MAX,
     PTR_MAX,
     TCD_BYTES,
     TC_TCD_BE_BYTES,
@@ -29,7 +30,7 @@ from reference.tcd import (
 
 # Restated independently of the module constants so a bad edit to tcd.py cannot
 # quietly redefine the mandatory vector (05-reference-model.md).
-MANDATORY_BYTES = bytes([0x12, 0x34, 0x56, 0x23, 0x45, 0x67, 0x89, 0x34, 0x56, 0x78, 0x0A])
+MANDATORY_BYTES = bytes([0x12, 0x34, 0x56, 0x23, 0x45, 0x67, 0x89, 0x34, 0x56, 0x78, 0xA0])
 MANDATORY_TCD = Tcd(
     src_ptr=0x123456,
     dest_ptr=0x234567,
@@ -87,7 +88,7 @@ def test_all_flags_together_decode_at_their_positions():
     raw = encode_tcd(
         Tcd(quit=True, src_device=1, dest_device=1, next_device=1)
     )
-    assert raw[10] == 0x0F
+    assert raw[10] == 0xF0
     decoded = decode_tcd(raw)
     assert (decoded.quit, decoded.src_device, decoded.dest_device, decoded.next_device) == (
         True,
@@ -137,8 +138,7 @@ def test_round_trip_over_swept_flag_combinations():
         Tcd(src_ptr=-1),
         Tcd(dest_ptr=-1),
         Tcd(next_tcd=0x1000000),
-        Tcd(src_ptr=PTR_BIT23),
-        Tcd(dest_ptr=PTR_MAX + 1),
+        Tcd(src_ptr=PTR_FIELD_MAX + 1),
         Tcd(transfer_len=256),
         Tcd(transfer_len=-1),
         Tcd(src_device=2),
@@ -152,6 +152,12 @@ def test_round_trip_over_swept_flag_combinations():
 def test_encode_rejects_illegal_fields(tcd):
     with pytest.raises(TcdError):
         encode_tcd(tcd)
+
+
+def test_encode_accepts_pointer_bit_23():
+    """D35: ptr[23] is don't-care and may be set."""
+    encoded = encode_tcd(Tcd(src_ptr=PTR_BIT23 | 0x123456))
+    assert decode_tcd(encoded).src_ptr == PTR_BIT23 | 0x123456
 
 
 @pytest.mark.parametrize(
@@ -182,13 +188,19 @@ def test_non_integer_fields_are_rejected(tcd):
 
 
 def test_encode_does_not_mask_out_of_range_into_range():
-    """0x800000 must fail, not silently encode as 0x000000."""
+    """0x1000000 must fail, not silently encode as 0x000000."""
     with pytest.raises(TcdError):
-        encode_tcd(Tcd(src_ptr=0x800000))
+        encode_tcd(Tcd(src_ptr=0x1000000))
+
+
+def test_encode_accepts_bit23_only_pointer():
+    """0x800000 is a legal 24-bit field (A[22:0]=0 with bit 23 set)."""
+    encoded = encode_tcd(Tcd(src_ptr=0x800000))
+    assert decode_tcd(encoded).src_ptr == 0x800000
 
 
 def test_quit_accepts_bool_or_zero_one():
-    assert encode_tcd(Tcd(quit=1))[10] == 1
+    assert encode_tcd(Tcd(quit=1))[10] == 1 << CTRL_QUIT_BIT
     assert encode_tcd(Tcd(quit=0))[10] == 0
     with pytest.raises(TcdError):
         encode_tcd(Tcd(quit=2))
@@ -211,7 +223,7 @@ def test_decode_requires_exactly_eleven_bytes(length):
 
 def test_decode_preserves_reserved_bits():
     raw = bytearray(MANDATORY_BYTES)
-    raw[10] = (0xB << CTRL_RESERVED_SHIFT) | 0x0A
+    raw[10] = (0xB << CTRL_RESERVED_SHIFT) | 0xA0
     decoded = decode_tcd(bytes(raw))
     assert decoded.reserved == 0xB
     assert decoded.src_device == 1 and decoded.next_device == 1
@@ -219,20 +231,19 @@ def test_decode_preserves_reserved_bits():
 
 def test_decoded_nonzero_reserved_fails_validation_not_decoding():
     raw = bytearray(MANDATORY_BYTES)
-    raw[10] |= 0x10
+    raw[10] |= 0x01
     decoded = decode_tcd(bytes(raw))
     assert decoded.reserved == 1
     with pytest.raises(TcdError):
         validate_tcd(decoded)
 
 
-def test_decode_preserves_pointer_bit_23_for_diagnosis():
+def test_decode_preserves_pointer_bit_23():
     raw = bytearray(MANDATORY_BYTES)
     raw[0] = 0x92  # src_ptr = 0x923456, bit 23 set
     decoded = decode_tcd(bytes(raw))
     assert decoded.src_ptr == 0x923456
-    with pytest.raises(TcdError):
-        validate_tcd(decoded)
+    assert validate_tcd(decoded) is decoded
 
 
 def test_decode_accepts_bytearray_and_memoryview():

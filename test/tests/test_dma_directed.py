@@ -18,12 +18,14 @@ Test-case IDs:
     TC-CHAIN
     TC-NEXT-DEVICE
     TC-LEN-CORNERS
+    TC-LEN-ADDR-CORNERS (2N-1/2N/2N+1 plus src=0 / next=highest)
     TC-QUIT
     TC-EMPTY
     TC-RESTART
     TC-ADDR-WIDE
     TC-OVERLAP
-    TC-DEPTH (skipped for M5 / harness depth)
+    TC-DEPTH (harness loop ``make depth`` / ``run_depth_sweep.sh``; each
+    compile's directed windows record ``COV-DEPTH`` via ``common.directed``)
 """
 
 import cocotb
@@ -41,9 +43,9 @@ from reference.generator import (
     PATTERN_INCREMENT,
     TcdSpec,
     build_directed_chain,
+    len_addr_corner_specs,
 )
 from reference.tcd import (
-    PTR_BIT23,
     PTR_MAX,
     TCD_BYTES,
     TC_TCD_BE_BYTES,
@@ -287,7 +289,7 @@ async def next_device_alternate(dut):
 
 @cocotb.test()
 async def transfer_length_corners(dut):
-    """TC-LEN-CORNERS: lengths 0, 1, N-1, N, N+1, and 255."""
+    """TC-LEN-CORNERS: lengths 0, 1, N-1, N, N+1, 2N-1, 2N, 2N+1, and 255."""
     config = parse_run_config()
     test = "TC-LEN-CORNERS"
     repro = _repro(config, "transfer_length_corners")
@@ -295,7 +297,20 @@ async def transfer_length_corners(dut):
 
     bringup = await bring_up_top(dut)
     depth = config["dma_buf_depth"]
-    lengths = sorted({0, 1, depth - 1, depth, depth + 1, 255} & set(range(256)))
+    lengths = sorted(
+        {
+            0,
+            1,
+            depth - 1,
+            depth,
+            depth + 1,
+            2 * depth - 1,
+            2 * depth,
+            2 * depth + 1,
+            255,
+        }
+        & set(range(256))
+    )
 
     for length in lengths:
         window = f"{test}[len={length}]"
@@ -312,6 +327,33 @@ async def transfer_length_corners(dut):
             f"length={length} depth={depth}, golden model produced "
             f"{observed_pairs}. " + repro
         )
+
+
+@cocotb.test()
+async def len_addr_corners(dut):
+    """One window: 2N-1/2N/2N+1 plus COV-ADDR src:zero and next:highest."""
+    config = parse_run_config()
+    test = "TC-LEN-ADDR-CORNERS"
+    repro = _repro(config, "len_addr_corners")
+    dut._log.info(repro)
+
+    bringup = await bring_up_top(dut)
+    depth = config["dma_buf_depth"]
+    chain = build_directed_chain(
+        len_addr_corner_specs(depth), seed=2100 + depth, dma_buf_depth=depth
+    )
+    head = chain.executable[0]
+    assert head.src_ptr == 0 and head.src_device == 1, (
+        f"{test}: first TCD must source PSRAM1 address 0, got "
+        f"dev{head.src_device}:0x{head.src_ptr:06X}. " + repro
+    )
+    assert head.next_tcd >= 0x7FFC00, (
+        f"{test}: first TCD next=0x{head.next_tcd:06X} is not in the highest "
+        "legal range. " + repro
+    )
+    await _run_directed_window(
+        dut, bringup, chain, test=test, config=config, repro=repro
+    )
 
 
 @cocotb.test()
@@ -427,10 +469,6 @@ async def wide_address_space(dut):
             seed=1012 + index,
         )
         head = chain.tcds[0]
-        assert head.src_ptr & PTR_BIT23 == 0 and head.dest_ptr & PTR_BIT23 == 0, (
-            f"{window}: pointer bit 23 must stay clear, got "
-            f"src=0x{head.src_ptr:06X} dest=0x{head.dest_ptr:06X}. " + repro
-        )
         assert head.src_ptr + 3 <= PTR_MAX and head.dest_ptr + 3 <= PTR_MAX, (
             f"{window}: 4-byte range must stay inside 0x000000..0x{PTR_MAX:06X}. "
             + repro
@@ -482,8 +520,3 @@ async def overlapping_same_device_ranges(dut):
         dut, bringup, backward, test=f"{test}[backward]", config=config, repro=repro
     )
 
-
-@cocotb.test(skip=True)
-async def dma_buf_depth_sweep(dut):
-    """TC-DEPTH: skipped for M5 / harness depth (DMA_BUF_DEPTH 1/2/4/8 sweep)."""
-    pass
