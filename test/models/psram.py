@@ -30,7 +30,7 @@ ID               Condition
 ``Q-PHASE``      CE# rose before the command or address phase completed
 ``Q-DUMMY``      ``0xEB`` saw a dummy-cycle count other than six
 ``Q-NIBBLE-ODD`` odd data-nibble count at termination (no partial byte)
-``Q-ADDR23``     wire address had ``A[23]`` set
+``Q-ADDR23``     retired (D35); ``A[23]`` is don't-care and is masked
 ``Q-ADDR-RANGE`` a transferred byte moved past ``0x7FFFFF`` (no wrap)
 ``Q-DRIVE-DESEL``model drove SIO while its CE# was inactive
 ``Q-SIO-X``      SIO was unresolved during a host-driven phase
@@ -894,17 +894,10 @@ class PsramQpiAgent:
             txn.address = ((txn.address << 4) | nibble) & 0xFFFFFF
             txn.addr_nibbles += 1
             if txn.addr_nibbles == self._command.address_nibbles:
-                addr23 = bool(txn.address & ~PSRAM_ADDR_MASK)
-                if addr23:
-                    self._violation(Q_ADDR23, f"A[23] set in wire address 0x{txn.address:06X}")
+                # D35: A[23] is don't-care; device consumes A[22:0] only.
                 txn.address &= PSRAM_ADDR_MASK
                 txn.start_address = txn.address
-                if addr23:
-                    # Fail before any memory access: device selection is CE#, not
-                    # A[23], so the masked address is logged but never transferred.
-                    self._phase = PHASE_IGNORE
-                else:
-                    self._enter_data_phase()
+                self._enter_data_phase()
         elif self._phase == PHASE_DUMMY:
             txn.dummy_cycles += 1
             if txn.dummy_cycles == self._command.dummy_cycles:

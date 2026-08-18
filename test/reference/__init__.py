@@ -8,6 +8,7 @@ Modules:
 * :mod:`reference.chain` - memory image API and the golden chain interpreter
 * :mod:`reference.scoreboard` - dual-axis compare, reset prefix, two-epoch equality
 * :mod:`reference.generator` - legal chain construction for directed and random use
+* :mod:`reference.coverage` - ``COV-*`` sampler and fragment aggregator (no cocotb)
 """
 
 __all__ = [
@@ -15,4 +16,5 @@ __all__ = [
     "chain",
     "scoreboard",
     "generator",
+    "coverage",
 ]

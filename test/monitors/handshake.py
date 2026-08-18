@@ -49,8 +49,8 @@ required at L1):
 ``CHK-CTRL-STATE-VALID`` ``curr_state`` / ``next_state`` / ``stalled_state``
                          are resolved members of ``sys_control_state_t``, and
                          ``stalled_state`` is not overwritten while stalled
-``CHK-CTRL-DATA-CNT``    ``data_cnt`` stays inside its per-phase bound and
-                         satisfies every dynamic-index precondition
+``CHK-CTRL-DATA-CNT``    **retired (D31)**; always ``na``. FETCH latches all
+                         22 wire nibbles; there is no remaining-nibble counter
 ======================== ==================================================
 
 ``CHK-CTRL-FETCH-HEAD`` and ``CHK-CTRL-DATA-PAIR`` are top-observable rows: they
@@ -197,12 +197,6 @@ QSPI_ENGINE_STATES = {
 }
 
 FETCH_STATES = (SYS_CONTROL_NEW_FETCH, SYS_CONTROL_FETCH)
-PAYLOAD_STATES = (
-    SYS_CONTROL_NEW_OP,
-    SYS_CONTROL_READ,
-    SYS_CONTROL_WRITE,
-    SYS_CONTROL_UPDATE,
-)
 
 # qspi_pkg::QPI_TCD_BYTES and sys_control_pkg::TCD_LEN.
 TCD_BYTES = 11
@@ -241,12 +235,9 @@ CONTROLLER_REQUIRED_SIGNALS = (
     "bus_req",
     "cmd",
     "byte_len",
-    "rdata_valid",
-    "wdata_next",
     "curr_state",
     "next_state",
     "stalled_state",
-    "data_cnt",
 )
 
 # Pin intervals that never carry a judgement: the CE# frame was torn down by
@@ -894,7 +885,7 @@ class HandshakeMonitor:
         ``CHK-HS-OPCODE`` when a finished 0xEB read did not use
         ``READ_DUMMY_CYCLES`` wait cycles, or when a finished 0x02 write used
         any. Aborted intervals are skipped. Reads whose command or address
-        phase never completed (truncated cmd/addr, ADDR23) are skipped too:
+        phase never completed (truncated cmd/addr) are skipped too:
         their wait count is not meaningful, and those faults are owned
         elsewhere.
         """
@@ -1119,9 +1110,8 @@ class ControllerMonitor:
 
     Sampling matches :class:`HandshakeMonitor`: read-only after each rising
     ``clk``. That is the delta the controller's own ``always_ff`` blocks consume
-    at the next edge, so a sampled ``curr_state`` / ``data_cnt`` /
-    ``qspi_rdata_valid`` triple is exactly the dynamic-index precondition the
-    RTL is about to apply.
+    at the next edge, so a sampled ``curr_state`` / ``qspi_txn_valid`` pair is
+    the request-gate precondition the RTL is about to apply.
     """
 
     def __init__(
@@ -1134,12 +1124,9 @@ class ControllerMonitor:
         bus_req=None,
         cmd=None,
         byte_len=None,
-        rdata_valid=None,
-        wdata_next=None,
         curr_state=None,
         next_state=None,
         stalled_state=None,
-        data_cnt=None,
         done=None,
         pin=None,
         depth: int = 1,
@@ -1161,12 +1148,9 @@ class ControllerMonitor:
             "bus_req": bus_req,
             "cmd": cmd,
             "byte_len": byte_len,
-            "rdata_valid": rdata_valid,
-            "wdata_next": wdata_next,
             "curr_state": curr_state,
             "next_state": next_state,
             "stalled_state": stalled_state,
-            "data_cnt": data_cnt,
             "done": done,
         }
         self._pin = pin
@@ -1179,7 +1163,10 @@ class ControllerMonitor:
         self.name = name
         self.visibility = visibility
         self.scope = scope
-        self.na = tuple(na)
+        na_ids = list(na)
+        if CHK_CTRL_DATA_CNT not in na_ids:
+            na_ids.append(CHK_CTRL_DATA_CNT)
+        self.na = tuple(na_ids)
         self.blocked = dict(blocked or {})
         self._add_handle_blocks()
 
@@ -1189,7 +1176,6 @@ class ControllerMonitor:
         self.notes: "list[str]" = []
 
         self._pins = _PinCursor()
-        self._accepted_len: "int | None" = None
         self._pending_start: "float | None" = None
         self._starts = 0
         self._fetch_heads = 0
@@ -1226,7 +1212,6 @@ class ControllerMonitor:
             CHK_CTRL_REQ_GATE,
             CHK_CTRL_REQ_SHAPE,
             CHK_CTRL_STATE_VALID,
-            CHK_CTRL_DATA_CNT,
         ):
             if check_id in self.na or check_id in self.blocked:
                 continue
@@ -1309,7 +1294,6 @@ class ControllerMonitor:
         self.reset_truncated.clear()
         self.notes.clear()
         self._pins.reset()
-        self._accepted_len = None
         self._pending_start = None
         self._starts = 0
         self._fetch_heads = 0
@@ -1405,15 +1389,11 @@ class ControllerMonitor:
         txn_valid = _resolved(self._h["txn_valid"])
         busy = _resolved(self._h["busy"])
         bus_req = _resolved(self._h["bus_req"])
-        data_cnt = _resolved(self._h["data_cnt"])
-        rdata_valid = _resolved(self._h["rdata_valid"])
-        wdata_next = _resolved(self._h["wdata_next"])
         done = _resolved(self._h["done"])
 
         self._check_state_valid(state, next_state, stalled)
         self._check_req_gate(txn_valid, busy, bus_req)
         self._check_req_shape(txn_valid, busy, state, next_state)
-        self._check_data_cnt(state, data_cnt, rdata_valid, wdata_next)
         self._track_start(done)
         self._check_pin_intervals()
 
@@ -1425,7 +1405,6 @@ class ControllerMonitor:
         """Drop per-transaction and per-sequence state at a sampled reset edge."""
         self._in_reset = True
         self.pending.audit(reason=REASON_RESET)
-        self._accepted_len = None
         self._pending_start = None
         self._pending_pair = None
         self._pending_start_token = None
@@ -1527,72 +1506,12 @@ class ControllerMonitor:
                     f"payload request must be {_show_op(expected_cmd)} with "
                     f"byte_len in 1..{self.depth}: {context}",
                 )
-            self._accepted_len = byte_len
             return
 
         self._report(
             CHK_CTRL_REQ_SHAPE,
             f"accepted request from an unexpected state pair: {context}",
         )
-
-    def _check_data_cnt(self, state, data_cnt, rdata_valid, wdata_next) -> None:
-        """``CHK-CTRL-DATA-CNT``: per-phase bound plus dynamic-index preconditions."""
-        if not self._judged(CHK_CTRL_DATA_CNT):
-            return
-        state_text = _state_text(state, SYS_CONTROL_STATES)
-        if data_cnt is None:
-            self._report(
-                CHK_CTRL_DATA_CNT,
-                f"data_cnt sampled unresolved (x/z) in {state_text}",
-                once="datacnt:unresolved",
-            )
-            return
-
-        payload_limit = 2 * self.depth
-        if state in PAYLOAD_STATES:
-            limit = payload_limit
-        else:
-            # Fetch phases, plus IDLE/STALL where the RTL clears data_cnt on the
-            # following edge; the descriptor bound is the global maximum.
-            limit = TCD_NIBBLES
-        if data_cnt > limit:
-            self._report(
-                CHK_CTRL_DATA_CNT,
-                f"data_cnt={data_cnt} exceeds {limit} in {state_text} "
-                "(an underflow wraps above the bound)",
-            )
-            return
-
-        accepted = self._accepted_len if self._accepted_len else self.depth
-        payload_high = 2 * accepted
-
-        if state == SYS_CONTROL_FETCH and rdata_valid == 1:
-            if not 1 <= data_cnt <= TCD_NIBBLES:
-                self._report(
-                    CHK_CTRL_DATA_CNT,
-                    f"descriptor capture with data_cnt={data_cnt}; the dynamic "
-                    f"index requires 1..{TCD_NIBBLES}",
-                )
-        if state == SYS_CONTROL_READ and rdata_valid == 1:
-            if not 1 <= data_cnt <= payload_high:
-                self._report(
-                    CHK_CTRL_DATA_CNT,
-                    f"payload capture with data_cnt={data_cnt}; the dynamic index "
-                    f"requires 1..{payload_high} for byte_len={accepted}",
-                )
-        if state == SYS_CONTROL_WRITE:
-            if not 1 <= data_cnt <= payload_high:
-                self._report(
-                    CHK_CTRL_DATA_CNT,
-                    f"write data index with data_cnt={data_cnt}; driving write "
-                    f"data requires 1..{payload_high} for byte_len={accepted}",
-                )
-            elif wdata_next == 1 and data_cnt < 2:
-                self._report(
-                    CHK_CTRL_DATA_CNT,
-                    f"qspi_wdata_next=1 with data_cnt={data_cnt}; requesting a "
-                    "later nibble requires data_cnt >= 2",
-                )
 
     def _track_start(self, done) -> None:
         """Record accepted STARTs from the top-observable ``DONE`` falling edge.
@@ -1811,12 +1730,9 @@ def start_controller_monitor(
         "bus_req": _optional(top, "bus_req"),
         "cmd": _optional(top, "qspi_cmd"),
         "byte_len": _optional(top, "qspi_byte_len"),
-        "rdata_valid": _optional(top, "qspi_rdata_valid"),
-        "wdata_next": _optional(top, "qspi_wdata_next"),
         "curr_state": _optional(controller, "curr_state"),
         "next_state": _optional(controller, "next_state"),
         "stalled_state": _optional(controller, "stalled_state"),
-        "data_cnt": _optional(controller, "data_cnt"),
         "done": _optional(dut, "done"),
     }
 

@@ -128,6 +128,7 @@ class CeTimingMonitor:
         tsp_ns: float = PSRAM_TSP_NS,
         thd_ns: float = PSRAM_THD_NS,
         sck=None,
+        sck_oe=None,
         sio_out=None,
         sio_oe=None,
         rdata_valid=None,
@@ -158,6 +159,7 @@ class CeTimingMonitor:
         self._tsp_fs = _ns_to_fs(self._tsp_ns)
         self._thd_fs = _ns_to_fs(self._thd_ns)
         self._sck = sck
+        self._sck_oe = sck_oe
         self._sio_out = sio_out
         self._sio_oe = sio_oe
         self._rdata_valid = rdata_valid
@@ -507,12 +509,21 @@ class CeTimingMonitor:
             return
 
         sck = _level(self._sck) if self._sck is not None else None
+        # Missing SCK OE (L0 engine) means the ASIC owns SCK continuously.
+        sck_oe = _level(self._sck_oe) if self._sck_oe is not None else 1
         kind = "+".join(changed)
-        if sck != 0:
+        # Q-LAUNCH (driven SIO/OE changes only while SCK is low, with modeled
+        # setup/hold) applies only while the ASIC drives SCK. Grant/park and
+        # reset OE collapse with asic_sck_oe==0 are CHK-ARB-* / CHK-RST-OE, not
+        # launch setup/hold. Fail only on known high SCK; X/Z/None means the
+        # net is undriven or unresolved, not a high-half launch window.
+        if sck_oe != 1:
+            return
+        if sck == 1:
             self._fail_edge(
                 Q_LAUNCH,
-                f"{kind} changed while external SCK={sck}; required SCK low "
-                f"(DUT={now_fs / 1_000_000.0:.3f}ns)",
+                f"{kind} changed while external SCK={sck} sck_oe={sck_oe}; "
+                f"required SCK low (DUT={now_fs / 1_000_000.0:.3f}ns)",
                 in_reset=in_reset,
             )
         device_change_fs = now_fs + max(
@@ -590,6 +601,22 @@ class CeTimingMonitor:
                         f"{event['time_fs'] / 1_000_000.0:.3f}ns",
                         in_reset=in_reset,
                     )
+                elif kind == "ce-rise-committed":
+                    # A device-plane SCK-fall landing between the DUT-plane
+                    # CE# rise (already scope-closed by _on_ce_rise) and this
+                    # generation bump can still open a fresh Q-RXEDGE pending
+                    # item. Re-close the scope (idempotent: earlier items are
+                    # already gone) and sweep any residual entry this device
+                    # left behind before it can leak into a later CE# session.
+                    self.pending.close_scope(device.device_id, reason=REASON_SCOPE)
+                    self._rx_pending = [
+                        entry
+                        for entry in self._rx_pending
+                        if not (
+                            entry["device_id"] == device.device_id
+                            and entry["capture_fs"] is None
+                        )
+                    ]
             self._timed_event_cursor[id(device)] = len(events)
 
     def _on_rdata_valid(self, now_fs: int, *, in_reset: bool) -> None:
@@ -1065,6 +1092,7 @@ def start_ce_timing_monitor(
         tsp_ns=tsp_ns,
         thd_ns=thd_ns,
         sck=_first_optional(dut, "bus_sck", "psram_sck", "sclk"),
+        sck_oe=_first_optional(dut, "asic_sck_oe", "sck_oe"),
         sio_out=_first_optional(dut, "asic_sio_out", "sio_out"),
         sio_oe=_first_optional(dut, "asic_sio_oe", "sio_oe"),
         rdata_valid=_first_optional(dut, "rdata_valid", "qspi_rdata_valid"),

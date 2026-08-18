@@ -3,15 +3,20 @@
 Pure Python only; no cocotb imports. See ``docs/llm/verification/05-reference-model.md``.
 
 Architecture constants (byte offsets, ``CTRL_FLAGS`` bit positions, pointer
-width) are declared here as verification-side copies of ``../04-tcd-and-datapath.md``
-and ``src/rtl/types.svh`` ``tcd_t``. They are never parsed out of SystemVerilog.
+width) are declared here as verification-side copies of ``../04-tcd-and-datapath.md``.
+Packed ``tcd_t`` in ``types.svh`` is the layout: RTL is 88 bits and latches
+``reserved`` as the packed LSB nibble. This dataclass keeps ``reserved`` as the last field so
+encode/decode can round-trip the 11-byte memory record
+(``CTRL_FLAGS[3:0]``, last wire nibble). Constants are never parsed out of
+SystemVerilog.
 
 Representation and V1 validity are deliberately separate:
 
 * :func:`decode_tcd` requires exactly 11 bytes and preserves every encoded bit,
-  including ``reserved`` and a set pointer bit 23, so a negative test can decode
-  and diagnose a malformed descriptor.
+  including ``reserved`` and pointer bit 23, so a negative test can decode and
+  diagnose a malformed descriptor.
 * :func:`validate_tcd` applies the V1 ranges and rejects nonzero ``reserved``.
+  Pointer bit 23 is don't-care (D35) and is accepted.
 * :func:`encode_tcd` validates first and never masks an out-of-range field into
   range.
 
@@ -24,8 +29,9 @@ from dataclasses import dataclass
 TCD_BYTES = 11
 
 PTR_BITS = 23
-PTR_MAX = (1 << PTR_BITS) - 1  # 0x7FFFFF, complete APS6404L address space
-PTR_BIT23 = 1 << PTR_BITS  # device selection is CTRL_FLAGS, never this bit
+PTR_MAX = (1 << PTR_BITS) - 1  # 0x7FFFFF, APS6404L A[22:0] address space
+PTR_BIT23 = 1 << PTR_BITS  # don't-care MSB (D35); not device select
+PTR_FIELD_MAX = (1 << 24) - 1  # 0xFFFFFF, full 24-bit TCD pointer field
 TRANSFER_LEN_MAX = 0xFF
 RESERVED_MAX = 0xF
 
@@ -35,11 +41,11 @@ OFFSET_TRANSFER_LEN = 6
 OFFSET_NEXT_TCD = 7
 OFFSET_CTRL_FLAGS = 10
 
-CTRL_QUIT_BIT = 0
-CTRL_SRC_DEVICE_BIT = 1
-CTRL_DEST_DEVICE_BIT = 2
-CTRL_NEXT_DEVICE_BIT = 3
-CTRL_RESERVED_SHIFT = 4
+CTRL_QUIT_BIT = 4
+CTRL_SRC_DEVICE_BIT = 5
+CTRL_DEST_DEVICE_BIT = 6
+CTRL_NEXT_DEVICE_BIT = 7
+CTRL_RESERVED_SHIFT = 0
 
 POINTER_FIELDS = ("src_ptr", "dest_ptr", "next_tcd")
 DEVICE_FIELDS = ("src_device", "dest_device", "next_device")
@@ -91,7 +97,7 @@ TC_TCD_BE_TCD = Tcd(
     next_device=1,
     reserved=0,
 )
-TC_TCD_BE_BYTES = bytes.fromhex("123456234567893456780A")
+TC_TCD_BE_BYTES = bytes.fromhex("12345623456789345678A0")
 
 
 def _reject_bool(name: str, value) -> None:
@@ -116,19 +122,16 @@ def _check_integer(name: str, value, low: int, high: int) -> int:
 
 
 def _check_pointer(name: str, value) -> int:
-    """Range-check one 24-bit pointer field; bit 23 must be clear."""
+    """Range-check one 24-bit pointer field; bit 23 is don't-care (D35)."""
     _reject_bool(name, value)
     if not isinstance(value, int):
         raise TcdError(f"{name} must be an int, got {type(value).__name__} {value!r}")
     if value < 0:
         raise TcdError(f"{name}={value} is negative")
-    if value & PTR_BIT23:
+    if value > PTR_FIELD_MAX:
         raise TcdError(
-            f"{name}=0x{value:06X} has pointer bit 23 set; device selection comes "
-            "only from CTRL_FLAGS and complete ranges live in 0x000000..0x7FFFFF"
+            f"{name}=0x{value:X} is past the 24-bit field max 0x{PTR_FIELD_MAX:06X}"
         )
-    if value > PTR_MAX:
-        raise TcdError(f"{name}=0x{value:X} is past 0x{PTR_MAX:06X}")
     return value
 
 
@@ -145,7 +148,8 @@ def validate_tcd(tcd: Tcd) -> Tcd:
     """Apply V1 ranges to *tcd* and return it unchanged.
 
     Rejects booleans masquerading as integers, negative or oversized fields,
-    pointer bit 23, and nonzero ``reserved``.
+    and nonzero ``reserved``. Pointer bit 23 is allowed (don't-care; D35).
+    Complete ``A[22:0]`` span checks live in the chain oracle / firmware rules.
 
     Raises:
         TcdError: on any field outside the frozen V1 ranges.
@@ -163,19 +167,19 @@ def validate_tcd(tcd: Tcd) -> Tcd:
     if tcd.reserved != 0:
         raise TcdError(
             f"reserved=0x{tcd.reserved:X} must be 0 for V1 stimulus "
-            "(CTRL_FLAGS[7:4] is reserved)"
+            "(CTRL_FLAGS[3:0] is reserved)"
         )
     return tcd
 
 
 def ctrl_flags(tcd: Tcd) -> int:
-    """Return byte 10 of *tcd*: reserved, NEXT, DEST, SRC, QUIT."""
+    """Return byte 10 of *tcd*: NEXT, DEST, SRC, QUIT, then reserved."""
     return (
-        (tcd.reserved << CTRL_RESERVED_SHIFT)
-        | (tcd.next_device << CTRL_NEXT_DEVICE_BIT)
+        (tcd.next_device << CTRL_NEXT_DEVICE_BIT)
         | (tcd.dest_device << CTRL_DEST_DEVICE_BIT)
         | (tcd.src_device << CTRL_SRC_DEVICE_BIT)
         | (_check_quit(tcd.quit) << CTRL_QUIT_BIT)
+        | (tcd.reserved << CTRL_RESERVED_SHIFT)
     )
 
 
@@ -264,6 +268,7 @@ __all__ = [
     "CTRL_RESERVED_SHIFT",
     "CTRL_SRC_DEVICE_BIT",
     "PTR_BIT23",
+    "PTR_FIELD_MAX",
     "PTR_MAX",
     "RESERVED_MAX",
     "TCD_BYTES",

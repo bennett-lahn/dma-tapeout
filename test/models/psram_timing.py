@@ -396,6 +396,23 @@ class _TimedPsramDevice:
                     self._generation += 1
                     agent._ce_rise_ns = get_sim_time(unit="ns")
                     agent._end_transaction()
+                    # Only when D_OUT_CE_NS (DUT-to-device CE# transport delay)
+                    # is non-zero is there a post-DUT-rise window where a
+                    # device-plane SCK-fall can open Q-RXEDGE (each launched
+                    # read nibble must be captured exactly once on the
+                    # following rising SCK) after _on_ce_rise already
+                    # scope-closed. With delay 0, emitting ce-rise-committed
+                    # in the same evaluate as CE# rise races ahead of the
+                    # prefetch silent-resolve in _on_ce_rise and falsely
+                    # audits that nibble as reason=scope-close.
+                    if self.timing_params["D_OUT_CE_NS"] > 0.0:
+                        self.timing_events.append(
+                            {
+                                "kind": "ce-rise-committed",
+                                "generation": self._generation,
+                                "device_id": self.device_id,
+                            }
+                        )
 
                 self._schedule(self.timing_params["D_OUT_CE_NS"], end_transaction)
 

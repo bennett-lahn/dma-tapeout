@@ -515,8 +515,8 @@ def interpret_chain(
         if tcd.quit:
             break
 
-        src_address = tcd.src_ptr
-        dest_address = tcd.dest_ptr
+        src_address = tcd.src_ptr & ADDR_MAX
+        dest_address = tcd.dest_ptr & ADDR_MAX
         remaining = tcd.transfer_len
 
         while remaining > 0:
@@ -535,7 +535,7 @@ def interpret_chain(
                 src_address += chunk
                 dest_address += chunk
 
-        fetch_device, fetch_address = tcd.next_device, tcd.next_tcd
+        fetch_device, fetch_address = tcd.next_device, tcd.next_tcd & ADDR_MAX
 
     return ChainResult(
         transactions=tuple(transactions),

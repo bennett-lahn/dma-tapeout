@@ -110,7 +110,7 @@ DEFAULT_BIAS = {
     "transfer_len": {
         "corner_weight": 60,
         "uniform_weight": 40,
-        "corners": (0, 1, "N-1", "N", "N+1", TRANSFER_LEN_MAX),
+        "corners": (0, 1, "N-1", "N", "N+1", "2N-1", "2N", "2N+1", TRANSFER_LEN_MAX),
         "low": 0,
         "high": TRANSFER_LEN_MAX,
     },
@@ -412,7 +412,9 @@ class ChainGenerator:
             "N-1": depth - 1,
             "N": depth,
             "N+1": depth + 1,
+            "2N-1": 2 * depth - 1,
             "2N": 2 * depth,
+            "2N+1": 2 * depth + 1,
         }.get(selected, selected)
         return max(low, min(high, int(resolved)))
 
@@ -767,6 +769,51 @@ def _quit_tcd(quit_spec: "TcdSpec | None") -> Tcd:
     )
 
 
+def len_addr_corner_specs(depth: int) -> "tuple[TcdSpec, ...]":
+    """Specs that hit ``2N-1`` / ``2N`` / ``2N+1``, ``src=0``, and ``next`` at highest.
+
+    First executable TCD sources PSRAM1 address 0 (head occupies PSRAM0
+    ``0x000000``) and links the following descriptor to the highest legal
+    11-byte slot so ``COV-ADDR`` ``src:zero`` and ``next:highest`` both fire.
+    Lengths are the distinct in-range ``2N-*`` classes at *depth*.
+    """
+    highest = ADDR_MAX - TCD_BYTES + 1
+    n = int(depth)
+    lengths = []
+    seen: "set[int]" = set()
+    for raw in (2 * n - 1, 2 * n, 2 * n + 1):
+        if 0 <= raw <= TRANSFER_LEN_MAX and raw not in seen:
+            seen.add(raw)
+            lengths.append(raw)
+    if not lengths:
+        raise GeneratorError(f"no distinct 2N length classes at depth {depth}")
+    specs = []
+    for index, length in enumerate(lengths):
+        if index == 0:
+            specs.append(
+                TcdSpec(
+                    transfer_len=length,
+                    src_device=1,
+                    dest_device=0,
+                    next_device=0,
+                    src_addr=0,
+                    dest_addr=0x000200,
+                    next_tcd_addr=highest,
+                    pattern=PATTERN_INCREMENT,
+                )
+            )
+            continue
+        specs.append(
+            TcdSpec(
+                transfer_len=length,
+                src_device=0,
+                dest_device=1,
+                pattern=PATTERN_INCREMENT,
+            )
+        )
+    return tuple(specs)
+
+
 def build_directed_chain(specs, *, seed: int = 0, **kwargs) -> GeneratedChain:
     """Convenience wrapper: one generator, one directed chain."""
     build_kwargs = {
@@ -806,4 +853,5 @@ __all__ = [
     "GeneratorError",
     "TcdSpec",
     "build_directed_chain",
+    "len_addr_corner_specs",
 ]

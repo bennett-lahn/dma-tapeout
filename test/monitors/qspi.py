@@ -1,7 +1,7 @@
 """Pin-level QPI decoder and ``CHK-PIN-*`` monitors.
 
 Relevant IDs: ``CHK-PIN-CS-MUTEX``, ``CHK-PIN-FLASH-HIGH``,
-``CHK-PIN-ADDR23-ZERO``, ``CHK-PIN-KNOWN``, ``CHK-PIN-SIO-OWN``,
+``CHK-PIN-ADDR23-ZERO`` (retired D35), ``CHK-PIN-KNOWN``, ``CHK-PIN-SIO-OWN``,
 ``CHK-PIN-SCK-PARK``, ``CHK-HS-OPCODE`` (wait-cycle count at pins).
 
 :class:`SharedBusMonitor` owns the shared-bus ownership subset of that list and
@@ -16,17 +16,19 @@ the timing-venue IDs mirroring it in ``04-timing-in-sim.md``:
 ``CHK-PIN-SCK-PARK``  ``Q-SCKIDLE``   SCK not parked low while all deselected
 ===================== =============== ===================================
 
-:class:`QspiPinMonitor` owns the other two pin catalog rows from its own
-CE#/SCK/SIO decode, and exports the ordered observed transaction log the
-scoreboard compares against the reference oracle:
+:class:`QspiPinMonitor` owns ``CHK-PIN-KNOWN`` from its own CE#/SCK/SIO decode,
+and exports the ordered observed transaction log the scoreboard compares
+against the reference oracle:
 
 ======================= ============ =====================================
 ``CHK-*``               twin ``Q-*``  Condition
 ======================= ============ =====================================
-``CHK-PIN-ADDR23-ZERO`` ``Q-ADDR23`` decoded wire address had ``A[23]`` set
 ``CHK-PIN-KNOWN``       ``Q-SIO-X``  CE#, SCK, or SIO unresolved where the
                                      protocol requires a value
 ======================= ============ =====================================
+
+``CHK-PIN-ADDR23-ZERO`` / model ``Q-ADDR23`` are retired (D35): wire ``A[23]``
+is don't-care and is masked to ``A[22:0]``.
 
 The pin decode is deliberately independent of the PSRAM models: it reads the
 physical bus aliases (``bus_sck``, ``bus_ram_*_cs_n``, ``bus_sio``) and never
@@ -36,7 +38,7 @@ than a tautology (``05-reference-model.md``, "Independence and review rules").
 :func:`common.dispose.dispose_run` / :func:`dispose_pin_checks` prefer the pin
 monitor when one ran (``via=pin``). :func:`dispose_model_pin_checks` /
 :func:`assert_model_pin_disposition` remain the model-evidence fallback for
-runs that do not start a pin monitor, via ``Q-ADDR23`` / ``Q-SIO-X``. Either
+runs that do not start a pin monitor, via ``Q-SIO-X``. Either
 way every applicable L0/L1 run prints an explicit disposition, never a silent
 skip.
 
@@ -80,7 +82,7 @@ from reference.chain import (
 
 CHK_PIN_CS_MUTEX = "CHK-PIN-CS-MUTEX"
 CHK_PIN_FLASH_HIGH = "CHK-PIN-FLASH-HIGH"
-CHK_PIN_ADDR23_ZERO = "CHK-PIN-ADDR23-ZERO"
+CHK_PIN_ADDR23_ZERO = "CHK-PIN-ADDR23-ZERO"  # retired D35; kept for historical IDs
 CHK_PIN_KNOWN = "CHK-PIN-KNOWN"
 CHK_PIN_SIO_OWN = "CHK-PIN-SIO-OWN"
 CHK_PIN_SCK_PARK = "CHK-PIN-SCK-PARK"
@@ -94,7 +96,6 @@ SHARED_BUS_CHECK_IDS = (
 
 # Catalog rows QspiPinMonitor decodes from the pins on its own.
 PIN_MONITOR_CHECK_IDS = (
-    CHK_PIN_ADDR23_ZERO,
     CHK_PIN_KNOWN,
 )
 
@@ -104,7 +105,6 @@ MODEL_PIN_CHECK_IDS = PIN_MONITOR_CHECK_IDS
 # Twin per-device model ID for the same condition. Same pattern as
 # SharedBusMonitor: a run may report either name, so both are always printed.
 MODEL_DISPOSE_VIA = {
-    CHK_PIN_ADDR23_ZERO: "Q-ADDR23",
     CHK_PIN_KNOWN: "Q-SIO-X",
 }
 
@@ -665,7 +665,7 @@ def start_shared_bus_monitor(dut, *psram_agents, strict: bool = False, **kwargs)
     return monitor
 
 
-# -- Model disposition for ADDR23 / KNOWN (M1) -----------------------------
+# -- Model disposition for KNOWN (M1; ADDR23 retired by D35) ---------------
 
 
 def _agent_violation_records(*devices_or_agents) -> list:
@@ -681,7 +681,7 @@ def _agent_violation_records(*devices_or_agents) -> list:
 
 
 def dispose_model_pin_checks(*devices_or_agents, log=None) -> "dict[str, str]":
-    """Dispose ``CHK-PIN-ADDR23-ZERO`` / ``CHK-PIN-KNOWN`` via model ``Q-*`` IDs.
+    """Dispose ``CHK-PIN-KNOWN`` via model ``Q-SIO-X``.
 
     Returns a per-ID ``pass``/``fail`` map and always prints each disposition so
     the catalog rows are never silently skipped. Count is the number of matching
@@ -755,14 +755,14 @@ DIR_WRITE = "write"
 DIR_UNKNOWN = "unknown"
 
 # Decode faults. They keep an interval out of the normal transaction log; the
-# per-device model owns the matching Q-* catalog rows, so only the two rows
-# this monitor owns (ADDR23 / KNOWN) also raise a CHK-PIN-* event here.
+# per-device model owns the matching Q-* catalog rows, so only CHK-PIN-KNOWN
+# also raises a CHK-PIN-* event here (CHK-PIN-ADDR23-ZERO retired by D35).
 FAULT_CMD_TRUNCATED = "truncated-command"
 FAULT_ADDR_TRUNCATED = "truncated-address"
 FAULT_OPCODE = "unsupported-opcode"
 FAULT_DUMMY = "dummy-count"
 FAULT_ODD_NIBBLE = "odd-data-nibble"
-FAULT_ADDR23 = "addr23-set"
+FAULT_ADDR23 = "addr23-set"  # historical; no longer raised (D35)
 FAULT_SIO_X = "sio-unresolved"
 FAULT_RESET = "reset-aborted"
 FAULT_REFRAME = "ce-refell-while-active"
@@ -999,17 +999,9 @@ class _PinDecoder:
         self.phase = PIN_PHASE_ADDR
 
     def _decode_address(self) -> None:
-        """``CHK-PIN-ADDR23-ZERO`` on the six address nibbles, not a request field."""
+        """Accept the six address nibbles; ``A[23]`` is don't-care (D35)."""
         txn = self.txn
-        if txn.address & ADDR23_BIT:
-            txn.faults.append(FAULT_ADDR23)
-            self._monitor._record(
-                CHK_PIN_ADDR23_ZERO,
-                f"PSRAM{self.device} op=0x{txn.opcode:02X}: A[23] set in the decoded "
-                f"wire address 0x{txn.address:06X}; device selection is CE#, not A[23]",
-            )
-            self.phase = PIN_PHASE_IGNORE
-            return
+        txn.address &= ~ADDR23_BIT
         self.phase = PIN_PHASE_DUMMY if txn.direction == DIR_READ else PIN_PHASE_DATA
 
     def _note_unresolved(self) -> None:
@@ -1033,7 +1025,7 @@ class QspiPinMonitor:
 
     1. export the ordered observed transaction log the dual-axis scoreboard
        compares against the reference oracle, and
-    2. dispose ``CHK-PIN-ADDR23-ZERO`` and ``CHK-PIN-KNOWN``.
+    2. dispose ``CHK-PIN-KNOWN``.
 
     The monitor wakes on any watched pin change and samples in the read-only
     phase, so a settled timestep is decoded rather than an intermediate delta.
@@ -1459,13 +1451,13 @@ def start_qspi_pin_monitor(
 
 
 def dispose_pin_checks(*sources, log=None) -> "dict[str, str]":
-    """Dispose ``CHK-PIN-ADDR23-ZERO`` / ``CHK-PIN-KNOWN`` from the best evidence.
+    """Dispose ``CHK-PIN-KNOWN`` from the best evidence.
 
     *sources* may mix :class:`QspiPinMonitor` instances with PSRAM devices or
     agents. A started pin monitor is authoritative because it decodes the pins
-    independently; the per-device model ``Q-ADDR23`` / ``Q-SIO-X`` records are
-    the fallback for a run that started no pin monitor (or whose monitor is
-    ``blocked``). The printed line always names which evidence was used.
+    independently; the per-device model ``Q-SIO-X`` records are the fallback
+    for a run that started no pin monitor (or whose monitor is ``blocked``).
+    The printed line always names which evidence was used.
 
     Raises:
         ValueError: no usable evidence source was supplied, which would

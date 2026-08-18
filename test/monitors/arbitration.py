@@ -946,7 +946,6 @@ def start_arbitration_monitor(
                 SYS_CONTROL_IDLE,
                 SYS_CONTROL_STATES,
             ),
-            ("sys_controller.data_cnt", _optional(controller, "data_cnt"), 0, None),
             (
                 "sys_controller.active_fetch_addr",
                 _optional(controller, "active_fetch_addr"),
