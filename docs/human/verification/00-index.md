@@ -28,7 +28,7 @@ Monitors run every applicable L0/L1 test; missing hierarchy → `blocked`, never
 
 | Group | What it guards (summary) | M2 status |
 |---|---|---|
-| Pin / ownership (`CHK-PIN-*`) | CS mutex, flash CS park, SIO dual-drive, SCK park, addr[23]=0, known SIO | `pass` (`via=pin` when monitor ran) |
+| Pin / ownership (`CHK-PIN-*`) | CS mutex, flash CS park, SIO dual-drive, SCK park, known SIO (`CHK-PIN-ADDR23-ZERO` retired D35) | `pass` (`via=pin` when monitor ran) |
 | Arbitration / reset (`CHK-ARB-*`, `CHK-RST-*`) | Grant OE quiet, park, busy/grant rules, reset OE/status/internal | `pass` on L1 DMA paths |
 | Handshake (`CHK-HS-*`) | txn start, req stable, WDATA/RDATA counts and known, pulse width, opcode | `pass` on DMA paths; off for MCU pass-through negatives |
 | Controller (`CHK-CTRL-*`) | req gate/shape, fetch head, data pair, state valid; `CHK-CTRL-DATA-CNT` retired | `pass` on DMA paths; off for MCU pass-through negatives |
@@ -51,6 +51,7 @@ WSL: OSS CAD Suite is already on PATH in interactive shells. Activate the repo-r
 source test/env.sh
 test/scripts/doctor.sh
 test/scripts/run_smoke.sh
+test/scripts/run_gl.sh
 ```
 
 System Python is `python3`. Prefer suite Verilator 5.051 over older `/usr/local` builds. `env.sh` puts a cocotb-friendly `vvp` wrapper first on PATH (raw suite `bin/vvp` breaks the venv). Full contract: [`../../llm/verification/02-platform.md`](../../llm/verification/02-platform.md).
@@ -66,14 +67,16 @@ System Python is `python3`. Prefer suite Verilator 5.051 over older `/usr/local`
 | M2 exit (reference / scoreboard / directed / `CHK-*`) | `pass` | 2026-08-08 L1 Icarus: smoke; 13 directed + skipped `TC-DEPTH`; reset/bus 11/11; migrated M1 suites |
 | M3 exit (delay / launch / RX / lifecycle) | `pass` | 2026-08-10: `nominal` Icarus ≡ Verilator on timing + ownership + launch_rx; cleanup `TC-*`; see residuals |
 | `Q-LAUNCH`, `Q-RXEDGE`, `Q-CSP`/`Q-CHD`/`Q-TERM` | `pass` | M3 directed evidence; delay-rerun CEM/CPH/SIO-OWN also green |
-| M4 formal (`FP-*`) | `todo` | Deferred for now; may proceed independently; stubs under `test/formal/` untouched - do not claim pass |
-| M5 random / `COV-*` / depth sweep | `wip` | Wave 4 2026-08-16 partial random green at **N=5** / `ideal`: Icarus seeds 1/2/3/5/8, Verilator 1/2 (`coverage.json` + `stimulus.json` under `test/runs/top/<sim>/n5/ideal/seed-<n>/`); seed-1 Icarus ≡ Verilator (69 txns, `CHK-*`/`Q-*` clean; `CHK-CTRL-DATA-CNT=na`). Still open: Verilator seeds 3/5/8; full `make depth` `1..8` (`TC-DEPTH`); `COV-*` / `COV-DEPTH*` fragment merge and closure |
-| SDF run | `blocked` | No compatible final-netlist SDF artifact is available yet |
-| `DMA_BUF_DEPTH` elaboration `1..8` | `wip` | Tapeout and default sim/Make depth **N=5**; `make depth` loops `1..DMA_BUF_DEPTH_MAX` with isolated build dirs |
+| M4 formal (`FP-*`) | `todo` | Deferred (D33); not a V1 freeze gate; stubs under `test/formal/` untouched - do not claim pass |
+| M5 random / `COV-*` / depth sweep | `pass` | **Exit (2026-08-16):** random green at **N=5** / `ideal` (zero TB placeholders) - Icarus and Verilator seeds 1/2/3/5/8; seed-1 Icarus ≡ Verilator. `TC-DEPTH` (directed suite at each compile-time `DMA_BUF_DEPTH`) **pass** N=1..8 (Icarus, 13/13 per depth via `make depth` / `run_depth_sweep.sh`). `COV-*` (functional coverage point IDs) merge at `test/runs/m5_coverage_closure.json`: `closed=true` (20 catalog IDs hit; 13 exclusions STALL + length-class collapse N=1/2; reviewer `M5-close`, 2026-08-16) |
+| L2 functional infra | `wip` | `tests.test_gate_level` + `test/scripts/run_gl.sh`; flattened N=5 instance (no `#(.DMA_BUF_DEPTH)`); `GATES=yes make` / `make gl_test` runs the L2 subset under `TIMING_PROFILE=ideal` (zero TB placeholders) and copies `test/results.xml`. Zero-delay Icarus `TC-SMOKE` passed 2026-08-17 on the existing unpowered `nl` view (not an SDF pass; full M6 subset and N=5 netlist signoff still open) |
+| SDF run | `blocked` | No compatible final-netlist SDF artifact; a zero-delay GL run is not an SDF pass |
+| `TC-DEPTH` (`1..8`) | `pass` | 2026-08-16: Icarus 13/13 directed suite per compile-time `DMA_BUF_DEPTH` via `make depth` / `run_depth_sweep.sh` |
+| `DMA_BUF_DEPTH` elaboration `1..8` | `pass` | Tapeout and default sim/Make depth **N=5**; sweep N=1..8 green for directed suite |
 | M7 FPGA hardware validation | `todo` | Not started; requires an FPGA-synthesizable build and carrier-board bring-up with real MCU firmware |
 | `T-*` closure | `todo` | STA and demoboard evidence follow M6 |
 | CI smoke job | `todo` | Local smoke green; CI job still open |
-| Independent `QspiPinMonitor` | live | CE#-framed decode; pin ADDR23/KNOWN dispose `via=pin`; ordinary paths use `dispose_run` |
+| Independent `QspiPinMonitor` | live | CE#-framed decode; pin KNOWN dispose `via=pin` (`ADDR23` retired D35); ordinary paths use `dispose_run` |
 | Model-plane Z→0 idealization | open | Floating SIO still forced to 0 for the parser; float-as-known remains limited |
 | Model-plane pin dispose contract | retained | Only `test_qspi_pin_disposition` uses `assert_model_pin_disposition` |
 
@@ -85,8 +88,7 @@ System Python is `python3`. Prefer suite Verilator 5.051 over older `/usr/local`
 - Margin gate: asserts present legal-baseline fields; write-path may omit CEM/CSP/CHD mins; boundary-pass ≈0 by construction
 - Broader `PSRAM_TACLK_NS` / path sweep beyond nominal + documented endpoints is post-M3 if not already covered
 - Handshake incomplete-window stays diagnostic (no new ID); `_pending_start` ignore; no cleanup-only `Q-TERM`; `@tb_test` finally deferred
-- M4 formal `FP-*` (deferred; independent track; do not claim pass)
-- M5 random / `COV-*` and `TC-DEPTH` / `COV-DEPTH*` closure across `1..8` (Wave 4 partial random at **N=5** only; full `make depth` / `run_depth_sweep.sh` loop and `COV-*` merge not green; do not claim M5 exit)
+- M4 formal `FP-*` (deferred (D33); do not claim pass)
 - Optional Z→0 retirement
 - Ownership per-case re-split (`TC-OWN-*` stay sub-steps)
 - BUS_GNT-aware CTRL/HS checkers (MCU pass-through negatives currently detach those monitors)

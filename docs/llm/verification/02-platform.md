@@ -27,6 +27,7 @@ test/
     doctor.sh            # toolchain health (fails if venv/cocotb/suite broken)
     run_smoke.sh         # M0 L1 Icarus smoke
     run_test.sh          # pass-through make test LEVEL=... SIM=...
+    run_gl.sh            # L2: copy N=5 unpowered nl view, GATES=yes subset
     wrappers/
       iverilog           # suite libexec/iverilog; shebang -> wrappers/vvp
       vvp                # cocotb-friendly suite libexec/vvp (on PATH via env.sh)
@@ -149,6 +150,7 @@ source test/env.sh
 test/scripts/doctor.sh
 test/scripts/run_smoke.sh
 test/scripts/run_test.sh LEVEL=engine SIM=icarus SEED=17 TEST_FILTER=qspi
+test/scripts/run_gl.sh
 ```
 
 `test/env.sh` activates repo-root `dma-venv`, exports `PYTHON=python3`, unsets `PYTHONHOME` if the suite set it (required so cocotb uses the venv interpreter, not suite Python), and warns if `iverilog` is missing or resolves under `~/.nix-profile`. Non-interactive agent shells that skip `.bashrc` may get a one-shot soft source of `~/tools/oss-cad-suite/environment` when `iverilog` is absent. Hook scripts log under `test/runs/`, not `/tmp`.
@@ -167,11 +169,12 @@ Equivalent Make targets (after `source test/env.sh` and `cd test`):
 | `make directed` | Run M2 directed modules; default `TEST_FILTER` enumerates the 13 `tests.test_dma_directed` cases and excludes skipped `dma_buf_depth_sweep` |
 | `make random` | Run constrained-random tests for one seed |
 | `make regression` | Run the configured seed list and simulator matrix |
-| `make formal` | Run the required SymbiYosys jobs |
+| `make formal` | Run the SymbiYosys jobs (`FP-*`; D33; not a V1 freeze gate) |
 | `make waves` | Open or print the path to the waveform from a selected prior run |
+| `make gl_test` | L2 Icarus directed subset at flattened `DMA_BUF_DEPTH=5` / `TIMING_PROFILE=ideal` (zero TB placeholders) |
 | `make clean` | Remove generated simulation build and run artifacts only |
 
-`make` may alias `make test`, matching the TT template.
+`make` may alias `make test`, matching the TT template. `GATES=yes make` (TT gate action) selects `LEVEL=gl` and the L2 module `tests.test_gate_level`, not full random. After every `test` target, `RUN_DIR/results.xml` is also copied to `test/results.xml` so the official Tiny Tapeout action can grep that path.
 
 ### Stable variables
 
@@ -182,7 +185,7 @@ Equivalent Make targets (after `source test/env.sh` and `cd test`):
 | `GATES` | unset | TT-compatible gate-level selector; `yes` implies `LEVEL=gl` |
 | `SEED` | `1` | unsigned test seed printed at start and failure |
 | `TEST_FILTER` | empty | cocotb test-name regular expression |
-| `DMA_BUF_DEPTH` | `5` | Compile-time module parameter override for tapeout and default sim (`-GDMA_BUF_DEPTH=N`; any integer `1..DMA_BUF_DEPTH_MAX`) |
+| `DMA_BUF_DEPTH` | `5` | L1 compile-time override (`-G` / `-Ptb_top.DMA_BUF_DEPTH=N`; any integer `1..DMA_BUF_DEPTH_MAX`). L2 must be 5 to match the flattened netlist; the Makefile does not pass `-Ptb_gl.DMA_BUF_DEPTH` (that cannot resynthesize the gate DUT) |
 | `TIMING_PROFILE` | `ideal` | named timing parameter set |
 | `WAVES` | `auto` | `auto`, `always`, or `never` |
 | `SDF` | unset | optional SDF path for L2 |
@@ -194,11 +197,12 @@ Examples (after `source test/env.sh`):
 ```sh
 test/scripts/run_test.sh LEVEL=engine SIM=icarus TEST_FILTER=qspi SEED=17
 test/scripts/run_test.sh LEVEL=top SIM=verilator SEED=4231 DMA_BUF_DEPTH=5
+cd test && make gl_test
 cd test && make test LEVEL=gl SIM=icarus GATES=yes NETLIST=gate_level_netlist.v
 cd test && make random LEVEL=top SIM=verilator SEED=4231 TIMING_PROFILE=nominal
 ```
 
-`DMA_BUF_DEPTH` is a module parameter on `tt_um_lahnb_sgdma` / `sys_controller` (V1 tapeout and default sim: **5**). Package `DMA_BUF_DEPTH_MAX` in `src/rtl/types.svh` sizes `qpi_byte_len_t` / cycle counters for elaboration `1..8`. The Makefile passes `-GDMA_BUF_DEPTH=$(DMA_BUF_DEPTH)` (or the simulator equivalent) and rejects values outside `1..DMA_BUF_DEPTH_MAX`.
+`DMA_BUF_DEPTH` is a module parameter on `tt_um_lahnb_sgdma` / `sys_controller` (V1 tapeout and default sim: **5**). Package `DMA_BUF_DEPTH_MAX` in `src/rtl/types.svh` sizes `qpi_byte_len_t` / cycle counters for elaboration `1..8`. At L1 the Makefile passes `-GDMA_BUF_DEPTH=$(DMA_BUF_DEPTH)` (or `-Ptb_top.DMA_BUF_DEPTH`) and rejects values outside `1..DMA_BUF_DEPTH_MAX`. At L2 the gate instance is flattened at N=5; Python still reads `DMA_BUF_DEPTH=5` for the scoreboard.
 
 The Makefile maps `TEST_FILTER` to cocotb 2.x `COCOTB_TEST_FILTER` and lists modules through `COCOTB_TEST_MODULES`. Do not use removed legacy environment names.
 

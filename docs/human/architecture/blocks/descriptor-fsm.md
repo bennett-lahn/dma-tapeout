@@ -1,6 +1,6 @@
 # Descriptor FSM
 
-Status: implemented in `sys_controller.sv` (V1 feature path covered by M0–M3). Host/mode control and descriptor sequencing are in the same module; this document describes the descriptor-control behavior, not a separate RTL block. Idle / DONE / quit-TCD / zero-length rules follow D14 / D18 / D19 / D23. Bus yield via `BUS_REQ`/`BUS_GNT` follows D22. No soft abort (kill with `rst_n`, D23). Sticky error / `uo_out[7:2]` status packing still open.
+Status: implemented in `sys_controller.sv` (V1 feature path covered by M0–M3). Host/mode control and descriptor sequencing are in the same module; this document describes the descriptor-control behavior, not a separate RTL block. Idle / DONE / quit-TCD / zero-length rules follow D14 / D18 / D19 / D23. Bus yield via `BUS_REQ`/`BUS_GNT` follows D22. Kill mid-run with `rst_n` only (D23/D34).
 
 ## Role
 
@@ -26,7 +26,7 @@ Do **not** float CS/SCK between DMA transactions. Do **not** reclaim SIO drive i
 4. `STATE_WRITE` - write buffered bytes to `DEST_PTR` (same `N`)
 5. `STATE_UPDATE` - decrement `TRANSFER_LEN`; pointers already advanced by `N` on READ/WRITE exit (don't-care on the final chunk). If length remains, loop to READ. If length hits 0, go FETCH for the next TCD on `NEXT_DEVICE`
 
-No `STATE_PROCESS` / ALU in V1. Post-V1 may insert process / cond-stop after READ: [`../post-v1.md`](../post-v1.md).
+No `STATE_PROCESS` / ALU.
 
 ## QSPI engine requests (D21)
 
@@ -45,7 +45,7 @@ Handshake summary: 1-cycle `txn_valid` only when `~busy` (no `txn_ready`); FSM h
 - Zero-length TCD: after FETCH (and quit check), skip READ/WRITE and immediately follow `NEXT_TCD`
 - Data moves stay QPI byte-oriented in V1 for simplicity (D15)
 - Buffer depth `N=1` for V1; do not hard-code depth into correctness (D20)
-- **No ABORT** (D23): kill mid-run with **`rst_n`**
+- **Kill mid-run:** assert **`rst_n`** (D23/D34)
 - **QUIT:** after FETCH, if `QUIT=1` → IDLE / DONE; next START always refetches `0x000000` / PSRAM 0
 - **BUS_REQ** (`ui_in[2]`): finish current QPI transaction if any, assert `BUS_GNT`, pause (no new `txn_valid`); when REQ drops, deassert `BUS_GNT` and resume if not IDLE (D22)
 - After quit / return to IDLE: resume parking (`rst_n && ~BUS_GNT`). On yield: release OE then assert `BUS_GNT`. While active-low reset is asserted (`rst_n=0`), force every shared `uio_oe` low; board CS pull-ups hold CE# high until reset is deasserted and the design parks again

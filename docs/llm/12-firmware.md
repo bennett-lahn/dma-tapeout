@@ -2,7 +2,7 @@
 
 Verbose twin of [`../human/architecture/firmware.md`](../human/architecture/firmware.md). Same section order. Human stays condensed but complete; this file elaborates APIs, sequences, clone paths, chunk formulas, and REPL examples. Do not treat this file as a private second source of truth: every durable requirement here appears in the human doc in some form.
 
-Related frozen contracts: TCD format [`04-tcd-and-datapath.md`](04-tcd-and-datapath.md), QSPI/PSRAM opcodes and `tCEM` [`05-qspi-psram.md`](05-qspi-psram.md), host OE / START [`03-architecture.md`](03-architecture.md), decisions D17 / D20 / D22 / D23 / D24 / D25 / D26 / D28 / **D30**, opens Q3 / Q12 in [`08-open-questions.md`](08-open-questions.md). QSPI PMOD SPI guide: [PDF](../datasheets/pdfs/Using_QSPI_TinyTapeout.pdf), [extracted notes + code catalog](../datasheets/md/Using_QSPI_TinyTapeout.md).
+Related frozen contracts: TCD format [`04-tcd-and-datapath.md`](04-tcd-and-datapath.md), QSPI/PSRAM opcodes and `tCEM` [`05-qspi-psram.md`](05-qspi-psram.md), host OE / START [`03-architecture.md`](03-architecture.md), decisions D17 / D20 / D22 / D23 / D24 / D25 / D26 / D28 / D30 / **D34**. QSPI PMOD SPI guide: [PDF](../datasheets/pdfs/Using_QSPI_TinyTapeout.pdf), [extracted notes + code catalog](../datasheets/md/Using_QSPI_TinyTapeout.md).
 
 ## Purpose / scope
 
@@ -86,7 +86,7 @@ Frozen host pins (D14 / D18 / D22 / D23):
 | `ui_in[2]` | BUS_REQ | Level; assert before enabling MCU QSPI OE |
 | `uo_out[0]` | DONE | High = ASIC idle (not a drive permit) |
 | `uo_out[1]` | BUS_GNT | High = MCU may drive `uio` (also legal while `rst_n=0`; D26) |
-| `ui_in[1]`, `ui_in[7:3]`, `uo_out[7:2]` | Reserved / open | Do not invent ERROR bits; Q3 packing still open |
+| `ui_in[1]`, `ui_in[7:3]`, `uo_out[7:2]` | Unused (tied 0; D34) | Drive unused inputs low; ignore reads of `[7:2]` |
 
 QSPI on `uio[7:0]` matches the community flash+PSRAM PMOD map ([`../human/architecture/system.md`](../human/architecture/system.md)):
 
@@ -339,7 +339,7 @@ Practical demoboard bring-up default (conservative; also in human `firmware.md`)
 
 **Implementation rule:** `spi_read` / `spi_write` loop in chunks of `SPI_CHUNK_BYTES`, raising CE# between chunks (≥ `tCPH`). Never single-CE# a multi-kilobyte dump.
 
-Also enforce ASIC firmware-facing limits when building TCDs: `TRANSFER_LEN ≤ 255`, addresses in `0x000000..0x7FFFFF`, release-before-seize.
+Also enforce ASIC firmware-facing limits when building TCDs: `TRANSFER_LEN ≤ 255`, address spans on `ptr[22:0]` inside `0x000000..0x7FFFFF` (`ptr[23]` don't-care; D35), release-before-seize.
 
 ## TCD install
 
@@ -484,9 +484,9 @@ Vector reuse: cocotb reference-model chain intent may be frozen as fixed byte pa
 |---|---|
 | DONE never returns | `kill_dma` / `rst_n`; Hi-Z MCU; after deassert, grant → SPI reset + Enter Quad both → reinstall or retry |
 | Need SPI after QPI run | Grant → `0xF5` (if still QPI) or `0x66`/`0x99` |
-| Suspected OOR / bad chain | Treat as undefined today (Q12); prefer validate-before-START; sticky ERROR on `uo_out[7:2]` not frozen (Q3) |
+| Suspected OOR / bad chain | Validate before START (D34); if violated at runtime, behavior undefined; recover with `rst_n` |
 
-Do not invent status bits. START hold: long enough for two-flop sync at 66 MHz (human host-interface: prefer multi-cycle assert then deassert before a later edge).
+Unused host bits tied 0 (D34). START hold: long enough for two-flop sync at 66 MHz (human host-interface: prefer multi-cycle assert then deassert before a later edge).
 
 ## Sim relationship
 
@@ -501,8 +501,8 @@ Shared **intent** only: grant before drive, big-endian TCD, fixed head, `QUIT`, 
 ## Non-goals (V1 firmware)
 
 - MCU QPI / quad I/O not required (basic SPI only)
-- No ASIC flash DMA; flash is MCU pass-through under grant (D11/D26); no flash QE enable/disable in V1 bring-up (D30)
-- No ALU / cond-stop / ring / soft abort (post-V1: [`10-post-v1-features.md`](10-post-v1-features.md); kill = `rst_n`, D23)
+- No ASIC flash DMA; flash is MCU pass-through under grant (D11/D26); no flash QE enable/disable in bring-up (D30)
+- No ALU / cond-stop / ring / soft abort (kill = `rst_n`, D23)
 - No copying TinyDMA-2C prior-art firmware
 - No llm-only requirements: if a durable rule is needed, it must also appear in [`../human/architecture/firmware.md`](../human/architecture/firmware.md)
 
@@ -512,8 +512,7 @@ Shared **intent** only: grant before drive, big-endian TCD, fixed head, `QUIT`, 
 - System / MCU setup: [`../human/architecture/system.md`](../human/architecture/system.md)
 - Host interface: [`../human/architecture/blocks/host-interface.md`](../human/architecture/blocks/host-interface.md)
 - PSRAM opcodes / `tCEM`: [`05-qspi-psram.md`](05-qspi-psram.md)
-- Decision log: D17, D20, D22-D26, D28, D30
-- Opens: Q3, Q12 in [`08-open-questions.md`](08-open-questions.md)
+- Decision log: D17, D20, D22-D26, D28, D30, D34 in [`07-decision-log.md`](07-decision-log.md)
 - M7: [`verification/01-strategy.md`](verification/01-strategy.md)
 - QSPI PMOD SPI guide: [PDF](../datasheets/pdfs/Using_QSPI_TinyTapeout.pdf), [ETR notes + code catalog](../datasheets/md/Using_QSPI_TinyTapeout.md)
 - SDK: [`../../tt-micropython-firmware/README.md`](../../tt-micropython-firmware/README.md), [`config.md`](../../tt-micropython-firmware/config.md)

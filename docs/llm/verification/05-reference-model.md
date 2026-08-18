@@ -22,17 +22,17 @@ Represent one decoded descriptor as an immutable value with these fields:
 
 | Field | Python value | Valid range |
 |---|---|---|
-| `src_ptr` | `int` | `0x000000..0x7FFFFF` |
-| `dest_ptr` | `int` | `0x000000..0x7FFFFF` |
+| `src_ptr` | `int` | 24-bit field `0x000000..0xFFFFFF`; useful address is `ptr[22:0]` in `0x000000..0x7FFFFF` |
+| `dest_ptr` | `int` | same |
 | `transfer_len` | `int` | `0..255` |
-| `next_tcd` | `int` | `0x000000..0x7FFFFF` |
+| `next_tcd` | `int` | same as `src_ptr` |
 | `quit` | `bool` | `False` or `True` |
 | `src_device` | `int` | `0` or `1` |
 | `dest_device` | `int` | `0` or `1` |
 | `next_device` | `int` | `0` or `1` |
 | `reserved` | `int` | `0..15`, valid V1 stimulus requires `0`. Last field of the software value and last nibble of the 11-byte record (`CTRL_FLAGS[3:0]`); also the packed LSB of RTL `tcd_t` (D31). The DUT latches it; V1 control ignores it. |
 
-Python `bool` is a subclass of `int`, so range validation must explicitly reject booleans for integer fields. Encoding must reject negative values, oversized values, non-integers, pointer bit 23 set, and nonzero reserved bits. It must not mask invalid input into range.
+Python `bool` is a subclass of `int`, so range validation must explicitly reject booleans for integer fields. Encoding must reject negative values, values outside the 24-bit field (`0..0xFFFFFF`), non-integers, and nonzero reserved bits. Pointer bit 23 is allowed (don't-care; D35). It must not mask invalid input into range.
 
 Decoding separates representation from V1 validity:
 
@@ -151,7 +151,7 @@ The following rules are deliberate:
 - `QUIT=1` takes priority over `TRANSFER_LEN`. The quit descriptor is fetched and logged, but its source, destination, length, and next fields are not executed.
 - `TRANSFER_LEN=0` emits no data read or write and immediately follows `NEXT_TCD` on `NEXT_DEVICE`.
 - Address `0x000000` is a valid source, destination, or next link. It is not a null pointer.
-- Device selection comes only from `CTRL_FLAGS`, never from pointer bit 23.
+- Device selection comes only from `CTRL_FLAGS`, never from pointer bit 23 (`ptr[23]` is don't-care; D35).
 - Same-device and cross-device copies use the same algorithm.
 - Reads observe the current model memory at the time of each chunk. A chunk reads all `k` bytes before its write mutates memory. This reproduces the DMA's ordered read-then-write behavior for overlapping regions and does not impose whole-transfer `memmove` semantics.
 - Pointer increments occur only when bytes remain. Final working-register pointer values are intentionally outside the oracle because architecture declares them unconsumed.
@@ -172,7 +172,7 @@ The pin-level QPI monitor and the reference interpreter exchange immutable norma
 | `kind` | `FETCH_READ`, `DATA_READ`, or `DATA_WRITE` |
 | `opcode` | Integer `0xEB` for reads or `0x02` for writes |
 | `device` | `0` for RAM A or `1` for RAM B |
-| `address` | Full decoded 24-bit QPI address, with bit 23 required to be 0 |
+| `address` | Effective QPI address `A[22:0]` (wire bit 23 don't-care / masked; D35) |
 | `length` | Payload byte count for this CE# assertion |
 | `data` | Payload bytes in wire order |
 

@@ -10,7 +10,7 @@ Tiny Tapeout exposes **10 inputs**, **8 bidirectional**, and **8 outputs** to ea
 |---|---|---|---|
 | Inputs | 10 | `clk`, `rst_n`, `ui_in[7:0]` | Clock, reset, host control (incl. **START**) |
 | Bidirectional | 8 | `uio[7:0]` (`uio_in` / `uio_out` / `uio_oe`) | QSPI to PSRAM PMOD (shared with MCU) |
-| Outputs | 8 | `uo_out[7:0]` | Status (incl. **DONE**), future DFT/debug |
+| Outputs | 8 | `uo_out[7:0]` | **DONE**, **BUS_GNT**; unused `[7:2]` tied 0 (D34) |
 
 ### Bidirectional: QSPI (current)
 
@@ -36,9 +36,9 @@ Only one PSRAM CE# low per transaction (shared SIO). Cross-device = read then wr
 | `clk` | Design clock **66 MHz** target (RP2040-generated on demoboard; D16); QSPI engine SCK = clk/2 |
 | `rst_n` | Active-low reset |
 | `ui_in[0]` | **START** - synchronized and rising-edge detected by the top level; resulting one-`clk` pulse accepted only while IDLE/`DONE` and `~BUS_REQ`; otherwise ignored and not queued (resent after `BUS_GNT` low). After START, wait for DONE low before raising `BUS_REQ` again |
-| `ui_in[1]` | Reserved (ABORT removed; D23 - kill with `rst_n`) |
+| `ui_in[1]` | Unused (tied 0; D34) |
 | `ui_in[2]` | **BUS_REQ** - MCU wants bidirectional `uio` (D22) |
-| `ui_in[7:3]` | Reserved (config / DFT - packing open) |
+| `ui_in[7:3]` | Unused (tied 0; D34) |
 
 ### Outputs: status (partial freeze)
 
@@ -46,7 +46,7 @@ Only one PSRAM CE# low per transaction (shared SIO). Cross-device = read then wr
 |---|---|
 | `uo_out[0]` | **DONE** - high whenever ASIC is idle (incl. after reset) |
 | `uo_out[1]` | **BUS_GNT** - MCU may drive `uio` (D22) |
-| `uo_out[7:2]` | Reserved (error, DFT mux - packing open) |
+| `uo_out[7:2]` | Unused (tied 0; D34) |
 
 ## Runtime modes (bus ownership)
 
@@ -97,7 +97,7 @@ Software owns placement within the device. Suggested layout for demos:
 | Mid | Source staging (firmware patterns) |
 | High | Destinations / copy targets |
 
-Hardware does not enforce region bounds; overlapping TCDs/buffers is a firmware bug. Stay within `0x000000`..`0x7FFFFF` on APS6404L-class parts; pick device via `SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`. Address 0 is allowed for TCDs/buffers.
+Hardware does not enforce region bounds; overlapping TCDs/buffers is a firmware bug. Stay within `0x000000`..`0x7FFFFF` on `A[22:0]` / APS6404L-class parts (`ptr[23]` don't-care; D35); pick device via `SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`. Address 0 is allowed for TCDs/buffers. Self-pointing / cyclic `NEXT_TCD` is allowed and spins until `rst_n` without `QUIT` (D35).
 
 ### TCD layout and behavior
 
@@ -110,8 +110,6 @@ Full field table: [`blocks/tcd.md`](blocks/tcd.md). Summary:
 - `QUIT=1` ends the chain → IDLE / DONE; a later START always re-fetches `0x000000` / PSRAM 0
 - Descriptor fetch uses a held-CE# **11-byte** burst
 
-Post-V1 (ALU / cond-stop / ring / flash): [`post-v1.md`](post-v1.md).
-
 ## Major blocks
 
 | Block | Job | Detail |
@@ -121,7 +119,6 @@ Post-V1 (ALU / cond-stop / ring / flash): [`post-v1.md`](post-v1.md).
 | Working regs | Active TCD only + **1-byte** data hold (depth-agnostic; D20) | [`blocks/working-registers.md`](blocks/working-registers.md) |
 | TCD format | 11-byte record in PSRAM | [`blocks/tcd.md`](blocks/tcd.md) |
 | QSPI engine | QPI `0xEB`/`0x02`, A/B CS; SCK=clk/2; D21 `~busy` / `wdata_next` (no `txn_ready`/`wdone`) | [`blocks/qspi-engine.md`](blocks/qspi-engine.md) |
-| Byte ALU / ring | **Post-V1** stubs | [`blocks/alu.md`](blocks/alu.md), [`blocks/ring-buffer.md`](blocks/ring-buffer.md) |
 
 ## Data path mental model
 
@@ -132,7 +129,7 @@ PSRAM A/B --QPI--> RX hold --------> TX stage --QPI--> PSRAM A/B
          CTRL_FLAGS SRC_DEVICE / DEST_DEVICE
 ```
 
-Same-device or cross-device. Pure memcpy in V1. Devices from `SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE` (D24; not pointer MSBs). RX hold is **1 byte** for V1; engine correctness must not assume that depth (D20).
+Same-device or cross-device. Pure memcpy. Devices from `SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE` (D24; not pointer MSBs). RX hold is **1 byte**; engine correctness must not assume that depth (D20).
 
 ## MCU setup flow
 
@@ -146,12 +143,11 @@ Same-device or cross-device. Pure memcpy in V1. Devices from `SRC_DEVICE` / `DES
 
 ## Open architecture items
 
-Tracked in detail at [`../../llm/08-open-questions.md`](../../llm/08-open-questions.md). Biggest remaining V1 gaps:
+Tracked in detail at [`../../llm/08-open-questions.md`](../../llm/08-open-questions.md). Remaining V1 gap:
 
-- Status / DFT packing on `uo_out[7:2]` (and optional `ui_in[7:3]` / `ui_in[1]`)
-- Self-pointing descriptor policy vs `rst_n`
+- Multi-outstanding transactions (lean: no)
 
-Settled for V1: **24-bit** address pointers; device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24); **11-byte** TCD with **`QUIT`** flag; fixed head at 0/PSRAM0; zero-length no-op; idle/START/DONE (D14/D18/D19); **no ABORT** (D23: `rst_n`); **BUS_REQ/BUS_GNT** pass-through (D22); **ASIC bus keeper** while `rst_n=1` and `~BUS_GNT` (D26; MCU may also drive while `rst_n=0`; board 10 kΩ CS pull-ups); QPI data `0xEB`/`0x02` (D15/D17); **MCU** enter/exit QPI (D17); **66 MHz `clk`**, **SCK = clk/2**, rising-edge RX (D16); D21 handshake; **1-byte** data buffer (D20); `ui_in[0]=START`, `ui_in[2]=BUS_REQ`, `uo_out[0]=DONE`, `uo_out[1]=BUS_GNT`; QSPI on `uio`; **dual PSRAM** DMA; **ASIC flash unsupported**. Post-V1 ladder: [`post-v1.md`](post-v1.md).
+Settled: **24-bit** address pointers with **`ptr[23]` don't-care** (D35); device selects in **`CTRL_FLAGS`**; **11-byte** TCD with **`QUIT`** flag; self-pointing / cyclic chains allowed (spin until `rst_n`; D35); fixed head at 0/PSRAM0; zero-length no-op; idle/START/DONE/BUS_REQ/BUS_GNT; kill via **`rst_n`** (D23); unused `ui_in[1]`, `ui_in[7:3]`, `uo_out[7:2]` tied 0, no ERROR logic (D34); **BUS_REQ/BUS_GNT** pass-through (D22); **ASIC bus keeper** (D26); QPI data `0xEB`/`0x02`; **MCU** enter/exit QPI (D17); **66 MHz `clk`**, **SCK = clk/2**, rising-edge RX (D16); D21 handshake; **`DMA_BUF_DEPTH=5`** tapeout (D20); QSPI on `uio`; **dual PSRAM** DMA; **ASIC flash unsupported**. Shipped RTL is this feature set only. Formal M4 (`FP-*`) is not a V1 freeze gate (D33).
 
 ## See also
 

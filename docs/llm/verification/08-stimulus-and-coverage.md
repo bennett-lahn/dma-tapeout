@@ -23,11 +23,11 @@ IDs identify required behavior, not Python function names. One implementation ma
 | `TC-CROSS-10`     | L1    | PSRAM1 source to PSRAM0 destination                                                                                                       | Read and write select different devices and data matches                                                                                      | M2                                |
 | `TC-CHAIN`        | L1    | At least three executable TCDs followed by quit, with non-contiguous buffers                                                              | Every TCD executes once in order and all destination ranges match                                                                             | M2                                |
 | `TC-NEXT-DEVICE`  | L1    | Chain whose next TCD alternates between PSRAM0 and PSRAM1                                                                                 | Each fetch uses `NEXT_DEVICE`; address zero remains a valid link                                                                              | M2                                |
-| `TC-LEN-CORNERS`  | L1    | Lengths `0`, `1`, `N-1`, `N`, `N+1`, and `255`, omitting duplicate or invalid values for the selected `N`                                 | Zero is a no-op, full chunks and final partial chunks are exact, and no extra transaction occurs                                              | M2                                |
+| `TC-LEN-CORNERS`  | L1    | Lengths `0`, `1`, `N-1`, `N`, `N+1`, `2N-1`, `2N`, `2N+1`, and `255`, omitting duplicate or invalid values for the selected `N`           | Zero is a no-op, full chunks and final partial chunks are exact, and no extra transaction occurs                                              | M2; `2N-*` added for M5 `COV-DEPTH-LEN` |
 | `TC-QUIT`         | L1    | Quit TCD with nonzero pointer and length fields                                                                                           | Quit is not executed, no data read or write follows that fetch, and DONE returns                                                              | M2                                |
 | `TC-EMPTY`        | L1    | Quit TCD at fixed head `0x000000` on PSRAM0                                                                                               | Exactly one descriptor fetch, no data transaction, then DONE                                                                                  | M2                                |
 | `TC-RESTART`      | L1    | Complete a chain, replace or retain the head, then issue a new START                                                                      | Every accepted START begins by fetching `0x000000` on PSRAM0, independent of stale working state                                              | M2                                |
-| `TC-ADDR-WIDE`    | L1    | Valid TCD and payload addresses below, at, and above `0x010000`, including near `0x7FFFFF` without range overflow                         | All 23 address bits reach the wire correctly and `addr[23]` remains zero                                                                      | M2                                |
+| `TC-ADDR-WIDE`    | L1    | Valid TCD and payload addresses below, at, and above `0x010000`, including near `0x7FFFFF` without range overflow                         | All 23 address bits (`A[22:0]`) reach the wire correctly; `addr[23]` is don't-care (D35)                                                      | M2                                |
 | `TC-OVERLAP`      | L1    | Same-device source and destination ranges that overlap in each direction                                                                  | Result matches the architecture's sequential chunk behavior and the ordered transaction oracle, not an assumed full-buffer `memmove` snapshot | M2                                |
 | `TC-START-ACTIVE` | L1    | START rising edges during fetch, read, write, update, and stall                                                                           | Every active-time edge is ignored and not queued; a later command requires a fresh edge in IDLE                                               | M2                                |
 | `TC-START-HELD`   | L1    | Hold raw START high through acceptance and completion, then lower it                                                                      | Exactly one synchronized rising-edge pulse and no unintended restart                                                                          | M2                                |
@@ -40,7 +40,7 @@ IDs identify required behavior, not Python function names. One implementation ma
 | `TC-RESET-IDLE`   | L1    | Reset from IDLE and while BUS_GNT is active                                                                                               | DONE returns high, BUS_GNT clears, all shared OE clears during reset, and post-reset START uses the fixed head                                | M2                                |
 | `TC-RESET-ACTIVE` | L1    | Reset during every controller state and each externally visible QPI phase                                                                 | Transaction may be truncated by reset, but CE# and OE become reset-safe, working state clears, and no spontaneous resume occurs               | M2                                |
 | `TC-RESET-REPEAT` | L1    | Run one directed chain to normal quit completion, assert and release `rst_n` from IDLE, re-initialize source and destination memory identically, then run the identical chain again with a fresh START | The second run's ordered transaction log and final memory are byte-for-byte identical to the first run; no working state, counter, or pointer carries over across the reset boundary | M2                                |
-| `TC-DEPTH`        | L1    | Run the applicable directed suite at each compile-time `DMA_BUF_DEPTH` in `1..DMA_BUF_DEPTH_MAX` (8), including tapeout **N=5**, via `make depth` or `test/scripts/run_depth_sweep.sh` (one isolated compile per depth; not a cocotb function in `tests.test_dma_directed`) | Final memory and transaction lengths follow `k=min(N, remaining)` with no depth-specific functional change                                    | M5; harness wired; do not claim pass until the full `1..8` loop is green |
+| `TC-DEPTH`        | L1    | Run the applicable directed suite at each compile-time `DMA_BUF_DEPTH` in `1..DMA_BUF_DEPTH_MAX` (8), including tapeout **N=5**, via `make depth` or `test/scripts/run_depth_sweep.sh` (one isolated compile per depth; not a cocotb function in `tests.test_dma_directed`) | Final memory and transaction lengths follow `k=min(N, remaining)` with no depth-specific functional change                                    | M5; **pass** N=1..8 (2026-08-16) |
 
 
 `TC-OVERLAP` records actual V1 byte or chunk ordering. Firmware must not infer stronger overlap semantics than the architecture provides.
@@ -114,7 +114,7 @@ Generate only firmware-legal chains for the main correctness regression:
 - one to eight executable TCDs followed by one quit TCD
 - fixed head at `0x000000` on PSRAM0
 - subsequent TCDs on either device, including address zero as a legal link when it does not create an unintended loop
-- 24-bit pointer bit 23 clear and complete ranges inside `0x000000..0x7FFFFF`
+- Complete ranges inside `0x000000..0x7FFFFF` on `ptr[22:0]` (`ptr[23]` don't-care; D35)
 - big-endian pointer serialization and reserved `CTRL_FLAGS[3:0]` zero (firmware contract; the DUT latches that last nibble and ignores it in V1)
 - independently selected source, destination, and next devices
 - initialized source bytes and deterministic sentinels around destination ranges
@@ -173,9 +173,9 @@ Required invariants are independent of injection point:
 
 RTL exposes `DMA_BUF_DEPTH` as a module parameter (package `DMA_BUF_DEPTH_MAX=8`; V1 tapeout and default sim/Make use **N=5**). Verification elaborates any integer `1..DMA_BUF_DEPTH_MAX` via Makefile `-G`/`-P`.
 
-`TC-DEPTH` (directed suite at each compile-time `DMA_BUF_DEPTH`) is the harness loop `make depth` or `test/scripts/run_depth_sweep.sh`: one isolated compile and directed run per depth, not a dedicated cocotb test in `tests.test_dma_directed`. Do not claim `TC-DEPTH` pass until every depth in `1..8` passes that loop.
+`TC-DEPTH` (directed suite at each compile-time `DMA_BUF_DEPTH`) is the harness loop `make depth` or `test/scripts/run_depth_sweep.sh`: one isolated compile and directed run per depth, not a dedicated cocotb test in `tests.test_dma_directed`. **Pass (2026-08-16):** N=1..8 green (Icarus 13/13 per depth).
 
-`COV-DEPTH` (compile-time depth bins), `COV-DEPTH-LEN`, and `COV-DEPTH-DEVICE` sample from `coverage.json` written per directed window via `CoverageSampler` in `test/common/directed.py`; each compiled `N` hits the matching `COV-DEPTH` bin when its directed run passes. Closure requires all eight depth bins and their crosses; do not claim `COV-DEPTH*` pass until the sweep is green.
+`COV-DEPTH` (compile-time depth bins), `COV-DEPTH-LEN`, and `COV-DEPTH-DEVICE` sample from `coverage.json` written per directed window via `CoverageSampler` in `test/common/directed.py`; each compiled `N` hits the matching `COV-DEPTH` bin when its directed run passes. The 2026-08-16 merge at `test/runs/m5_coverage_closure.json` has all eight depth bins and their required crosses (`closed=true`).
 
 Compile and run depths `1` through `8` in isolated build directories. Depth **5** is the V1 tapeout configuration; other depths are verification configurations for depth-agnostic correctness and do not change the frozen tapeout configuration.
 
@@ -213,16 +213,18 @@ Coverage is sampled from decoded transactions, host-visible behavior, reference-
 | `COV-START-RESULT` | START context x capture result                    | idle accepted, idle uncaptured short pulse, active ignored, request/grant ignored, held-high single capture | 100 percent                                                                 |
 | `COV-RESET-STATE`  | Reset assertion x controller state                | all eight encoded states                                                                                    | 100 percent                                                                 |
 | `COV-RESET-PHASE`  | Reset assertion x external QPI phase              | idle/pad, command, address, wait, read data, write data, termination                                        | 100 percent                                                                 |
-| `COV-DEPTH`        | Compile-time depth                                | `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8` (each integer `1..DMA_BUF_DEPTH_MAX`; bin `5` is tapeout **N=5**) | All bins with assigned suite passing; harness wired via `make depth`; do not claim closure until green |
-| `COV-DEPTH-LEN`    | Depth x length class                              | every applicable `COV-LEN` corner at every depth `1..8`                                                     | 100 percent; do not claim closure until green sweep                         |
-| `COV-DEPTH-DEVICE` | Depth x source/destination tuple                  | all four tuples at every depth `1..8`                                                                       | 100 percent; do not claim closure until green sweep                         |
+| `COV-DEPTH`        | Compile-time depth                                | `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8` (each integer `1..DMA_BUF_DEPTH_MAX`; bin `5` is tapeout **N=5**) | All bins with assigned suite passing; **pass** (2026-08-16) |
+| `COV-DEPTH-LEN`    | Depth x length class                              | every applicable `COV-LEN` corner at every depth `1..8`                                                     | 100 percent; **pass** with reviewed exclusions at N=1/2 |
+| `COV-DEPTH-DEVICE` | Depth x source/destination tuple                  | all four tuples at every depth `1..8`                                                                       | 100 percent; **pass** (2026-08-16) |
 
 
 
 
 ## Coverage closure and exclusions
 
-M5 closes only when:
+**M5 closed (2026-08-16).** Randomized regression and `COV-*` (functional coverage point IDs) closure at tapeout **N=5** / `TIMING_PROFILE=ideal` (zero testbench transport placeholders): Icarus and Verilator seeds 1/2/3/5/8 pass; seed-1 Icarus ≡ Verilator. `TC-DEPTH` (directed suite at each compile-time `DMA_BUF_DEPTH`) **pass** N=1..8 (Icarus 13/13 per depth via `make depth` / `run_depth_sweep.sh`). Merge at `test/runs/m5_coverage_closure.json`: `closed=true`; 20 catalog IDs hit; 13 recorded exclusions (STALL and length-class collapse at N=1/2); reviewer `M5-close`, date 2026-08-16.
+
+M5 closes when:
 
 - every required bin and cross above is hit by a passing run
 - all `TC-*` cases assigned through M5 pass
@@ -248,7 +250,7 @@ Examples of legitimate exclusions are `N-1=0` duplicating the zero bin at depth 
 - Icarus is authoritative for the full required directed suite, four-state behavior, and a representative random seed set.
 - Verilator runs the high-volume legal random suite at L1 and, once assigned, the depth sweep across `1..DMA_BUF_DEPTH_MAX`.
 - Every Verilator-only failure is reduced and reproduced on Icarus, or classified with a retained tool-divergence reproducer.
-- L2 reuses only the high-value subset defined in `09-gate-level-and-x.md`; L2 does not reopen M5 functional coverage.
+- L2 reuses only the high-value subset defined in `09-gate-level-and-x.md` via `tests.test_gate_level` at flattened `DMA_BUF_DEPTH=5`. Bus and reset cases use top pins only (no RTL hierarchy). L2 does not reopen M5 functional coverage. Entry: `test/scripts/run_gl.sh` or `GATES=yes make` (copies `test/results.xml`).
 
 
 

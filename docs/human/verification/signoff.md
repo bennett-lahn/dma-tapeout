@@ -4,22 +4,22 @@ Signoff requires reproducible evidence for the exact RTL or netlist revision and
 
 ## RTL verification freeze
 
-- [ ] M0 through M5 are complete.
+- [x] M0 through M5 are complete (simulation; M4 is deferred (D33)).
 - [ ] Every required simulation row is `pass`: `Q-*`, `CHK-*`, `TC-*`, and `COV-*`.
 - [ ] Both scoreboard axes pass: ordered pin-decoded QPI transactions and final memory on both PSRAM devices.
 - [ ] Same-device copies, both cross-device directions, chaining, `QUIT`, zero length, bus handoff, and reset recovery pass.
 - [x] `Q-LAUNCH` and `Q-RXEDGE` pass at M3 with reproducible nominal and boundary evidence (2026-08-10; fuller path-delay sweep remains a post-M3 follow-up).
-- [ ] Every required `FP-*` safety property proves with the real `qspi_engine`; helper invariants are asserted and proved, required covers produce witnesses, and bounded deadlock checks pass.
-- [ ] Formal assumptions are audited and do not duplicate their conclusions.
+- [ ] `FP-*` safety properties: deferred (D33). Not required for V1 freeze. Do not claim pass.
+- [ ] Formal assumptions are audited and do not duplicate their conclusions. Post-V1 M4 work.
 - [ ] Icarus passes the full required suite and Verilator passes its assigned directed and high-volume subset.
-- [ ] Depths across `1..DMA_BUF_DEPTH_MAX` (8) pass the assigned M5 suite at tapeout depth **N=5** by default and via Makefile `-G`/`-P` overrides; `TC-DEPTH` (directed suite at each compile-time `DMA_BUF_DEPTH`) via `make depth` / `run_depth_sweep.sh`; required `COV-DEPTH*` crosses (`COV-DEPTH*`: functional coverage bins for buffer-depth elaboration, sampled from directed `coverage.json` per compiled `N`) meet closure once the full sweep is green.
+- [x] Depths across `1..DMA_BUF_DEPTH_MAX` (8) pass the assigned M5 suite at tapeout depth **N=5** by default and via Makefile `-G`/`-P` overrides; `TC-DEPTH` (directed suite at each compile-time `DMA_BUF_DEPTH`) via `make depth` / `run_depth_sweep.sh`; required `COV-DEPTH*` crosses (`COV-DEPTH*`: functional coverage bins for buffer-depth elaboration, sampled from directed `coverage.json` per compiled `N`) - **pass (2026-08-16)**
 - [ ] No unresolved reproducible seed or unreviewed exclusion remains.
 - [ ] Every waiver names an owner, rationale, affected configuration, risk, and expiration condition.
 
-Current blockers to this gate (M0-M3 simulation exits are green as of 2026-08-10):
+Current blockers to this gate (M0-M5 simulation exits green as of 2026-08-16):
 
-- M4 formal deferred (may proceed independently; do not claim pass).
-- M5 random / `COV-*` and depth sweep in progress. Wave 4 2026-08-16 partial random green at **N=5** / `ideal`: Icarus seeds 1/2/3/5/8, Verilator seeds 1/2 (`CHK-*`/`Q-*` clean; seed-1 cross-sim match). Still open: Verilator seeds 3/5/8; `TC-DEPTH` / `COV-DEPTH*` (`COV-*` functional coverage point IDs) closure across all integers `1..8` via `make depth` - do not claim those IDs or M5 exit pass until green.
+- M4 formal is deferred (D33); not a V1 freeze blocker.
+- M5 simulation exit **pass (2026-08-16):** random green at **N=5** / `ideal` (zero TB placeholders; Icarus+Verilator seeds 1/2/3/5/8; seed-1 cross-sim match). `TC-DEPTH` (directed suite at each compile-time `DMA_BUF_DEPTH`) **pass** N=1..8 (Icarus, 13/13 per depth). `COV-*` (functional coverage point IDs) merge at `test/runs/m5_coverage_closure.json`: `closed=true` (20 catalog IDs; 13 exclusions STALL + length-class collapse N=1/2; reviewer `M5-close`, 2026-08-16).
 - V1 tapeout and default sim/Make `DMA_BUF_DEPTH` is **N=5** (elaboration `1..8` via Makefile).
 - CI L1 Icarus smoke job still open.
 - M3 follow-ups (not freeze blockers by themselves): margin-gate field presence / boundary ≈0; physical `T-*`. Delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*` is closed (`TC-RXEDGE-RACE-DEVICE-PLANE`).

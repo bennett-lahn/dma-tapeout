@@ -37,8 +37,8 @@ IHP clones (`ttihp-verilog-template/`, `IHP-Open-PDK/`) are not MCU architecture
 
 | Plane | Pins | Firmware use |
 |---|---|---|
-| Inputs (`ui_in`) | `[0]=START`, `[2]=BUS_REQ`; `[1]` and `[7:3]` reserved | Assert levels; hold START long enough for the ASIC input synchronizer |
-| Outputs (`uo_out`) | `[0]=DONE`, `[1]=BUS_GNT`; `[7:2]` open (Q3) | Poll idle and grant; do not invent status bits |
+| Inputs (`ui_in`) | `[0]=START`, `[2]=BUS_REQ`; `[1]` and `[7:3]` unused (drive 0; D34) | Assert levels; hold START long enough for the ASIC input synchronizer |
+| Outputs (`uo_out`) | `[0]=DONE`, `[1]=BUS_GNT`; `[7:2]` unused (tied 0; D34) | Poll idle and grant only |
 | Bidirectional (`uio`) | QSPI PMOD: flash CS, SIO0..3, SCK, RAM A/B CS (see [`system.md`](system.md)) | Drive while `BUS_GNT=1` or `rst_n=0` (D26) |
 
 MCU QSPI OE is **separate** from ASIC `uio_oe`. SDK `uio_oe_pico`: bits set to **1** are driven by the RP2; keep all bits **0** (Hi-Z) unless `BUS_GNT=1` or `rst_n=0`, and clear OE before dropping `BUS_REQ`.
@@ -124,7 +124,7 @@ Also respect firmware-facing ASIC limits:
 
 - `TRANSFER_LEN` max **255** per data TCD (chain for more)
 - ASIC V1 descriptor copy depth `N=1` (D20): ASIC CE# pulses are short by construction; MCU SPI still chunks
-- Valid address range `0x000000..0x7FFFFF` per device
+- Valid address range `0x000000..0x7FFFFF` per device on `ptr[22:0]` (`ptr[23]` don't-care; D35)
 - Release-before-seize on the shared bus
 
 Chunk-size formula vs SPI SCK: llm twin.
@@ -155,16 +155,16 @@ Address zero is a valid link and is not a terminator. For an empty run, place th
 
 ## PSRAM address limits
 
-Each PSRAM has a 23-bit byte address, `A[22:0]`, so its valid range is `0x000000` through `0x7FFFFF` inclusive. Bit 23 of every 24-bit TCD pointer must be zero.
+Each PSRAM has a 23-bit byte address, `A[22:0]`, so its valid range is `0x000000` through `0x7FFFFF` inclusive. Bit 23 of every 24-bit TCD pointer is **don't-care** (may be any value; D35); device select is only in `CTRL_FLAGS`. Use `ptr[22:0]` when checking ranges.
 
 Firmware must validate the complete range of every memory operation before writing or starting a chain:
 
-- An 11-byte TCD fetch is valid only when `NEXT_TCD + 10 <= 0x7FFFFF`. This applies to the fixed head and every linked descriptor.
-- For `TRANSFER_LEN > 0`, the source is valid only when `SRC_PTR + TRANSFER_LEN - 1 <= 0x7FFFFF`.
-- For `TRANSFER_LEN > 0`, the destination is valid only when `DEST_PTR + TRANSFER_LEN - 1 <= 0x7FFFFF`.
+- An 11-byte TCD fetch is valid only when `(NEXT_TCD & 0x7FFFFF) + 10 <= 0x7FFFFF`. This applies to the fixed head and every linked descriptor.
+- For `TRANSFER_LEN > 0`, the source is valid only when `(SRC_PTR & 0x7FFFFF) + TRANSFER_LEN - 1 <= 0x7FFFFF`.
+- For `TRANSFER_LEN > 0`, the destination is valid only when `(DEST_PTR & 0x7FFFFF) + TRANSFER_LEN - 1 <= 0x7FFFFF`.
 - Perform these checks in a widened integer type so the validation calculation itself cannot wrap.
 
-A TCD that starts outside the valid range, or whose TCD fetch, source range, or destination range crosses `0x7FFFFF`, has undefined behavior. This remains undefined even when part of the requested operation lies inside the valid range. V1 does not currently promise an error, halt, clamp, or deterministic wrap response (Q12 still open).
+A TCD whose `A[22:0]` starts outside the valid range, or whose TCD fetch, source range, or destination range crosses `0x7FFFFF`, has **undefined** hardware behavior (D34). Firmware must validate before START.
 
 ## Safe programming sequence
 
@@ -219,7 +219,7 @@ After the cocotb/RTL verification milestones that gate M7 entry are complete, FP
 
 ## Recovery
 
-On DONE timeout or runaway chain: assert `rst_n` (D23), release MCU OE, then under grant re-run SPI reset + Enter Quad on both devices before the next START. Out-of-range / sticky error behavior (Q12) and `uo_out[7:2]` status packing (Q3 remainder) are still open - do not invent bits.
+On DONE timeout or runaway chain: assert `rst_n` (D23), release MCU OE, then under grant re-run SPI reset + Enter Quad on both devices before the next START. There is no ERROR status pin (D34); poll **DONE** and validate chains in firmware before START.
 
 ## Sim relationship
 
@@ -228,8 +228,8 @@ Demoboard firmware is **not** [`../../../test/common/host.py`](../../../test/com
 ## Non-goals (V1 firmware)
 
 - No MCU-side QPI or quad I/O requirement (basic SPI only)
-- No ASIC flash DMA, ALU, cond-stop, or ring (post-V1: [`post-v1.md`](post-v1.md))
+- No ASIC flash DMA, ALU, cond-stop, or ring (kill = `rst_n`, D23)
 - No soft abort pin or soft-abort path (kill with `rst_n` only)
 - No copying TinyDMA-2C UART FPGA firmware design
 
-Unresolved error behavior: [`../../llm/08-open-questions.md`](../../llm/08-open-questions.md) (Q3, Q12).
+**Self-pointing TCD (D35):** a descriptor may point `NEXT_TCD` at itself (or form a cycle). Without `QUIT`, the DMA spins until `rst_n`. Prefer finite `QUIT`-terminated chains for normal demoboard runs.

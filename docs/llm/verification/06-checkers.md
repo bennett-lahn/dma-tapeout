@@ -51,7 +51,7 @@ Every sampled logic value is checked for resolution before integer conversion. `
 |---|---|---:|---:|---|
 | `CHK-PIN-CS-MUTEX` | RAM A CE# and RAM B CE# are never both low. At L1, also fail if OE state makes both appear selected or the resolved bus is ambiguous. | required | required | L0-port at L0, top-observable at L1 |
 | `CHK-PIN-FLASH-HIGH` | While the ASIC drives flash CS, its value is 1. The ASIC never selects flash. | na | required | top-observable |
-| `CHK-PIN-ADDR23-ZERO` | Every decoded ASIC QPI address has address bit 23 equal to 0. Device selection is not encoded in this bit. | required | required | L0-port/pin at L0, top-observable at L1 |
+| `CHK-PIN-ADDR23-ZERO` | **Retired (D35).** Formerly required `A[23]==0` on decoded QPI addresses. Bit 23 is don't-care; models mask it and continue on `A[22:0]`. Do not fail a run for this ID. | retired | retired | historical ID only |
 | `CHK-PIN-KNOWN` | Driven CE#, SCK, and SIO values, and sampled read SIO values, contain no unknown or high-impedance bit where the protocol requires a value. | required | required | L0-port at L0, top-observable at L1 |
 | `CHK-PIN-SIO-OWN` | ASIC and any selected PSRAM/SPI device model never drive the same bidirectional SIO bit at the same time. Fail on any overlapping OE/model-drive window, including when both drive the same known value. Judge ownership from ASIC `uio_oe` (or L0 SIO OE) and the model's drive enable after the timing layer's delays when present; do not infer safety from the resolved net alone. | required | required | L0-port at L0, top-observable at L1 |
 | `CHK-PIN-SCK-PARK` | SCK stays low for the entire interval while no device is selected: flash CS, RAM A CE#, and RAM B CE# all high at L1, or both engine CS outputs high at L0. No erroneous SCK cycle occurs while every device is deselected, regardless of which side of the shared bus currently owns drive. | required | required | L0-port at L0, top-observable at L1 |
@@ -173,7 +173,7 @@ Monitor ownership under `test/monitors/`:
 
 The checker manager starts monitors before reset, collects one result per ID, and raises one aggregate test failure after preserving artifacts. A fatal contention or unknown-value violation may stop stimulus immediately after artifacts are captured.
 
-Do not derive observed pin facts from internal request fields. For example, `CHK-PIN-ADDR23-ZERO` decodes the six address nibbles from SIO; `CHK-HS-REQ-STABLE` separately checks the internal request bus. Agreement between independent observations is useful evidence.
+Do not derive observed pin facts from internal request fields. For example, `CHK-PIN-KNOWN` decodes unresolved SIO from the pins; `CHK-HS-REQ-STABLE` separately checks the internal request bus. Agreement between independent observations is useful evidence. (`CHK-PIN-ADDR23-ZERO` is retired by D35.)
 
 ## Pending-item lifecycle (single cleanup mechanism)
 

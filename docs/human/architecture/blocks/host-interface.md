@@ -1,6 +1,6 @@
 # Host / Mode Control
 
-Status: implemented in `top.v` + `sys_controller.sv` (exercised by M2 reset/bus and ownership suites). Bus-ownership OE model + idle/START/DONE frozen (D14/D18); **no ABORT** (D23: use `rst_n`). Pass-through is **request/grant** (`BUS_REQ` / `BUS_GNT`, D22). ASIC is **bus keeper** while `rst_n=1 && ~BUS_GNT`; while `rst_n=0`, shared OE is off and MCU drive of QSPI nets is legal (D26; board 10 kΩ CS pull-ups hold CE# unless MCU selects). Pins: **START** = `ui_in[0]`, **BUS_REQ** = `ui_in[2]`, **DONE** = `uo_out[0]`, **BUS_GNT** = `uo_out[1]`; `ui_in[1]` reserved. No head-pointer pins. QSPI on `uio` per system I/O map. `uo_out[7:2]` status / DFT packing still open.
+Status: implemented in `top.v` + `sys_controller.sv` (exercised by M2 reset/bus and ownership suites). Bus-ownership OE model + idle/START/DONE frozen (D14/D18); kill via **`rst_n`** (D23). Pass-through is **request/grant** (`BUS_REQ` / `BUS_GNT`, D22). ASIC is **bus keeper** while `rst_n=1 && ~BUS_GNT`; while `rst_n=0`, shared OE is off and MCU drive of QSPI nets is legal (D26; board 10 kΩ CS pull-ups hold CE# unless MCU selects). Live pins: **START** = `ui_in[0]`, **BUS_REQ** = `ui_in[2]`, **DONE** = `uo_out[0]`, **BUS_GNT** = `uo_out[1]`. Unused `ui_in[1]`, `ui_in[7:3]`, and `uo_out[7:2]` tied 0 (D34). No head-pointer pins. QSPI on `uio` per system I/O map.
 
 ## Role
 
@@ -8,7 +8,7 @@ Describe the host-facing behavior of the integrated `sys_controller` module. Hos
 
 - Mode switch: pass-through vs DMA master (via pad OE + `BUS_REQ`/`BUS_GNT`, not a second QSPI cable)
 - Accept START under TT pin limits (fixed head; no head vector)
-- Drive status: done (= idle), bus grant, error, debug mux
+- Drive status: **DONE** (= idle) and **BUS_GNT** only
 
 ## Top-level host sync
 
@@ -34,7 +34,7 @@ Each design gets three I/O groups (plus `clk` / `rst_n` / `ena`):
 | Port          | Direction     | Role                                |
 | ------------- | ------------- | ----------------------------------- |
 | `ui_in[7:0]`  | Input only    | Host control / config into the ASIC |
-| `uo_out[7:0]` | Output only   | Status / DONE / DFT out of the ASIC |
+| `uo_out[7:0]` | Output only   | Status out of the ASIC              |
 | `uio[7:0]`    | Bidirectional | Shared QSPI bus to the PSRAM PMOD   |
 
 
@@ -84,16 +84,17 @@ Control plane:
 | Pin                         | Assignment                           |
 | --------------------------- | ------------------------------------ |
 | `ui_in[0]`                  | **START**                            |
-| `ui_in[1]`                  | Reserved (ABORT removed; D23)        |
+| `ui_in[1]`                  | Unused (tied 0; D34)                 |
 | `ui_in[2]`                  | **BUS_REQ** (MCU wants `uio`)        |
+| `ui_in[7:3]`                | Unused (tied 0; D34)                 |
 | `uo_out[0]`                 | **DONE** (= ASIC idle)               |
 | `uo_out[1]`                 | **BUS_GNT** (MCU may drive `uio`)    |
-| `ui_in[7:3]`, `uo_out[7:2]` | Reserved (status/DFT - packing open) |
+| `uo_out[7:2]`               | Unused (tied 0; D34)                 |
 
 
 
 
-## Host protocol (V1 freeze / D14 / D18 / D19 / D22 / D23 / D26)
+## Host protocol (V1 freeze / D14 / D18 / D19 / D22 / D23 / D26 / D34)
 
 
 | Rule             | Behavior                                                                                                      |
@@ -108,7 +109,7 @@ Control plane:
 | BUS_REQ          | MCU priority: finish current QPI txn (atomic), then **release** `uio_oe` + assert `BUS_GNT`; no new DMA txn while REQ   |
 | BUS_GNT release  | After MCU Hi-Z and drops `BUS_REQ`, ASIC drops `BUS_GNT` and **resumes parking**; if not idle, DMA may resume |
 | Bus keeper       | While `rst_n=1` and `~BUS_GNT`, ASIC drives all CS high and SCK low; SIO don't-care in park after `tHZ`, float on dummy/read and through `tHZ` (D26) |
-| Kill / reset drive | No soft abort; assert **`rst_n`** to stop a runaway DMA (D23). While `rst_n=0`, MCU drive is legal (D26); board pull-ups hold CE# unless MCU selects |
+| Kill / reset drive | Assert **`rst_n`** to stop a runaway DMA (D23). While `rst_n=0`, MCU drive is legal (D26); board pull-ups hold CE# unless MCU selects |
 
 
 
@@ -122,8 +123,7 @@ Control plane:
 | BUS_REQ (`ui_in[2]`)    | Frozen index + behavior (D22)    |
 | DONE (`uo_out[0]`)      | Frozen index + behavior (= idle) |
 | BUS_GNT (`uo_out[1]`)   | Frozen index + behavior (D22)    |
-| ERROR / ACTIVE / DFT    | Optional; `uo_out[7:2]` open     |
-| `ui_in[1]`              | Reserved (was ABORT)             |
+| Unused host bits        | `ui_in[1]`, `ui_in[7:3]`, `uo_out[7:2]` tied 0 (D34) |
 
 
 ### `sys_controller` RTL interface
@@ -158,7 +158,7 @@ Rule for every handoff: **release before seize**.
 | PSRAM | CE# should idle high once power-up wait is done                     |
 
 
-While active-low reset is asserted (`rst_n=0`), the top level forces all shared `uio_oe` bits low and the MCU **may** master the shared QSPI nets (D26; TT mux often holds a deselected design in reset). Board CS pull-ups keep devices deselected until the MCU drives a CS low. After `rst_n` deasserts, ASIC resumes parking unless `BUS_GNT` is high. Asserting reset mid-run is the V1 kill path (D23); it is not a soft-abort.
+While active-low reset is asserted (`rst_n=0`), the top level forces all shared `uio_oe` bits low and the MCU **may** master the shared QSPI nets (D26; TT mux often holds a deselected design in reset). Board CS pull-ups keep devices deselected until the MCU drives a CS low. After `rst_n` deasserts, ASIC resumes parking unless `BUS_GNT` is high. Asserting reset mid-run is the V1 kill path (D23); there is no soft-abort pin (D34).
 
 ### Phase 1 - MCU pass-through (programming)
 
@@ -197,71 +197,17 @@ Ordered sequence:
 
 START is ignored in this phase. **BUS_REQ** pauses after the current QPI transaction (atomic), grants the bus, then resumes DMA when REQ drops (unless quit / `rst_n` also applies).
 
-#### Bidirectional ownership matrix (normative summary)
+### Phase 4 - Handoff ASIC → MCU (BUS_REQ mid-run or after DONE)
 
-Canonical detail: [`../../../llm/03-architecture.md`](../../../llm/03-architecture.md) (Bidirectional I/O ownership specification). This table is the human summary used by firmware and verification (`CHK-PIN-SIO-OWN` / `Q-SIO-OWN` / `CHK-ARB-*`).
+1. ASIC finishes the in-flight QPI transaction (atomic).
+2. ASIC releases all shared `uio_oe` and asserts **BUS_GNT**.
+3. MCU waits for **BUS_GNT**, then enables its QSPI drivers.
+4. When finished, MCU Hi-Z, drops **BUS_REQ**, waits for **BUS_GNT** low.
+5. If DMA was paused (not quit), ASIC resumes when REQ clears.
 
-| Phase | Flash/RAM CS | SCK | SIO[3:0] |
-| --- | --- | --- | --- |
-| `rst_n=0` | ASIC Hi-Z; board pull-ups unless MCU drives CS | ASIC Hi-Z; MCU may drive | ASIC Hi-Z; MCU or selected memory per host phase (MCU-safe window, D26) |
-| ASIC park (`rst_n=1`, `~BUS_GNT`, no live txn) | ASIC drives all CS **high** | ASIC drives **low** | ASIC drives don't-care; MCU/PSRAM Hi-Z |
-| MCU grant (`BUS_GNT=1`) | ASIC Hi-Z; MCU owns CS | ASIC Hi-Z; MCU owns SCK | ASIC Hi-Z; MCU or selected memory per host phase |
-| ASIC cmd / addr / write | ASIC drives (one RAM CS low) | ASIC toggles | **ASIC drives**; selected PSRAM Hi-Z |
-| ASIC dummy (`0xEB`) | ASIC drives (one RAM CS low) | ASIC toggles | **Float** (ASIC Hi-Z; PSRAM not sourcing yet) |
-| ASIC read data | ASIC drives (one RAM CS low) | ASIC toggles | **PSRAM drives**; ASIC Hi-Z (sample `uio_in`) |
-| Post-CE# `tHZ` | ASIC may park CS high | ASIC may park SCK low | **ASIC SIO stays Hi-Z** until `tHZ`; device may still drive, then Hi-Z |
-| After `tHZ` / IDLE park | ASIC park | ASIC park | ASIC drives don't-care again |
+After **DONE** (quit or end of programmed chain), same grant path applies for SPI dump / re-init.
 
-**MCU under grant or `rst_n=0`:** drive SIO for command/address/write; float SIO for dummy/read so the selected flash or PSRAM can drive. Never enable MCU drivers while `rst_n=1` and `BUS_GNT=0`.
-
-**Illegal:** ASIC and PSRAM/flash co-driving SIO; MCU driving while `rst_n=1` and `~BUS_GNT`; ASIC OE while `BUS_GNT`; both RAM CE# low; ASIC driving flash CS low.
-
-#### Sub-phases: SIO `uio_oe` while ASIC is master
-
-While `~BUS_GNT`, CS (flash + both RAMs) and SCK stay driven for the live CE# window and for park. Flash CS is always parked high. Inactive RAM CS is parked high; the selected RAM CS follows the engine (low during the CE# window). SIO0..3 float for dummy/read and through post-CE# `tHZ`; every other keeper phase drives a don't-care:
-
-
-| QSPI phase                     | SIO `uio_oe` | ASIC uses                      | Device SIO |
-| ------------------------------ | ------------ | ------------------------------ | ---------- |
-| Command / address / write data | `1` (drive)  | `uio_out` nibbles/bits         | Hi-Z |
-| Dummy / wait                   | `0` (listen) | ignore or don't-care `uio_out` | Hi-Z (not sourcing yet) |
-| Read data                      | `0` (listen) | sample `uio_in`                | Selected PSRAM drives |
-| Post-CE# through `tHZ`         | `0` (listen) | do not reclaim yet             | May drive until `tHZ`, then Hi-Z |
-| Between txns / IDLE (park)     | `1` (drive) after `tHZ` | Don't-care `uio_out` (`0`); CS/SCK also driven | Hi-Z |
-
-
-Data path is **QPI** (`0xEB` / `0x02`; D15/D17). ASIC emits no SPI and no Enter/Exit Quad; MCU must leave both devices in QPI before START.
-
-RTL shape (conceptual):
-
-```systemverilog
-assign uio_out = qspi_out; // engine already parks cs_n high / sclk low in IDLE
-// Bus keeper while ~BUS_GNT: drive CS + SCK always; SIO follows the engine mask.
-wire park = ~bus_gnt;
-assign uio_oe = park ? {ram_b_cs_oe, ram_a_cs_oe, sio_oe_mux, sck_oe, flash_cs_oe} : 8'h00;
-// flash_cs_oe / sck_oe / both ram_cs_oe = 1 while park
-// sio_oe_mux = engine sio_oe: drive don't-care except float (0) during
-// dummy/read and through post-CE# tHZ before park reclaim
-// never drive flash CS low; never both RAM CE# low
-```
-
-
-
-### Phase 4 - Handoff ASIC → MCU (IDLE / DONE or yield)
-
-Ordered sequence (idle path):
-
-1. ASIC hits quit TCD; raises CE# high (no in-flight copy for that TCD).
-2. ASIC enters idle and **continues parking** (CS high / SCK low) while `~BUS_GNT`.
-3. ASIC asserts **DONE** on `uo_out[0]`.
-4. MCU asserts **BUS_REQ**, waits for **BUS_GNT** (ASIC releases OE), then re-enables its QSPI GPIOs.
-5. A later **START** always begins again at **`0x000000` / PSRAM 0** (D23).
-
-Yield path (mid-DMA, D22): same OE release + `BUS_GNT`, but DONE stays low; after MCU drops `BUS_REQ`, ASIC drops `BUS_GNT`, resumes parking, and may continue the descriptor chain.
-
-Illegal: MCU drives bus while `rst_n=1` and `BUS_GNT` is low.
-
-### Phase 5 - Illegal / contention
+## Contention hazards
 
 If MCU and ASIC both enable drivers on the same `uio` net with disagreeing levels:
 
@@ -273,8 +219,7 @@ Mitigations:
 1. ASIC parks while `~BUS_GNT`; releases fully only under grant / reset (D26)
 2. Firmware: drive only while `BUS_GNT` or `rst_n=0`; Hi-Z before dropping `BUS_REQ` and before START
 3. Verification: cover double-drive and "host drives without grant while out of reset" cases
-4. Optional sticky error if activity is detected on the bus while ASIC believes it is master (best-effort; not a hard interlock)
-5. Board 10 kΩ CS pull-ups limit CE# float during reset / pre-enable windows
+4. Board 10 kΩ CS pull-ups limit CE# float during reset / pre-enable windows
 
 
 
@@ -284,15 +229,9 @@ Mitigations:
 - On START (only from idle, `~BUS_REQ`): DONE low; ASIC continues as bus keeper / DMA master (RAM A/B CS mux; flash CS parked high) and runs the descriptor engine
 - Mid-run `BUS_REQ`: finish current QPI txn, release OE, grant bus, pause DMA; resume parking + DMA when REQ cleared
 - On quit TCD: idle again (DONE) with parking; next START refetches fixed head; grant still follows REQ
-- Kill mid-run: `rst_n` (no soft abort); board CS pull-ups hold CE# during reset
+- Kill mid-run: `rst_n` only (D23/D34)
 - Fixed head: every START fetch is `0x000000` / PSRAM 0
-
-
-
-## Open
-
-- Error sticky bits and other illegal host sequences
-- DFT / status mux on `uo_out[7:2]`
+- Bad / out-of-range chains: firmware validates before START; undefined at runtime; recover with `rst_n` (D34)
 
 
 
@@ -303,5 +242,4 @@ Mitigations:
 - Descriptor FSM (`uio_oe` arbiter + yield): `[descriptor-fsm.md](descriptor-fsm.md)`
 - QSPI engine (phase OE when granted): `[qspi-engine.md](qspi-engine.md)`
 - Agent detail: `[../../../llm/03-architecture.md](../../../llm/03-architecture.md)`
-- Open questions: `[../../../llm/08-open-questions.md](../../../llm/08-open-questions.md)` (Q3 remainder, Q12)
-- Decisions: D14 / D15 / D18 / D19 / D22 / D23 / D26 in `[../../../llm/07-decision-log.md](../../../llm/07-decision-log.md)`
+- Decisions: D14 / D15 / D18 / D19 / D22 / D23 / D26 / D34 in `[../../../llm/07-decision-log.md](../../../llm/07-decision-log.md)`

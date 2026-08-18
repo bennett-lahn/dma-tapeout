@@ -190,7 +190,7 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 | Pass-through | ~~Enabled iff DONE (idle); disabled while not idle (DMA active).~~ **Superseded by D22 / amended D26:** MCU may drive `uio` while `BUS_GNT` is high **or** `rst_n` is low. |
 | Abort | ~~If **ABORT** asserted while active: finish the **current QPI transaction**, then transition to IDLE~~ **Superseded by D23:** no ABORT pin; use **`rst_n`** to stop a runaway DMA |
 
-~~Pin indices open for ABORT / head.~~ **Superseded by D18:** `ui_in[0]=START`, ~~`ui_in[1]=ABORT`~~, `uo_out[0]=DONE`; no head-pointer pins. **D23:** ABORT removed; `ui_in[1]` reserved. **D22:** `ui_in[2]=BUS_REQ`, `uo_out[1]=BUS_GNT`; `ui_in[7:3]` / `uo_out[7:2]` still open for status/DFT.
+~~Pin indices open for ABORT / head.~~ **Superseded by D18:** `ui_in[0]=START`, `uo_out[0]=DONE`; no head-pointer pins. **D23:** no soft ABORT (kill via `rst_n`). **D22:** `ui_in[2]=BUS_REQ`, `uo_out[1]=BUS_GNT`. **D34:** `ui_in[1]`, `ui_in[7:3]`, and `uo_out[7:2]` permanently unused (tied 0); no ERROR / DFT observe.
 
 **Supersedes Q4 (partial):** no host-ACK gate for IDLE restore. **Superseded for drive legality by D22:** MCU drives only under `BUS_GNT`, not merely when DONE.
 
@@ -344,7 +344,7 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 **Decision:**
 
-1. **Revoke pointer-MSB device select (D19) for V1.** `SRC_PTR` / `DEST_PTR` / `NEXT_TCD` are **byte addresses** only. QSPI address phase uses `ptr[22:0]`; `ptr[23]` is unused (drive 0).
+1. **Revoke pointer-MSB device select (D19) for V1.** `SRC_PTR` / `DEST_PTR` / `NEXT_TCD` are **byte addresses** only. QSPI address phase uses `ptr[22:0]`; ~~`ptr[23]` is unused (drive 0)~~ **superseded by D35:** `ptr[23]` is don't-care (may be any value).
 2. **Three device-select flags** live in **`CTRL_FLAGS`**, taking former reserved bits so the TCD stays **11 bytes / 88 bits**:
 
 ~~| Bits | Name | Encoding |~~
@@ -414,14 +414,14 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/human/architec
    - Chip-level TT wrapper uses **`sg13g2_IOPadIn`** for `clk`/`rst_n`/`ui_in`, **`sg13g2_IOPadOut30mA`** for `uo_out`, **`sg13g2_IOPadInOut30mA`** for `uio` (not the 4 mA variants).
 4. **I/O speed:** after searching local `IHP-Open-PDK` IO library docs (`sg13g2_io_*.pdf`) and liberty (`sg13g2_io_typ_1p2V_3p3V_25C.lib`), **no published maximum toggle frequency** exists for these pads. Cite delay / `max_capacitance` / `max_transition` + TT mux `signoff.sdc` budgets instead. **Do not** treat sky130's 66 MHz input / 33 MHz output / 4 mA pad ratings as binding on this project.
 5. **Clock policy (D16) stays numerically the same** (66 MHz `clk`, SCK=clk/2, rising-edge RX) with the amended justification in D16. Phase 3 checks `T-GPIO-IN` / `T-GPIO-OUT` / `T-GPIO-LIB` in `11-timing-analysis.md`.
-6. **Tiles:** use IHP tile boxes (1x1 ≈ 202.08 × 154.98 µm; 1x2 ≈ 202.08 × 313.74 µm). Soft ~500 DFF / 2-tile ceiling retained until first IHP synthesis; do not assume sky130 DFF density.
+6. **Tiles:** use IHP tile boxes (1x1 ≈ 202.08 × 154.98 µm; 1x2 ≈ 202.08 × 313.74 µm). Soft ~500 DFF / 2-tile ceiling retained until first IHP synthesis; do not assume sky130 DFF density. **D36 supersedes the operational tile count:** V1 is **1x1 only**; `1x2` is out of budget.
 7. Wrapper / flow notes: chip top is `tt_ihp_wrapper` (not caravel openframe); project GL netlists are unpowered (`nl`); template default `CLOCK_PERIOD` is 20 ns (50 MHz) - raise to ~15.15 ns when targeting 66 MHz in `src/config.json` / `info.yaml`.
 
 **Why:** User selected the IHP shuttle / template. SG13G2 3.3 V I/O keeps the APS6404L / QSPI PMOD plan intact. Stronger TT pad drive (30 mA) removes the sky130 output-slew argument that forced SCK≤33 MHz; half-rate SCK is kept for other reasons (D16).
 
 **DFF / tile impact:** none to RTL; area/DFF heuristics need an IHP harden before any budget relaxation.
 
-**Follow-up (2026-08):** Manual LibreLane harden on `ttihp-verilog-template` (Nix, `CLOCK_PERIOD` 15.15 ns) closed **1x1** with **158** mapped DFFs; DRC/LVS/timing pass. Soft ~500 DFF ceiling retained. Runbook: [`13-hardening-librelane.md`](13-hardening-librelane.md).
+**Follow-up (2026-08):** Manual LibreLane harden on `ttihp-verilog-template` (Nix, `CLOCK_PERIOD` 15.15 ns) closed **1x1** with **158** mapped DFFs; DRC/LVS/timing pass. Soft ~500 DFF ceiling retained at the time. **D36** later supersedes the operational tile count (1x1 only; ~200 DFF warning on 1x1). Runbook: [`13-hardening-librelane.md`](13-hardening-librelane.md).
 
 Detail: `02-constraints.md`, `11-timing-analysis.md`, human `architecture/limitations.md`.
 
@@ -508,3 +508,68 @@ Detail: `docs/llm/04-tcd-and-datapath.md`, `docs/human/architecture/blocks/tcd.m
 **Supersedes:** D24 `CTRL_FLAGS` bit map (`QUIT` bit 0, device bits 1-3, reserved `[7:4]`); D25 item 3 ("bit numbering does not change").
 
 Detail: `docs/llm/04-tcd-and-datapath.md`, `docs/human/architecture/blocks/tcd.md`, `docs/human/architecture/blocks/working-registers.md`.
+
+## D33 - Formal M4 is post-V1
+
+**Decision:**
+
+1. Milestone **M4** (`FP-*` control-plane proofs in `verification/07-formal.md`) is a **post-V1 additional feature**, not a V1 RTL verification freeze gate.
+2. V1 freeze requires simulation exits **M0–M3** and **M5**. It does **not** require a SymbiYosys pass.
+3. Formal stubs under `test/formal/` stay the post-V1 starting point. Do not claim M4 pass. Do not treat missing `FP-*` rows as a V1 blocker.
+
+**Why:** Control-plane proofs do not add shuttle-visible DMA function. M0–M5 already cover the V1 functional path. Keeping the catalog documented lets formal be picked up after tapeout without inventing IDs.
+
+**DFF / tile impact:** none; process / verification-scope decision only.
+
+Detail: `docs/llm/10-post-v1-features.md`, `docs/human/architecture/post-v1.md`, `docs/llm/verification/01-strategy.md`, `docs/llm/verification/07-formal.md`.
+
+## D34 - Unused host pins tied low; no ERROR / DFT observe
+
+**Decision:**
+
+1. **`ui_in[1]`, `ui_in[7:3]`, and `uo_out[7:2]` are permanently unused.** RTL drives `uo_out[7:2] = 0`. Firmware must keep unused `ui_in` bits at 0. No future assignment on these pins for ABORT, ERROR, status codes, or FSM/DFT observe mux.
+2. **No on-chip ERROR logic:** no sticky error flops, no hardware out-of-range detect, no halt-on-bad-TCD. Illegal or out-of-range chains are **firmware-validate before START**; if violated, behavior is **undefined**; recover with **`rst_n`** (D23).
+3. Closes **Q3** remainder (host pin packing) and **Q12** (error model).
+
+**Why:** I/O budget and DFF cost; demoboard MCU cannot usefully sample 66 MHz FSM state on spare outputs; simulation and firmware validation cover debug.
+
+**DFF / tile impact:** none (explicit tie-offs only).
+
+**Supersedes:** open-status / ERROR / DFT-mux planning on `uo_out[7:2]` and optional `ui_in[7:3]` / `ui_in[1]`; D22 note that those pins were "still open for status/DFT".
+
+Detail: `docs/llm/03-architecture.md`, `docs/human/architecture/blocks/host-interface.md`, `docs/llm/08-open-questions.md`.
+
+## D35 - Self-pointing TCD allowed; `ptr[23]` unconstrained
+
+**Decision:**
+
+1. **Self-pointing / cyclic `NEXT_TCD` is allowed (closes Q5 remainder).** A descriptor may set `NEXT_TCD` (and `NEXT_DEVICE`) so the next fetch targets the same slot, or any cycle without `QUIT` / post-V1 cond-stop. Hardware has no cycle detect. Without `QUIT`, the DMA **spins until `rst_n`** (D23). Firmware and finite sim stimulus may still prefer acyclic chains that end in `QUIT`; that is a programming convenience, not a hardware reject.
+2. **`ptr[23]` is unconstrained (don't-care).** `SRC_PTR` / `DEST_PTR` / `NEXT_TCD` remain 24-bit fields. Device select stays in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24). The useful address is **`ptr[22:0]`** (`A[22:0]`, range `0x000000..0x7FFFFF`). Bit 23 is **not** a device select, **not** a firmware-required zero, and **not** meaningful address information the device consumes. If present in the latched pointer, it may appear in the 24-bit QPI address phase on the wire; the PSRAM still uses only `A[22:0]`.
+3. **OOR validation unchanged for `A[22:0]`.** Firmware (and legal stimulus) must still keep every complete TCD fetch / source / dest span inside `0x000000..0x7FFFFF` using widened arithmetic on the address bits (`ptr[22:0]`). Crossing that window remains undefined (D34).
+4. **Verification:** retire required `ptr[23]=0` / `addr[23]=0` rules. In particular, do not require `CHK-PIN-ADDR23-ZERO`, model `Q-ADDR23`, or formal `FP-ADDR-MSB` as V1 pass criteria. Models and pin decode mask `A[23]` and continue the transaction on `A[22:0]`.
+
+**Why:** Matches APS6404L (23-bit address) and D24 device-in-flags; avoids artificial firmware/checker constraints on a spare MSB; acknowledges that loops without `QUIT` are only stoppable by reset.
+
+**DFF / tile impact:** none.
+
+**Supersedes:** D24 item 1 language that `ptr[23]` is unused (drive 0); Q1 / Q5 / Q13 wording that required bit 23 clear; open Q5 self-point remainder.
+
+Detail: `docs/llm/08-open-questions.md`, `docs/llm/03-architecture.md`, `docs/llm/04-tcd-and-datapath.md`, `docs/human/architecture/firmware.md`, `docs/human/architecture/system.md`, `docs/llm/verification/06-checkers.md`.
+
+## D36 - V1 operational tile budget is 1x1 only
+
+**Decision:**
+
+1. Operational V1 tile budget is **1x1 only** (one Tiny Tapeout tile). `1x2` / 2-tile is **out of budget**.
+2. If tapeout `DMA_BUF_DEPTH` **N=5** does not fit or time-close on 1x1, cut area (placement density, hold repair, or `DMA_BUF_DEPTH`). Never grow tiles.
+3. Soft DFF caution on 1x1: treat **~200 DFFs** as the warning line (first harden ~158 DFFs, ~60% pre-fill util). Hard gate: the design **fits and times** on `tt_block_1x1`.
+4. The old ~500 DFF / 2-tile figure is **historical** (pre-harden planning heuristic). It is not the live ceiling.
+5. TinyDMA-2C prior-art wording that a SPI PSRAM DMA can fit in 2 tiles / 1x2 remains labeled prior art (D3). That is not this project's budget.
+
+**Why:** Manual IHP LibreLane already closed **1x1 @ 66 MHz** with ~158 mapped DFFs. Taking a second tile as an N=5 or area escape would spend shuttle budget the first harden showed we do not need. If N=5 pressure appears, shrink the design rather than grow the die.
+
+**DFF / tile impact:** none to RTL by itself. Binds later growth (including N=5 re-harden) to 1x1 fit and timing. If the warning line is approached, prefer density / hold-repair / buffer-depth cuts.
+
+**Supersedes:** D27 item 6 operational tile count and the ~500 DFF / 2-tile soft ceiling. IHP 1x1 / 1x2 geometry numbers in D27 remain valid as published tile boxes.
+
+Detail: `02-constraints.md`, `13-hardening-librelane.md`, human `overview.md`, `architecture/limitations.md`, `architecture/hardening.md`.

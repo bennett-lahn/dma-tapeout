@@ -22,7 +22,7 @@ Hard CE# / clock limits are summarized in `[../limitations.md](../limitations.md
 
 ### Cross-device transfers
 
-Shared SIO bus ⇒ only one CE# low at a time. A→B (or B→A) is: read byte from src device, raise CE#, then write byte to dest device. Same APS6404L QPI opcodes on both devices. Device select comes from pointer MSBs (`ptr[23]`).
+Shared SIO bus ⇒ only one CE# low at a time. A→B (or B→A) is: read byte from src device, raise CE#, then write byte to dest device. Same APS6404L QPI opcodes on both devices. Device select comes from `CTRL_FLAGS` (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24), not from `ptr[23]`.
 
 ## SPI vs QPI (D15 / D17)
 
@@ -39,7 +39,7 @@ ASIC expects both devices already in **QPI mode** before START.
 ## Transaction phases (QPI)
 
 1. **Command** - 8-bit opcode (2 SCK at 4 bits/SCK)
-2. **Address** - **24-bit** phase on the wire (6 SCK). APS6404L consumes `A[22:0]` only; the MSB of this phase is unused (`addr[23]=0`). Device/CS comes from `device_sel`, not that MSB.
+2. **Address** - **24-bit** phase on the wire (6 SCK). APS6404L consumes `A[22:0]` only; the MSB of this phase is don't-care (`addr[23]` may be any value; D35). Device/CS comes from `device_sel`, not that MSB.
 3. **Wait / dummy** - 6 SCK for `0xEB`; float host data pins. No wait for write.
 4. **Data** - sample read data on rising SCK; 2 SCK per byte in quad mode
 
@@ -59,8 +59,8 @@ Start legality is `~busy`. Write/read length is entirely from `byte_len` (engine
 | `rst_n` | in | 1 | Sync **active-low** reset. |
 | `txn_valid` | in | 1 | **1-`clk` pulse** to start; legal **only when `~busy`**. |
 | `cmd` | in | `qspi_cmd_t` | V1: `QSPI_CMD_FAST_READ` (`0xEB`) or `QSPI_CMD_WRITE` (`0x02`). Hold until `!busy`. |
-| `addr` | in | `qspi_addr_t` `[23:0]` | Full 24-bit QPI address phase. Device uses `addr[22:0]` as `A[22:0]`; **`addr[23]=0`**. Do not put `ptr[23]` here. Hold until `!busy`. |
-| `device_sel` | in | `qspi_device_sel_t` | `QSPI_PSRAM0` / `QSPI_PSRAM1` from `ptr[23]`; steers `ram_*_cs_n`. Hold until `!busy`. |
+| `addr` | in | `qspi_addr_t` `[23:0]` | Full 24-bit QPI address phase. Device uses `addr[22:0]` as `A[22:0]`; **`addr[23]` don't-care** (D35). Hold until `!busy`. |
+| `device_sel` | in | `qspi_device_sel_t` | `QSPI_PSRAM0` / `QSPI_PSRAM1` from `CTRL_FLAGS` device bits; steers `ram_*_cs_n`. Hold until `!busy`. |
 | `byte_len` | in | `qpi_byte_len_t` | Payload bytes this CE# (FETCH=`QPI_TCD_BYTES`, data=`k` ≤ `N`). `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)`, `QPI_MAX_BYTES = max(DMA_BUF_DEPTH_MAX, QPI_TCD_BYTES)`. Hold until `!busy`. |
 | `wdata` | in | `[3:0]` | Write nibble. **Must be valid on the `txn_valid` cycle**. When `wdata_next` asserts, the **next** nibble must already be on `wdata` **before the next `clk` cycle** (same-cycle response) so the engine has setup time into the SPI/SIO path for the following rising SCK. |
 | `busy` | out | 1 | High while not `IDLE` (in flight through CE# complete). Start qualifier; OE reclaim / BUS_GNT wait for 0. |

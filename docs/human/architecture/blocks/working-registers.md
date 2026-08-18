@@ -10,10 +10,10 @@ Hold only the **currently executing TCD** on-chip. Static multi-channel register
 
 | Field | Width | Role |
 |---|---|---|
-| `SRC_PTR` | 24 | Source byte address (`[22:0]` on wire; `[23]` unused / 0) |
-| `DEST_PTR` | 24 | Dest byte address (`[22:0]` on wire; `[23]` unused / 0) |
+| `SRC_PTR` | 24 | Source byte address (`[22:0]` on wire; `[23]` don't-care; D35) |
+| `DEST_PTR` | 24 | Dest byte address (`[22:0]` on wire; `[23]` don't-care; D35) |
 | `TRANSFER_LEN` | 8 | Bytes remaining in this descriptor (0 = no-op) |
-| `NEXT_TCD` | 24 | Next descriptor byte address (`[22:0]` on wire; `[23]` unused / 0) |
+| `NEXT_TCD` | 24 | Next descriptor byte address (`[22:0]` on wire; `[23]` don't-care; D35) |
 | `NEXT_DEVICE` | 1 | Next-TCD device (`CTRL_FLAGS` bit 7) |
 | `DEST_DEVICE` | 1 | Dest device (`CTRL_FLAGS` bit 6) |
 | `SRC_DEVICE` | 1 | Source device (`CTRL_FLAGS` bit 5) |
@@ -38,7 +38,6 @@ Approximate working metadata: **88 DFFs** (24+24+8+24+8 flags), plus:
 - **Data buffer** between read and write (**1 byte / 8 DFFs for V1**, nibble shift register; D20)
 - FSM state flops
 - QSPI shifter / bit counters
-- Error sticky bits
 
 ### Data buffer depth (D20)
 
@@ -46,7 +45,7 @@ V1 implements a **1-byte** RX→TX hold as a nibble shift register (LSB-insert o
 
 TCD FETCH is also a shift register: all 22 wire nibbles into `tcd_t`, including the last nibble (`CTRL_FLAGS[3:0]` reserved).
 
-No on-chip head pointer (fixed start at `0x000000` / PSRAM 0). No ALU immediate in V1. Post-V1 register growth: [`../post-v1.md`](../post-v1.md).
+No on-chip head pointer (fixed start at `0x000000` / PSRAM 0). No ALU immediate.
 
 ## Related
 

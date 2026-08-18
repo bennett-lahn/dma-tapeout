@@ -66,12 +66,12 @@ Stretch demo (still V1):
 - Long transfer that proves CE# slicing did not corrupt PSRAM
 - Mid-transfer **`rst_n` kill** (D23) returns idle / releases shared OE so the MCU can reclaim the bus (no soft-abort pin)
 
-## Post-V1 use cases (not V1)
+## Shipped scope
 
-Telemetry-shaped behaviors (ring last-*N*, in-flight calibrate/mask, until-threshold loops, ASIC flash) are sketched in [`10-post-v1-features.md`](10-post-v1-features.md). They are optional later additions if a sensor workload returns.
+Shipped RTL is a dual-PSRAM bulk mover only. Contemplated telemetry extras (ALU, cond-stop, ring, ASIC flash) were cut and are not in silicon; see `07-decision-log.md` (D11/D12).
 
 Firmware programming contract (MicroPython / SPI / TCD install): [`12-firmware.md`](12-firmware.md), human [`../human/architecture/firmware.md`](../human/architecture/firmware.md) (D30).
 
-## Interview framing (V1)
+## Interview framing
 
 > This is a descriptor-based dual-PSRAM DMA for Tiny Tapeout. Descriptors live in PSRAM so the on-chip budget goes to QSPI mastering and host bus arbitration. The demoboard story is bulk scatter-gather copies across both devices, including cross-device moves, without the MCU SPI-bitbanging every byte.

@@ -43,7 +43,9 @@ The required subset is:
 | `TC-RESET-IDLE`, `TC-RESET-ACTIVE`              | Initialization and reset recovery across gate storage elements     |
 
 
-Run the final tapeout depth, `DMA_BUF_DEPTH=5`. Other depths across `1..DMA_BUF_DEPTH_MAX` are for L1 sweeps via the module parameter; they are not required at L2 unless separate netlists are intentionally hardened.
+Run the final tapeout depth, `DMA_BUF_DEPTH=5`. The synthesized `tt_um_lahnb_sgdma` instance in `test/tb/tb_gl.sv` is flattened at that depth: do not pass `#(.DMA_BUF_DEPTH(...))` on the netlist instance, and do not treat Makefile `-Ptb_gl.DMA_BUF_DEPTH` as a resynthesis. Other depths across `1..DMA_BUF_DEPTH_MAX` are for L1 sweeps via the module parameter; they are not required at L2 unless separate netlists are intentionally hardened.
+
+Implementation entry: `tests.test_gate_level` via `test/scripts/run_gl.sh` or `GATES=yes make` / `make gl_test`. `run_gl.sh` copies the unpowered `nl` view (preferred path `ttihp-verilog-template/runs/wokwi/final/nl/tt_um_lahnb_sgdma.nl.v`) to `test/gate_level_netlist.v` and fails if that file is missing. A missing netlist or `PDK_ROOT` is `blocked`, not a pass.
 
 L2 tests use only top-level pins, resolved shared-bus signals, decoded QPI transactions, final memory, and ordered transaction logs as pass criteria. They must not depend on RTL hierarchy, source enum values, internal register names, or synthesis-generated instance names.
 
@@ -146,6 +148,8 @@ Run these experiments primarily at L0 and L1 for fast diagnosis. Optional L2 Ver
 
 
 ### Status model
+
+Current SDF status: `blocked`. No qualified netlist-matched SDF annotation has been run. A 2026-08-17 zero-delay Icarus `TC-SMOKE` on the existing unpowered `nl` view (`test/gate_level_netlist.v` sha256 `18b7c984beb537d59222b63a8fe1732043705bb778ba449adecdfddb6fcb19bf`, ciel `ihp-sg13g2` rev `c4b8b4e5e7a05f375cca3815d51b3a37721fbf5c`) is not an SDF pass. That netlist is the earlier ~153-DFF harden; length-1 smoke does not by itself prove tapeout `DMA_BUF_DEPTH=5` chunking. Icarus prints `ifnone` specify-path "sorry" messages on the cell models; compile still produces a `sim.vvp`.
 
 SDF is optional until the hardening flow produces a compatible SDF artifact. Record one of:
 

@@ -234,7 +234,7 @@ flash_hold = Pin(PIN_SD3, Pin.IN, Pin.PULL_UP)
 
 ### 5. Flash quad-read PIO (`qspi_read`) - reference only
 
-The guide includes a second PIO program `qspi_read` that bit-packs flash continuous-mode quad reads (nibble packing on SD0..3, dynamic `pindirs`). **V1 project firmware does not need MCU flash QSPI or MCU PSRAM QPI.** Keep this as a reference if post-V1 MCU quad flash tooling is useful; do not confuse it with APS6404L Enter Quad (`0x35`) for DMA.
+The guide includes a second PIO program `qspi_read` that bit-packs flash continuous-mode quad reads (nibble packing on SD0..3, dynamic `pindirs`). **Project firmware does not need MCU flash QSPI or MCU PSRAM QPI.** Keep this as a reference if MCU quad flash tooling is useful; do not confuse it with APS6404L Enter Quad (`0x35`) for DMA.
 
 ### 6. Script entry / serial bridge (ETR)
 

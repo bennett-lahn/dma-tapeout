@@ -15,7 +15,7 @@ Local sources:
 |---|---|---|
 | Volatility | Volatile | Non-volatile |
 | Writes | Fast, byte-level, effectively unlimited endurance | Slow; erase-before-write; limited cycles |
-| Role here | Working memory, descriptors, source/dest buffers during run | Not an ASIC DMA target in V1 (MCU pass-through; post-V1 flash later) |
+| Role here | Working memory, descriptors, source/dest buffers during run | Not an ASIC DMA target (MCU pass-through only) |
 
 PSRAM is internally DRAM with hidden refresh. From the host it behaves like SRAM-ish memory over SPI/QSPI, but **CE# timing interacts with refresh**.
 
@@ -176,7 +176,7 @@ Phase 3 (demoboard + hardening) must **double-check** `tACLK`, board flight time
 
 ## Implications for this DMA
 
-1. **Address width:** V1 uses **24-bit** internal pointers. The QPI **address phase is always 24 bits** on the wire (`qspi_addr_t`); the device only consumes `A[22:0]` from `addr[22:0]` / `ptr[22:0]`. **`addr[23]` is unused** (drive 0). Device select is **`device_sel`** from **`CTRL_FLAGS.SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`** (D24), which steers `ram_*_cs_n`.
+1. **Address width:** V1 uses **24-bit** internal pointers. The QPI **address phase is always 24 bits** on the wire (`qspi_addr_t`); the device only consumes `A[22:0]` from `addr[22:0]` / `ptr[22:0]`. **`addr[23]` / `ptr[23]` are don't-care** (may be any value; D35). Device select is **`device_sel`** from **`CTRL_FLAGS.SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`** (D24), which steers `ram_*_cs_n`.
 2. **Dual device:** engine must mux RAM A vs RAM B CS from `CTRL_FLAGS` device selects; never assert both; flash CS parked high / never driven low by ASIC (D11/D26). Cross-device = sequential read/write with CS switch.
 3. **Init ownership (D17):** MCU waits 150 us, resets, and Enter Quad on **each** PSRAM used before START; ASIC assumes QPI already. Exit Quad is MCU-only after DONE.
 4. **Descriptor fetch efficiency:** hold CE# across the **11-byte** TCD read (first: addr 0 / PSRAM 0; later fetch uses `NEXT_DEVICE` + `NEXT_TCD`); read opcode `0xEB`.

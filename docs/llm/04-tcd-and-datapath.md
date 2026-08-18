@@ -1,8 +1,6 @@
 # TCD Format, Datapath, and Control Details
 
-Status: **11-byte** TCD layout, **big-endian 24-bit pointer fields** (D25), device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24), fixed head at `0x000000`/PSRAM0, `QUIT` end-of-chain, zero-length no-op, QPI data path, and **1-byte** depth-agnostic data buffer are V1 planning freezes (D14 / D15 / D18 / D19 / D20 / D22 / D24 / D25). No ALU / ring / conditional-stop in V1.
-
-Post-V1 (ALU, `COND_STOP`, ring, flash): [`10-post-v1-features.md`](10-post-v1-features.md).
+Status: **11-byte** TCD layout, **big-endian 24-bit pointer fields** (D25), device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24), fixed head at `0x000000`/PSRAM0, `QUIT` end-of-chain, zero-length no-op, QPI data path, and **1-byte** depth-agnostic data buffer are planning freezes (D14 / D15 / D18 / D19 / D20 / D22 / D24 / D25). No ALU / ring / conditional-stop.
 
 ## Address model (shared with system architecture)
 
@@ -61,7 +59,7 @@ Layout follows packed `tcd_t` in `src/rtl/types.svh` (first field = MSB). Hardwa
 | 6 | `DEST_DEVICE` | `0` = DEST on PSRAM 0; `1` = DEST on PSRAM 1 |
 | 5 | `SRC_DEVICE` | `0` = SRC on PSRAM 0; `1` = SRC on PSRAM 1 |
 | 4 | `QUIT` | `1` = go IDLE / DONE after fetch (do not execute); `0` = run |
-| 3:0 | reserved | Write 0. Hardware latches these bits (D31); V1 control ignores them. Post-V1 (ALU / cond-stop / ring) can reuse this nibble. |
+| 3:0 | reserved | Write 0. Hardware latches these bits (D31); control ignores them. |
 
 Memory TCD stays **11 bytes / 88 bits**. Working `tcd_t` is **88 bits**: packed order is `src_ptr`, `dest_ptr`, `transfer_len`, `next_tcd`, `next_tcd_device`, `dest_device`, `src_device`, `quit`, `reserved` (packed LSB nibble = reserved). FETCH is MSB-first (22 wire nibbles); every nibble is latched. The flags nibble (`CTRL_FLAGS[7:4]`) is the 21st wire nibble; reserved (`CTRL_FLAGS[3:0]`) is the 22nd.
 
@@ -69,13 +67,13 @@ Memory TCD stays **11 bytes / 88 bits**. Working `tcd_t` is **88 bits**: packed 
 
 Device flags are **sticky** for the life of that TCD. Pointer increments advance only `[22:0]`.
 
-No in-flight ALU, ring wrap, or conditional stop in V1.
+No in-flight ALU, ring wrap, or conditional stop.
 
-### Pointer updates (V1)
+### Pointer updates
 
-After a completed copy step of `k` bytes (`k = min(N, TRANSFER_LEN)`; V1 `N=1`), decrement `TRANSFER_LEN` by `k`. RTL advances `SRC_PTR` by `N` on READ exit and `DEST_PTR` by `N` on WRITE exit (shared adder). When more bytes remain, `k = N` so that matches the spec. On the final chunk the new pointer values are don't-care (descriptor complete; next FETCH overwrites the working TCD). Device flags stay sticky.
+After a completed copy step of `k` bytes (`k = min(N, TRANSFER_LEN)`; `N=1` data hold), decrement `TRANSFER_LEN` by `k`. RTL advances `SRC_PTR` by `N` on READ exit and `DEST_PTR` by `N` on WRITE exit (shared adder). When more bytes remain, `k = N` so that matches the spec. On the final chunk the new pointer values are don't-care (descriptor complete; next FETCH overwrites the working TCD). Device flags stay sticky.
 
-No fixed-src/fixed-dest, no ring. (Fill/gather return with post-V1 flag extensions.)
+No fixed-src/fixed-dest, no ring.
 
 Wrap within the 8 MB device is a firmware concern.
 
@@ -114,7 +112,7 @@ At boot / setup:
 
 1. Ensure both PSRAM devices are in QPI (MCU via `BUS_REQ`/`BUS_GNT`; D17/D22).
 2. **Creating TCDs:** explicitly serialize each 24-bit pointer **most-significant byte first** into the 11-byte TCD; do not copy a native little-endian MCU integer or padded C structure directly. Write TCDs into PSRAM under grant (`BUS_GNT`, `uio_oe=0`). Place the first TCD (or a `QUIT` TCD for an empty run) at **`0x000000` on PSRAM 0**. Chain with `NEXT_TCD` + `NEXT_DEVICE`, set `SRC_DEVICE` / `DEST_DEVICE` per copy, and terminate with a TCD whose `QUIT=1`.
-3. Validate every complete memory range against the per-device address window `0x000000..0x7FFFFF` (`A[22:0]`), using widened arithmetic: each 11-byte TCD fetch must satisfy `tcd_ptr + 10 <= 0x7FFFFF`; when `TRANSFER_LEN > 0`, both `SRC_PTR + TRANSFER_LEN - 1` and `DEST_PTR + TRANSFER_LEN - 1` must be `<= 0x7FFFFF`. Pointer bit 23 must be zero. Any start address outside the window, or any operation only partly inside it, is undefined behavior in V1.
+3. Validate every complete memory range against the per-device address window `0x000000..0x7FFFFF` (`A[22:0]` / `ptr[22:0]`), using widened arithmetic: each 11-byte TCD fetch must satisfy `(tcd_ptr & 0x7FFFFF) + 10 <= 0x7FFFFF`; when `TRANSFER_LEN > 0`, both `(SRC_PTR & 0x7FFFFF) + TRANSFER_LEN - 1` and `(DEST_PTR & 0x7FFFFF) + TRANSFER_LEN - 1` must be `<= 0x7FFFFF`. **`ptr[23]` may be any value** (don't-care; D35). Any start address whose `A[22:0]` is outside the window, or any operation only partly inside it, is undefined behavior in V1.
 4. High-Z MCU QSPI; drop **BUS_REQ**; wait for **BUS_GNT** low; assert **START** (`ui_in[0]`) while DONE is high and hold it long enough for top-level synchronization. The top level converts the captured rising edge into the one-`clk` pulse consumed by `sys_controller`; deassert START before issuing another command.
 5. Wait for **DONE** again (`uo_out[0]`), pause mid-run with **BUS_REQ**, or assert **`rst_n`** to kill the run (D23).
 6. **Reading memory:** assert `BUS_REQ`, wait for `BUS_GNT`; firmware re-enables MCU QSPI and checks destinations.

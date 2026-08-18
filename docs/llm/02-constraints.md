@@ -7,11 +7,11 @@ These are hard or near-hard limits. Feature proposals must respect them.
 | Constraint | Value / guidance |
 |---|---|
 | Shuttle / PDK | **TTIHP26b**; LibreLane with **`ihp-sg13g2`** (IHP Open PDK). Digital stdcells `sg13g2_*`; I/O library `sg13g2_io` |
-| Tile budget | **2 tiles maximum** |
-| Tile geometry (IHP) | **1x1** die box **202.08 × 154.98 µm**; **1x2** **202.08 × 313.74 µm** (`tt-support-tools` `tech/ihp-sg13g2/tile_sizes.yaml`). ~1.7× the sky130 1x2 area; site is **0.48 × 3.78 µm** (vs 0.46 × 2.72 µm on sky130), so usable cell capacity is only modestly higher - keep the soft DFF ceiling until a real synth count |
-| Approx safe DFF budget | ~**500 DFFs** across 2 tiles before routing congestion becomes likely. First IHP harden (2026-08): **158** mapped `sg13g2_dfrbpq_1` at 66 MHz - under budget; see [`13-hardening-librelane.md`](13-hardening-librelane.md) |
-| Per-tile DFF heuristics (from notes) | ~256 DFFs comfortable; absolute extreme ~440 DFFs/tile if optimized purely for DFF count and routing is pushed to the limit (sky130-era heuristics; IHP synth count now available - still treat as soft) |
-| First area audit (manual LibreLane) | **1x1 fits** at `CLOCK_PERIOD` **15.15** ns (66 MHz): ~24k µm² logic in ~29k µm² core (~60% pre-fill); DRC/LVS/setup/hold pass. Accidental 1x2 (stale merged config) also passed with more fill. Runbook: [`13-hardening-librelane.md`](13-hardening-librelane.md) |
+| Tile budget | **1x1 only** (one Tiny Tapeout tile; D36). `1x2` / 2-tile is **out of budget**. If N=5 does not fit or time-close on 1x1, cut area (density, hold repair, or `DMA_BUF_DEPTH`); never grow tiles |
+| Tile geometry (IHP) | **1x1** die box **202.08 × 154.98 µm** (`tt_block_1x1`). IHP also publishes **1x2** **202.08 × 313.74 µm** (`tt-support-tools` `tech/ihp-sg13g2/tile_sizes.yaml`) - that box is not an operational V1 option. Site is **0.48 × 3.78 µm** (vs 0.46 × 2.72 µm on sky130) |
+| Approx safe DFF budget | Soft caution **~200 DFFs** on 1x1 (first harden ~158 mapped `sg13g2_dfrbpq_1`, ~60% pre-fill util). Hard gate: fits and times on `tt_block_1x1`. Old ~500 DFF / 2-tile figure is historical. See [`13-hardening-librelane.md`](13-hardening-librelane.md) |
+| Per-tile DFF heuristics (from notes) | Historical sky130-era: ~256 DFFs comfortable / ~440 extreme per tile. Operational caution is the 1x1 ~200 DFF warning (D36), not these per-tile maxima |
+| First area audit (manual LibreLane) | **1x1 fits** at `CLOCK_PERIOD` **15.15** ns (66 MHz): ~24k µm² logic in ~29k µm² core (~60% pre-fill); DRC/LVS/setup/hold pass. Accidental 1x2 (stale merged config) also passed with more fill - that is a config mistake, not a V1 escape (D36). Runbook: [`13-hardening-librelane.md`](13-hardening-librelane.md) |
 | I/O | **10 in** (`clk`, `rst_n`, `ui_in[7:0]`), **8 bidir** (`uio`), **8 out** (`uo_out`) - severe bottleneck; port list identical to sky130 TT digital projects |
 | Core / pad voltages | **1.2 V** digital core; **3.3 V** I/O (`sg13g2_IOPad*` level-shift 3.3 V ↔ 1.2 V). Demoboard 3.3 V PMOD / PSRAM remains electrically valid |
 | TT pad cells (ttiHP mux) | Inputs (`clk`, `rst_n`, `ui_in`): **`sg13g2_IOPadIn`**. Outputs (`uo_out`): **`sg13g2_IOPadOut30mA`**. Bidirectional (`uio`): **`sg13g2_IOPadInOut30mA`**. (From `tt-multiplexer` `ttihp26b` `tt_ihp_wrapper.v` / `tt_ihp_gpio.v`.) |
@@ -30,7 +30,7 @@ DFFs are the scarce resource. Prefer:
 - Externalizing static configuration into PSRAM (TCDs)
 - Narrow datapaths (byte-wide)
 - Shared SPI/QSPI engine rather than duplicated masters
-- Narrow byte datapath (post-V1 may add a tiny combinational ALU; see `10-post-v1-features.md`)
+- Narrow byte datapath
 
 Avoid:
 
@@ -68,7 +68,7 @@ Demoboard/PMOD ecosystem parts of interest: 128 M-bit QSPI Flash (**25Q128JVSM**
 
 - Planning assumed ~**50 days** to next shuttle (historical; re-anchor to the active **TTIHP26b** deadline).
 - Missing a shuttle is acceptable but should be treated as a failure mode, not a planning assumption.
-- Prefer cutting scope (see D12 / `10-post-v1-features.md`) over missing verification freeze.
+- Prefer freezing the shipped V1 feature set (see D12) over growing RTL past verification.
 
 ## Soft constraints / project policies
 

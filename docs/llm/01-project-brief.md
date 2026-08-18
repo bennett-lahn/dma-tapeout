@@ -12,31 +12,32 @@ A descriptor-driven DMA engine that bulk-moves bytes across dual external QSPI P
 
 Primary goals (in priority order):
 
-1. **Ship a working Tiny Tapeout design** within a ~2-tile budget that can be demonstrated on the demoboard with real dual PSRAM.
+1. **Ship a working Tiny Tapeout design** within a **1x1** (one-tile) budget that can be demonstrated on the demoboard with real dual PSRAM.
 2. **Learn industrially useful skills**: SPI/QSPI controllers, bus mastering, CDC-adjacent timing discipline, descriptor engines, Cocotb BFMs, CI-backed verification, post-synthesis / GDS awareness.
 3. **Produce a resume / interview artifact** that demonstrates systems-level hardware (memory hierarchies, firmware boundary, concurrency), not just an isolated math block.
 
 Secondary goals:
 
 - Credible demoboard story: chained TCDs copying same-device and **cross-device A↔B**.
-- Leave architectural headroom for post-V1 features (ALU, cond-stop, ring, flash) without blocking V1 tapeout - see `10-post-v1-features.md`.
 
-## Non-goals (V1)
+## Non-goals
 
 - Copying TinyDMA-2C RTL or microarchitecture.
-- Multi-tile / expensive builds beyond the 2-tile budget.
+- Multi-tile / `1x2` builds (out of budget; D36).
 - In-flight ALU, ring wrap, conditional-stop / until loops.
 - Building a general-purpose CPU.
-- ADC / live sensor integration as a V1 requirement.
-- **ASIC flash read/write in V1** (MCU pass-through covers flash; ASIC flash is last on the post-V1 ladder).
+- ADC / live sensor integration.
+- **ASIC flash read/write** (MCU pass-through covers flash).
+
+Shipped RTL is this V1 feature set only. Historical cut decisions: `07-decision-log.md` (D11/D12).
 
 ## Platform
 
 - **Tapeout vehicle**: Tiny Tapeout **TTIHP26b** (IHP shuttle)
 - **Process**: **IHP SG13G2** open PDK (`ihp-sg13g2`; 1.2 V digital core, 3.3 V I/O pads with on-pad level shifters)
-- **Budget**: **2 tiles max** (IHP 1x1 ≈ 202.08 × 154.98 µm; 1x2 ≈ 202.08 × 313.74 µm - larger than sky130 tiles; see `02-constraints.md`)
+- **Budget**: **1x1 only** (IHP 1x1 ≈ 202.08 × 154.98 µm; `1x2` is out of budget - D36; see `02-constraints.md`)
 - **Host**: RP2040 / RP2350-class MCU on TT demoboard
-- **External memory target**: **2x** AP Memory APS6404L-3SQR (64 Mbit QSPI PSRAM each) on QSPI PMOD; both devices are DMA endpoints. Flash on the same PMOD is MCU pass-through only for V1.
+- **External memory target**: **2x** AP Memory APS6404L-3SQR (64 Mbit QSPI PSRAM each) on QSPI PMOD; both devices are DMA endpoints. Flash on the same PMOD is MCU pass-through only.
 - **Shuttle pressure**: treat the active IHP shuttle deadline as a real constraint and scope ruthlessly; slipping a run is acceptable but should not be the default plan.
 - **Local PDK / template clones** (workspace, not sources of truth for architecture): `IHP-Open-PDK/`, `ttihp-verilog-template/`
 - **Local harden runbook:** [`13-hardening-librelane.md`](13-hardening-librelane.md) (Nix LibreLane + `tt_tool`; human twin under `docs/human/architecture/hardening.md`)
@@ -58,7 +59,7 @@ A successful project can claim all of the following:
 2. Host can start DMA; ASIC masters QSPI and executes the chain without further host SPI traffic.
 3. End-to-end demoboard demo: bulk copy in PSRAM (same-device and cross-device A↔B).
 4. Cocotb suite covers happy path + key fault/edge cases (`QUIT` TCD, zero length, invalid/incomplete host sequences, dual-CS selection, `rst_n` kill).
-5. Design closes in LibreLane / TT IHP flow within 2 tiles with known DFF budget.
+5. Design closes in LibreLane / TT IHP flow on **1x1** (`tt_block_1x1`) with known DFF caution (~200 warning; hard gate is fit + timing).
 6. Idle pass-through still lets MCU access flash on the PMOD; ASIC parks flash CS high and never asserts it low in V1 (D26).
 
 ## Interview narrative (target)

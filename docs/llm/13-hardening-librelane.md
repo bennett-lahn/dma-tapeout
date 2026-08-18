@@ -1,6 +1,6 @@
 # Local LibreLane hardening (TTIHP26b / ihp-sg13g2)
 
-How this repo runs **manual** ASIC harden / area / GDS flows for Tiny Tapeout **TTIHP26b** with PDK **`ihp-sg13g2`**. Canonical TT overview: [Hardening Tiny Tapeout Projects Locally](https://www.tinytapeout.com/guides/local-hardening/). Shuttle decision: **D27** in [`07-decision-log.md`](07-decision-log.md).
+How this repo runs **manual** ASIC harden / area / GDS flows for Tiny Tapeout **TTIHP26b** with PDK **`ihp-sg13g2`**. Canonical TT overview: [Hardening Tiny Tapeout Projects Locally](https://www.tinytapeout.com/guides/local-hardening/). Shuttle decision: **D27** in [`07-decision-log.md`](07-decision-log.md). V1 tile target is **1x1 only** (D36); `1x2` is out of budget.
 
 This document records the **working Nix path** used on the project machine (WSL). Docker remains the default TT path; we used Nix when Docker was unavailable / awkward.
 
@@ -98,7 +98,7 @@ Edit before regenerating merged config:
 
 | Knob | File | Notes |
 |---|---|---|
-| Tile size | `info.yaml` → `project.tiles` | e.g. `"1x1"` or `"1x2"`. Selects `tt/tech/ihp-sg13g2/def/tt_block_<tiles>_pgvdd.def` |
+| Tile size | `info.yaml` → `project.tiles` | V1 is **`"1x1"` only** (D36). Selects `tt/tech/ihp-sg13g2/def/tt_block_1x1_pgvdd.def`. Do not set `"1x2"` as an N=5 or area escape |
 | Top / sources | `info.yaml` | Must match files under `src/` |
 | Clock period | `src/config.json` → `CLOCK_PERIOD` | ns. **15.15** ≈ **66 MHz** (D16). I/O delays in SDC scale from this |
 | Density | `src/config.json` → `PL_TARGET_DENSITY_PCT` | Default 60; GPL may auto-bump (e.g. to 0.69) on tight 1x1 |
@@ -121,7 +121,7 @@ export PDK=ihp-sg13g2
 ./tt/tt_tool.py --ihp --create-user-config
 ```
 
-Confirm `src/config_merged.json` has the intended `DIE_AREA` and `FP_DEF_TEMPLATE` (1x1 vs 1x2).
+Confirm `src/config_merged.json` has the **1x1** `DIE_AREA` and `FP_DEF_TEMPLATE` (`tt_block_1x1_pgvdd.def`). A 1x2 DEF means a stale merge, not a permitted V1 tile size.
 
 ### B. Harden (Nix LibreLane shell)
 
@@ -185,18 +185,21 @@ Useful log greps: `DIEAREA`, `Effective utilization`, `Inserted .* hold`, `sg13g
 
 ## First successful area audits (2026-08)
 
-Same RTL / same synth (~158 DFFs). Clock target **66 MHz** (`CLOCK_PERIOD` 15.15 ns).
+Clock target **66 MHz** (`CLOCK_PERIOD` 15.15 ns). The first two rows are the same early RTL / same synth (**158** × `sg13g2_dfrbpq_1`, likely `DMA_BUF_DEPTH` **N=1**). The third row is the 2026-08-17 tapeout **N=5** close.
 
-| Run | Floorplan | Core area | Pre-fill logic area | Pre-fill util | Hold delay cells | Final instances (w/ fill) | Signoff |
-|---|---|---|---|---|---|---|---|
-| Accidental 1x2 (stale merged config) | `tt_block_1x2_pgvdd.def`, die 202.08 × 313.74 µm | ~60,109 µm² | ~23,892 µm² | ~40% | 236 × `sg13g2_dlygate4sd3_1` | 5,264 | DRC/LVS/timing pass |
-| True 1x1 | `tt_block_1x1_pgvdd.def`, die 202.08 × 154.98 µm | ~28,941 µm² | ~24,066 µm² | ~60% → GPL density ~0.69 | 248 × `dlygate4sd3_1` | 2,626 | DRC/LVS/timing pass |
+| Run | Floorplan | Core area | Pre-fill logic area | Pre-fill util | DFFs (`sg13g2_dfrbpq_1`) | Hold delay cells | Final instances (w/ fill) | Signoff |
+|---|---|---|---|---|---|---|---|---|
+| Accidental 1x2 (stale merged config; not a V1 option) | `tt_block_1x2_pgvdd.def`, die 202.08 × 313.74 µm | ~60,109 µm² | ~23,892 µm² | ~40% | 158 | 236 × `sg13g2_dlygate4sd3_1` | 5,264 | DRC/LVS/timing pass |
+| True 1x1 (first audit, likely N=1) | `tt_block_1x1_pgvdd.def`, die 202.08 × 154.98 µm | ~28,941 µm² | ~24,066 µm² | ~60% → GPL density ~0.69 | 158 | 248 × `dlygate4sd3_1` | 2,626 | DRC/LVS/timing pass |
+| 2026-08-17 1x1 N=5 (tapeout) | `tt_block_1x1_pgvdd.def`, die 202.08 × 154.98 µm | - | - | tighter than DFF count | 189 | - | - | DRC/LVS/timing pass; Setup Worst 5.8299 ns; Hold Worst 0.1265 ns (0 violations); 1 max-fanout in metrics |
 
 Takeaways:
 
-- Design **fits 1x1** at 66 MHz with positive setup slack (~6 ns post-route) and zero hold violations after repair.
-- Combinational masters matched between runs; deltas were hold buffers and fill/decap.
-- Soft ~500 DFF budget: **158** mapped flops (`sg13g2_dfrbpq_1`) - comfortable headroom for logic growth; **area** on 1x1 is tighter than DFF count suggests (little free core after fill).
+- First harden **fits 1x1** at 66 MHz with **158** mapped flops, positive setup slack (~6 ns post-route), and zero hold violations after repair. Combinational masters matched between the accidental 1x2 and first 1x1 runs; deltas were hold buffers and fill/decap.
+- Tapeout **N=5** (`DMA_BUF_DEPTH=5`, on-chip RX-TX scratch depth) also closes **1x1** at 66 MHz: **189** × `sg13g2_dfrbpq_1`. `T-66` (user-tile setup/hold at 15.15 ns) is closed on this run (Setup Worst **5.8299 ns**, Hold Worst **0.1265 ns**, 0 violations). This does not close pad/board `T-*` rows.
+- Hold slack ~0.13 ns is thin. Utilization is tighter than DFF count. Soft ~200 DFF caution on 1x1 (D36): **189** is under the warning line; hard gate remains fit + timing on `tt_block_1x1`. If a later harden fails, do not grow to 1x2; cut density, hold repair, or `DMA_BUF_DEPTH`. The old ~500 DFF / 2-tile figure is historical.
+- Unpowered netlist: `ttihp-verilog-template/runs/wokwi/final/nl/tt_um_lahnb_sgdma.nl.v`. Post-route STA: `ttihp-verilog-template/runs/wokwi/602-openroad-stapostpnr/summary.rpt`. PDK: ciel `ihp-sg13g2` rev `c4b8b4e5e7a05f375cca3815d51b3a37721fbf5c`.
+- Metrics recorded 1 max-fanout violation; DRC/LVS still clean.
 - Sky130 rehardens are **not** predictive for IHP tile fit or pad timing (D27); use a Sky130 TT template only if targeting that shuttle.
 
 ## Pitfalls (already hit)

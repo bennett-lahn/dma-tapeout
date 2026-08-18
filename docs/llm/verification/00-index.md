@@ -49,8 +49,8 @@ The implementation ladder is fixed as **M0 through M6**:
 - **M1** - PSRAM model and behavioral QSPI checks
 - **M2** - reference model, scoreboard, and directed suite (complete 2026-08-08; `TC-DEPTH` deferred to M5)
 - **M3** - delay layer, setup/hold sweeps, and launch/RX edge checks (complete 2026-08-10)
-- **M4** - formal safety proofs and cover reachability
-- **M5** - randomized regression and coverage closure; buffer-depth sweep (`TC-DEPTH` directed suite at each compile-time `DMA_BUF_DEPTH`); Wave 4 2026-08-16 partial random green at tapeout **N=5** - M5 exit still open
+- **M4** - formal safety proofs and cover reachability (deferred, D33; not a V1 freeze gate)
+- **M5** - randomized regression and coverage closure; buffer-depth sweep - **exit / pass (2026-08-16)**
 - **M6** - gate-level and X checks, then handoff to STA and demoboard closure
 - **M7** - FPGA hardware validation on the carrier board with real MCU firmware, before shuttle commit
 
@@ -96,12 +96,12 @@ For every `pass`, retain the simulator or formal engine, level, seed where appli
 | PSRAM behavioral model   | SCK/CE# agent + policing | pass           | M1 exit met; model-plane Z→0 idealization remains; see `03-psram-model.md`      |
 | QPI protocol (M1 rows)   | `Q-CEM/CPH/MUX/SIO-OWN/RST/SCKIDLE` | pass | M1 under `ideal`; CEM/CPH/SIO-OWN delay rerun complete at M3 (2026-08-10) |
 | QPI protocol (M3 rows)   | `Q-LAUNCH`, `Q-RXEDGE`, `Q-CSP/CHD/TERM` | pass | M3 (complete 2026-08-10)                                              |
-| Directed behavior (M2)   | M2 `TC-*`, `CHK-*`, dual-axis scoreboard | pass | M2 complete (2026-08-08); `TC-DEPTH` deferred to M5 (`wip`, not pass) |
+| Directed behavior (M2)   | M2 `TC-*`, `CHK-*`, dual-axis scoreboard | pass | M2 complete (2026-08-08); `TC-DEPTH` deferred to M5, now **pass** N=1..8 (2026-08-16) |
 | Delay-annotated timing   | `Q-LAUNCH`, `Q-RXEDGE`   | pass           | M3 complete (2026-08-10); see `04-timing-in-sim.md` residuals         |
-| Formal                   | `FP-*`                   | todo           | M4                                                                                |
-| Random regression        | M5 random suite          | wip            | Wave 4 2026-08-16 partial at **N=5** / `ideal`: Icarus seeds 1/2/3/5/8, Verilator 1/2; seed-1 Icarus ≡ Verilator |
-| Random and coverage      | `COV-*`                  | wip            | M5; partial `coverage.json` per random seed; fragment merge / closure not done   |
-| Buffer-depth sweep       | `TC-DEPTH`, `COV-DEPTH*` | wip            | M5; full `make depth` `1..8` not run; do not claim pass                           |
+| Formal                   | `FP-*`                   | todo           | M4 (deferred, D33)                                                              |
+| Random regression        | M5 random suite          | pass           | **Exit (2026-08-16):** **N=5** / `ideal` (zero TB placeholders); Icarus+Verilator seeds 1/2/3/5/8; seed-1 Icarus ≡ Verilator |
+| Random and coverage      | `COV-*`                  | pass           | M5; merge at `test/runs/m5_coverage_closure.json` `closed=true` (20 catalog IDs; 13 exclusions; reviewer `M5-close`, 2026-08-16) |
+| Buffer-depth sweep       | `TC-DEPTH`, `COV-DEPTH*` | pass           | `TC-DEPTH` **pass** N=1..8 (Icarus 13/13 per depth 2026-08-16); `COV-DEPTH*` bins in closed merge |
 | Gate-level and X         | M6 exit                  | todo           | M6                                                                                |
 | FPGA hardware validation | M7 exit                  | todo           | M7                                                                                |
 | Physical timing          | `T-*`                    | todo           | Post-M6/M7 closure                                                                |

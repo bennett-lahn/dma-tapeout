@@ -2,15 +2,13 @@
 
 Status: **11-byte** layout with **big-endian 24-bit pointer fields** (D25); device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24); `QUIT` end-of-chain; fixed head (D18/D19/D24).
 
-Post-V1 ALU / cond-stop / ring (extend reserved flag bits `[3:0]`): `[../post-v1.md](../post-v1.md)`.
-
 ## Role
 
 Programmable transfer record stored in PSRAM. The ASIC fetches it into working registers, **byte-copies** source to dest (or no-ops if length 0), then follows `NEXT_TCD` on device **`CTRL_FLAGS.NEXT_DEVICE`**.
 
 Addressing context (see `[../system.md](../system.md)` memory section):
 
-- `SRC_PTR` / `DEST_PTR` / `NEXT_TCD` are **24-bit byte addresses**; QSPI uses `[22:0]`; `[23]` unused (drive 0)
+- `SRC_PTR` / `DEST_PTR` / `NEXT_TCD` are **24-bit** fields; QSPI uses `[22:0]` as `A[22:0]`; **`[23]` is don't-care** (D35)
 - Device selects live in **`CTRL_FLAGS`**: `SRC_DEVICE`, `DEST_DEVICE`, `NEXT_DEVICE` (D24)
 - Fixed head: first TCD at `0x000000` **on PSRAM 0**
 - End of chain: TCD with `QUIT=1` → DONE
@@ -65,7 +63,7 @@ Do not write a native little-endian MCU integer or padded C structure directly i
 | 6    | `DEST_DEVICE` | `0` = DEST on PSRAM 0; `1` = DEST on PSRAM 1                 |
 | 5    | `SRC_DEVICE`  | `0` = SRC on PSRAM 0; `1` = SRC on PSRAM 1                   |
 | 4    | `QUIT`     | `1` = IDLE / DONE after fetching TCD (no execute); `0` = run |
-| 3:0  | reserved   | Write 0. Hardware latches these bits (D31); V1 control ignores them. Post-V1 can reuse this nibble. |
+| 3:0  | reserved   | Write 0. Hardware latches these bits (D31); control ignores them. |
 
 
 After FETCH, if `QUIT=1`, go **IDLE** / **DONE** (no copy). The next accepted **START** always begins again at **`0x000000` on PSRAM 0** (fixed head; D23) - it does not resume mid-chain.
@@ -104,7 +102,7 @@ loop:
 | `TRANSFER_LEN == 0`      | No-op; immediately follow `NEXT_TCD` on `NEXT_DEVICE`            |
 | Valid data TCD           | Fetch/run; devices from `SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`      |
 | Empty run                | Quit TCD at `0x000000` / PSRAM 0                              |
-| Self-pointing `NEXT_TCD` | Open; without cond-stop this can spin until **`rst_n`**       |
+| Self-pointing `NEXT_TCD` | Allowed (D35); without `QUIT` this spins until **`rst_n`** |
 
 
 

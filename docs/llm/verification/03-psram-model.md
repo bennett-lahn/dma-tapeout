@@ -72,7 +72,7 @@ The model rejects every other ASIC opcode. In particular, it does not accept `0x
 
 The model's opcode handling, timing parameters, and protocol-policing rules are deliberately structured so that a future command, device feature, or corrected timing characteristic can be added without restructuring the parser:
 
-- opcode decoding dispatches through a table keyed by the decoded command byte, not a hard-coded two-way branch on `0xEB`/`0x02`. A future opcode (for example, a post-V1 flash command per `../10-post-v1-features.md`, or a currently-rejected device command needed for a robustness test) is a new table entry with its own phase-count, dummy-cycle, and data-direction contract, not a rewrite of the existing read/write path.
+- opcode decoding dispatches through a table keyed by the decoded command byte, not a hard-coded two-way branch on `0xEB`/`0x02`. A future opcode (for example a currently-rejected device command needed for a robustness test) is a new table entry with its own phase-count, dummy-cycle, and data-direction contract, not a rewrite of the existing read/write path.
 - per-instance AC timing parameters (`tACLK`, `tCSP`, `tCHD`, `tCPH`, `tHZ`, `tSP`, `tHD`, `tCEM`, and the `tCH`/`tCL` ratios) are named, overridable fields on the model rather than inlined constants, so a future device variant, package option, or corrected datasheet revision can override them per instance without touching parser logic.
 - protocol-policing rules are independent predicates evaluated over parser state, not one monolithic conditional chain, so a new rule (for example, a future burst-length, wrap-mode, or additional ownership constraint) is an additional predicate rather than a modification of an existing one.
 - the sparse-memory and transaction-log interfaces in this document and `05-reference-model.md` are opcode-agnostic; a new data-moving command reuses them without redefining the record schema.
@@ -111,7 +111,7 @@ Each model owns a separate sparse mapping keyed by 23-bit byte address. Tests ma
 
 - Valid addresses are `0x000000` through `0x7FFFFF`.
 - The 24-bit wire address must have `A[23] == 0`.
-- Device selection comes from the selected CE#, not from address bit 23.
+- Device selection comes from the selected CE#, not from address bit 23 (`A[23]` don't-care; D35).
 - Unwritten-byte behavior is a configured deterministic fill value or a seeded initialization policy. It is never host-language dictionary-order dependent.
 - Reads increment the address after each complete byte.
 - Writes increment the address after each complete byte.
@@ -186,7 +186,7 @@ M1 model acceptance requires:
 - directed `0xEB` and `0x02` transactions decode with the required nibble order,
 - six and only six read dummy cycles are accepted,
 - unsupported opcodes and malformed phase lengths fail,
-- address bit 23, range, CE# overlap, flash-CS, ASIC-versus-device SIO ownership (`Q-SIO-OWN`), and SCK-parked-while-deselected (`Q-SCKIDLE`) checks fire on injected violations,
+- truncation, CE# overlap, flash-CS, ASIC-versus-device SIO ownership (`Q-SIO-OWN`), and SCK-parked-while-deselected (`Q-SCKIDLE`) checks fire on injected violations (`Q-ADDR23` retired by D35; wire `A[23]` is masked),
 - transaction logs reconstruct exact addresses and bytes, and
 - Icarus and Verilator agree on the directed protocol cases.
 
@@ -195,7 +195,7 @@ M1 model acceptance requires:
 Residual limitations (do not reopen the M1 behavioral gate, but stay honest):
 
 - `tb_top` / `tb_engine` model plane still maps floating SIO `z` to idle `0` (Z→0 idealization); `CHK-PIN-KNOWN` float-as-X coverage waits on removing that idealization.
-- Independent `QspiPinMonitor` is live: CE#-framed pin decode exports the ordered transaction log; `CHK-PIN-ADDR23-ZERO` / `CHK-PIN-KNOWN` dispose with `via=pin` when the monitor ran. Ordinary suites use `dispose_run` / pin. Model `Q-ADDR23` / `Q-SIO-X` remain the fallback when the pin monitor is absent or blocked; the intentional model-plane dispose contract is retained only in `tests.test_qspi_pin_disposition` (`assert_model_pin_disposition`).
+- Independent `QspiPinMonitor` is live: CE#-framed pin decode exports the ordered transaction log; `CHK-PIN-KNOWN` disposes with `via=pin` when the monitor ran (`CHK-PIN-ADDR23-ZERO` / model `Q-ADDR23` retired by D35). Ordinary suites use `dispose_run` / pin. Model `Q-SIO-X` remains the fallback for `CHK-PIN-KNOWN` when the pin monitor is absent or blocked; the intentional model-plane dispose contract is retained only in `tests.test_qspi_pin_disposition` (`assert_model_pin_disposition`).
 - Delay-annotated policing and `Q-LAUNCH` / `Q-RXEDGE` closed at M3 (2026-08-10); see `04-timing-in-sim.md`. Timed wrappers participate in `PendingLedger` / `finalize_all` cleanup (`06-checkers.md`).
 
 M3 delay behavior and timing checks live in `04-timing-in-sim.md`. Passing M1 or M3 does not close a physical `T-*` item.

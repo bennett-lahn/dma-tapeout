@@ -2,6 +2,8 @@
 
 ## Scope
 
+**Status (D33):** M4 is not a V1 RTL verification freeze gate. Formal stubs under `test/formal/` remain the starting point. Do not claim M4 pass. Missing `FP-*` rows do not block V1.
+
 M4 uses native WSL Yosys, SymbiYosys, and SMT solvers to verify V1 control-plane safety. This is Option B:
 
 - bounded model checking for short counterexamples and reset checks
@@ -167,7 +169,7 @@ Every `.sby` job must print or preserve the set of active assumptions. Each assu
 
 Some address and deep reachability checks need firmware-legal TCD contents. A separately named profile may constrain only descriptor nibbles actually sampled during FETCH so that:
 
-- pointer bit 23 is zero
+- pointer bit 23 is don't-care (D35; not a legal-profile constraint)
 - reserved `CTRL_FLAGS[3:0]` is zero in firmware-legal stimulus (the DUT latches that last nibble; V1 control ignores it, so nonzero reserved must not change `QUIT` / device flags)
 - complete TCD, source, and destination ranges remain within `0x000000..0x7FFFFF`
 - a bounded scenario contains the specific length, device flags, and quit or next link needed by a cover goal
@@ -223,7 +225,7 @@ Depths are starting guidance, not guaranteed closure depths. `prove 32/64` means
 | `FP-TXN-LEGAL` | Every controller `qspi_txn_valid` pulse implies `~qspi_busy`, `~bus_req`, legal command, and nonzero legal length. | integration | BMC 128, prove 64 |
 | `FP-TXN-PULSE` | `qspi_txn_valid` is one clock wide and cannot repeat before the accepted transaction completes. | integration | BMC 128, prove 64 |
 | `FP-REQ-STABLE` | Accepted `{cmd, addr, device_sel, byte_len}` remains equal to its acceptance shadow while the real engine is busy. | integration | BMC 128, prove 64 |
-| `FP-ADDR-MSB` | Every issued QPI address has `addr[23]==0`. This is conditional on the legal-descriptor profile for data-derived pointers. | integration | BMC 384, prove 64 |
+| `FP-ADDR-MSB` | **Retired (D35).** Formerly required `addr[23]==0` on issued QPI addresses. Bit 23 is don't-care. | retired | n/a |
 | `FP-RVALID-SCOPE` | `rdata_valid` is a one-clock pulse and occurs only in engine READ_DATA on a detected rising SCK. | engine and integration | BMC 96, prove 32 |
 | `FP-WNEXT-SCOPE` | `wdata_next` is a one-clock pulse and occurs only in WRITE_DATA when another nibble remains. | engine and integration | BMC 96, prove 32 |
 | `FP-RVALID-COUNT` | A completed legal read emits exactly `2 * accepted_byte_len` `rdata_valid` pulses. | engine and integration | BMC 128, prove 64 |
@@ -371,6 +373,8 @@ SMT state size is driven by the 84-bit working TCD, data buffer, counters, reque
 
 ## M4 evidence and sign-off
 
+Deferred (D33). The exit list below is the formal milestone contract when M4 is taken up; it is not required for V1 freeze.
+
 For each `FP-*` row marked `pass`, retain:
 
 - RTL revision and `DMA_BUF_DEPTH`
@@ -396,7 +400,7 @@ Any RTL change to `types.svh`, `qspi_engine.sv`, `sys_controller.sv`, or `top.v`
 
 ## Related
 
-- Verification strategy and M4 gate: `01-strategy.md`
+- Verification strategy (M4 is deferred (D33)): `01-strategy.md`
 - Platform and native WSL tools: `02-platform.md`
 - Integrated architecture and D21 handshake: `../03-architecture.md`
 - TCD and datapath behavior: `../04-tcd-and-datapath.md`
