@@ -29,8 +29,8 @@ Expected-negative use::
 
     dispose_run(
         bringup,
-        test="TC-QNEG-ADDR23",
-        expect_fail=[expect(Q_ADDR23, count=1)],
+        test="TC-QNEG-OPCODE",
+        expect_fail=[expect(Q_OPCODE, count=1)],
         log=dut._log,
     )
 
@@ -298,8 +298,8 @@ def collect(*sources) -> "tuple[list[Finding], dict[str, str], dict[str, int], d
     unavailable (``na``) and unjudgeable (``blocked``) rows survive into the
     report even when nothing was recorded against them.
 
-    ``CHK-PIN-ADDR23-ZERO`` / ``CHK-PIN-KNOWN`` prefer a live
-    :class:`QspiPinMonitor` (``via=pin``). Model ``Q-ADDR23`` / ``Q-SIO-X``
+    ``CHK-PIN-KNOWN`` prefers a live
+    :class:`QspiPinMonitor` (``via=pin``). Model ``Q-SIO-X``
     records are the fallback when no usable pin monitor is present (absent or
     ``blocked``), matching :func:`monitors.qspi.dispose_pin_checks`.
     """
@@ -371,8 +371,8 @@ def dispose_run(
 
     *sources* may be :class:`common.bringup.BringUp` bundles, PSRAM devices or
     agents, or any started monitor (including :class:`QspiPinMonitor`).
-    ``CHK-PIN-ADDR23-ZERO`` / ``CHK-PIN-KNOWN`` prefer a live pin monitor
-    (``via=pin`` in the disposition log) and fall back to model ``Q-*`` twins
+    ``CHK-PIN-KNOWN`` prefers a live pin monitor
+    (``via=pin`` in the disposition log) and falls back to model ``Q-SIO-X``
     when the pin monitor is absent or blocked. Ordinary findings must be empty
     unless declared through *expect_fail* (a string ID, or :func:`expect` with
     a count). ``RESET-TRUNCATED`` findings follow *reset_truncated*:

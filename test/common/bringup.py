@@ -23,7 +23,7 @@ Public API (frozen for M2):
 * :class:`BringUp` - returned handle bundle (devices + monitors + lifecycle)
 
 The started ``pin`` monitor (:class:`monitors.qspi.QspiPinMonitor`) is the
-authoritative source for ``CHK-PIN-ADDR23-ZERO`` / ``CHK-PIN-KNOWN`` and for
+authoritative source for ``CHK-PIN-KNOWN`` and for
 the ordered observed transaction log a scoreboard compares.
 :func:`bring_up_top` (L1) defaults ``pin_monitor=True``; :func:`bring_up_engine`
 (L0) defaults ``pin_monitor=False`` so M1 engine suites are not surprised by an
@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 
 from cocotb.triggers import RisingEdge
 
-from common.clocks import apply_engine_reset, apply_reset, start_clock
+from common.clocks import apply_engine_reset, apply_gl_reset, apply_reset, start_clock
 from common.config import parse_run_config, timing_env_overrides
 from common.lifecycle import REASON_CLEAR, REASON_STOP, finalize_all
 from models.psram import (
@@ -438,7 +438,7 @@ async def bring_up_top(
     controller_monitor: bool = True,
     clock_period_ns: int = DEFAULT_CLOCK_PERIOD_NS,
     reset_cycles: int = DEFAULT_RESET_CYCLES,
-    level: str = LEVEL_L1,
+    level: "str | None" = None,
     log=None,
 ) -> BringUp:
     """Bring up L1 ``tb_top`` (or L2 ``tb_gl``): park host pins, attach, reset.
@@ -448,7 +448,7 @@ async def bring_up_top(
     for every L1 test.
 
     ``pin_monitor`` defaults on: it is the authoritative evidence for
-    ``CHK-PIN-ADDR23-ZERO`` / ``CHK-PIN-KNOWN`` and the source of the ordered
+    ``CHK-PIN-KNOWN`` and the source of the ordered
     observed transaction log a scoreboard compares. Pass ``pin_monitor=False``
     only for a test that means to judge the model-only fallback path itself.
 
@@ -463,6 +463,9 @@ async def bring_up_top(
     passthrough, so this is a no-op for existing M1/M2 top/gl suites.
     """
     log = dut._log if log is None else log
+    if level is None:
+        configured = parse_run_config()["dut_level"]
+        level = configured if configured in (LEVEL_L1, LEVEL_L2) else LEVEL_L1
     _stop_previous()
 
     _park(_optional(dut, "rst_n"), 0)
@@ -495,21 +498,44 @@ async def bring_up_top(
         timing_profile=timing_profile,
         timing_params=timing_params,
     )
-    _start_monitors(
-        dut,
-        bringup,
-        bus_monitor=bus_monitor,
-        ce_monitor=ce_monitor,
-        handshake_monitor=handshake_monitor,
-        pin_monitor=pin_monitor,
-        arbitration_monitor=arbitration_monitor,
-        controller_monitor=controller_monitor,
-        strict_monitors=strict_monitors,
-        log=log,
-    )
-
-    await start_clock(dut, period_ns=clock_period_ns)
-    await apply_reset(dut, cycles=reset_cycles)
+    if level == LEVEL_L2:
+        await start_clock(dut, period_ns=clock_period_ns)
+        # Clock out gate-power-up X under rst_n=0 before monitors judge
+        # CHK-RST-STATUS (DONE/BUS_GNT after sampled reset). Monitors still
+        # start before reset release.
+        _park(_optional(dut, "rst_n"), 0)
+        _park(_optional(dut, "ena"), 1)
+        _park(_optional(dut, "ui_in"), 0)
+        for _ in range(3):
+            await RisingEdge(dut.clk)
+        _start_monitors(
+            dut,
+            bringup,
+            bus_monitor=bus_monitor,
+            ce_monitor=ce_monitor,
+            handshake_monitor=handshake_monitor,
+            pin_monitor=pin_monitor,
+            arbitration_monitor=arbitration_monitor,
+            controller_monitor=controller_monitor,
+            strict_monitors=strict_monitors,
+            log=log,
+        )
+        await apply_gl_reset(dut, cycles=reset_cycles, period_ns=clock_period_ns)
+    else:
+        _start_monitors(
+            dut,
+            bringup,
+            bus_monitor=bus_monitor,
+            ce_monitor=ce_monitor,
+            handshake_monitor=handshake_monitor,
+            pin_monitor=pin_monitor,
+            arbitration_monitor=arbitration_monitor,
+            controller_monitor=controller_monitor,
+            strict_monitors=strict_monitors,
+            log=log,
+        )
+        await start_clock(dut, period_ns=clock_period_ns)
+        await apply_reset(dut, cycles=reset_cycles)
 
     _HISTORY.append(bringup)
     return bringup

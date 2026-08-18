@@ -8,15 +8,26 @@ memory against :mod:`reference.chain`'s golden interpretation before
 :func:`common.dispose.dispose_run`.
 """
 
+import os
+from dataclasses import replace
 from cocotb.triggers import RisingEdge, SimTimeoutError, with_timeout
 
+from common.coverage_l1 import L1CoverageAdapter
 from common.dispose import dispose_run
 from common.host import pulse_start
+from reference.coverage import FRAGMENT_FILENAME, CoverageSampler
 from reference.scoreboard import RunContext, Scoreboard
 from reference.tcd import TCD_BYTES
 
 DONE_BIT = 0x1
 DONE_TIMEOUT_NS = 100_000
+
+# One sampler per RUN_DIR so successive directed windows merge into coverage.json.
+_coverage_samplers: "dict[str, CoverageSampler]" = {}
+def align_chain_depth(chain, config: dict):
+    """Return *chain* with dma_buf_depth matching this compile."""
+    return replace(chain, dma_buf_depth=int(config["dma_buf_depth"]))
+
 
 
 def contiguous_runs(values: dict):
@@ -107,10 +118,69 @@ def run_context(config: dict, test: str, repro: str) -> RunContext:
     )
 
 
+def _coverage_sampler(config: dict, *, test: str) -> CoverageSampler:
+    """Return a :class:`CoverageSampler` for this compile's ``RUN_DIR``.
+
+    A new process loads any retained ``coverage.json`` so later suites
+    (reset/bus, length-address corners) append instead of overwriting.
+    """
+    cov_config = dict(config)
+    cov_config["test"] = test
+    fresh = CoverageSampler.from_config(cov_config)
+    key = str(fresh.run_dir or "")
+    existing = _coverage_samplers.get(key)
+    if existing is None:
+        fragment = os.path.join(key, FRAGMENT_FILENAME) if key else ""
+        if fragment and os.path.isfile(fragment):
+            fresh.absorb_fragment(fragment)
+        _coverage_samplers[key] = fresh
+        return fresh
+    existing.context = replace(existing.context, test=test)
+    return existing
+
+
+def coverage_sampler(config: dict, *, test: str) -> CoverageSampler:
+    """Public wrapper for the per-``RUN_DIR`` :class:`CoverageSampler`."""
+    return _coverage_sampler(config, test=test)
+
+
+def l1_adapter(config: dict, *, test: str) -> L1CoverageAdapter:
+    """Return the L1 adapter bound to this compile's shared sampler."""
+    return L1CoverageAdapter(_coverage_sampler(config, test=test))
+
+
+def commit_l1_window(
+    config: dict,
+    *,
+    test: str,
+    checkers_ok: bool = True,
+    scoreboard_ok: bool = True,
+) -> None:
+    """Commit pending L1 observations when there is no golden-chain compare."""
+    cov = _coverage_sampler(config, test=test)
+    cov.commit_window(checkers_ok=checkers_ok, scoreboard_ok=scoreboard_ok)
+    cov.write_fragment()
+
+
+def record_passing_coverage(config: dict, chain, golden, *, test: str) -> None:
+    """Commit golden-chain ``COV-*`` hits and write ``RUN_DIR/coverage.json``.
+
+    Call only after scoreboard compare and :func:`dispose_run` both succeed so
+    ``checkers_ok`` / ``scoreboard_ok`` match the Wave 2 oracle contract. Hits
+    ``COV-DEPTH`` (compile-time ``DMA_BUF_DEPTH`` bin) for this N; ``make depth``
+    therefore fills depths 1..``DMA_BUF_DEPTH_MAX`` via the harness loop.
+    """
+    cov = _coverage_sampler(config, test=test)
+    cov.record_chain(golden, generated=chain)
+    cov.commit_window(checkers_ok=True, scoreboard_ok=True)
+    cov.write_fragment()
+
+
 async def compare_and_dispose(
     dut, bringup, chain, *, test: str, config: dict, repro: str
 ) -> None:
     """Full dual-axis compare against *chain*'s golden model, then dispose."""
+    chain = align_chain_depth(chain, config)
     if bringup.pin is None or bringup.pin.blocked:
         reason = (
             "missing"
@@ -133,6 +203,7 @@ async def compare_and_dispose(
         observed_memory=read_back(bringup, chain),
     )
     dispose_run(bringup, test=test, log=dut._log, repro=repro)
+    record_passing_coverage(config, chain, golden, test=test)
 
 
 async def run_directed_window(
@@ -150,6 +221,7 @@ async def run_directed_window(
         ``(golden, report)``: the golden :class:`reference.chain.ChainResult`
         and the :class:`common.dispose.DisposeReport` for this window.
     """
+    chain = align_chain_depth(chain, config)
     bringup.clear()
     install_chain(bringup, chain)
 
@@ -189,6 +261,7 @@ async def run_directed_window(
     )
 
     report = dispose_run(bringup, test=test, log=dut._log, repro=repro)
+    record_passing_coverage(config, chain, golden, test=test)
     dut._log.info(
         "%s passed: %d transaction(s) (%s)",
         test,
