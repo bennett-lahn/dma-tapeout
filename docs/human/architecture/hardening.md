@@ -13,13 +13,13 @@ Do not mix harden Nix/LibreLane into sim shells.
 
 ## Layout
 
-- **RTL truth:** `src/rtl/` - copy into `ttihp-verilog-template/src/` before harden
+- **RTL truth:** `src/` - copy into `ttihp-verilog-template/src/` before harden
 - **TT project:** `ttihp-verilog-template/` (`info.yaml`, `src/config.json`, `src/config_merged.json`, `tt/`)
 - **WSL homes:** `~/ttsetup/` (venv + PDK), `~/librelane/` (`nix develop`), `~/tools/oss-cad-suite/` (Yosys + slang)
 - Top: `tt_um_lahnb_sgdma`
 
 ```bash
-cp src/rtl/{types.svh,qspi_engine.sv,sys_controller.sv,top.v} ttihp-verilog-template/src/
+cp src/{types.svh,qspi_engine.sv,sys_controller.sv,top.v} ttihp-verilog-template/src/
 ```
 
 ## Knobs
@@ -103,4 +103,4 @@ First harden (likely `DMA_BUF_DEPTH` **N=1**) **fits 1x1** at 66 MHz (`CLOCK_PER
 
 ## Buffer-depth study (optional; not V1 harden)
 
-Optional area vs QPI throughput toolkit: [`../../../scripts/buffer-study/README.md`](../../../scripts/buffer-study/README.md) (`study.py` subcommands `harden`, `max-fit`, `throughput`). It patches **copies** of RTL so `DMA_BUF_DEPTH` (on-chip RX-TX scratch depth `N`) equals `DMA_BUF_DEPTH_MAX`; canonical `src/rtl/` stays at `N=1` for V1. `test/` is import-only. Do **not** run this as part of a normal harden / shuttle signoff; use the sequence above for V1. Verbose twin notes the same pointer.
+Optional area vs QPI throughput toolkit: [`../../../scripts/buffer-study/README.md`](../../../scripts/buffer-study/README.md) (`study.py` subcommands `harden`, `max-fit`, `throughput`). It patches **copies** of RTL so `DMA_BUF_DEPTH` (on-chip RX-TX scratch depth `N`) equals `DMA_BUF_DEPTH_MAX`; canonical `src/` stays at tapeout depth. `test/` is import-only. Do **not** run this as part of a normal harden / shuttle signoff; use the sequence above for V1. Verbose twin notes the same pointer.

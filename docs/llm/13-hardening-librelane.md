@@ -17,7 +17,7 @@ OSS CAD Suite is **not** a LibreLane substitute. Harden in a **separate shell** 
 
 | Path | Role |
 |---|---|
-| `src/rtl/` (main repo) | **RTL source of truth** |
+| `src/` (main repo) | **RTL source of truth** |
 | `ttihp-verilog-template/` | TT project root for harden (`tt_tool`, LibreLane, GDS) |
 | `ttihp-verilog-template/src/` | Copied RTL + `config.json` / `config_merged.json` |
 | `ttihp-verilog-template/info.yaml` | TT metadata: `tiles`, `top_module`, `source_files` |
@@ -27,13 +27,13 @@ OSS CAD Suite is **not** a LibreLane substitute. Harden in a **separate shell** 
 | `~/librelane/` (WSL home) | LibreLane flake; enter with `nix develop` |
 | `~/tools/oss-cad-suite/` (WSL home) | Host Yosys + **slang** for TT port check / SV packages |
 
-Top module: **`tt_um_lahnb_sgdma`**. Sources listed in `info.yaml` must exist as bare filenames under `ttihp-verilog-template/src/` (TT does not read `../../src/rtl/` automatically).
+Top module: **`tt_um_lahnb_sgdma`**. Sources listed in `info.yaml` must exist as bare filenames under `ttihp-verilog-template/src/` (TT does not read `../../src/` automatically).
 
 ### Sync RTL into the template
 
 ```bash
 cd /mnt/c/hw_projects/dma-tapeout
-cp src/rtl/types.svh src/rtl/qspi_engine.sv src/rtl/sys_controller.sv src/rtl/top.v \
+cp src/types.svh src/qspi_engine.sv src/sys_controller.sv src/top.v \
   ttihp-verilog-template/src/
 ```
 
@@ -215,11 +215,11 @@ Takeaways:
 
 ## CI / shuttle path
 
-GitHub harden for this project class uses `tt-gds-action` on the **ttihp26b** branch (LibreLane + ihp-sg13g2). Local Nix runs are for iteration and area learning; shuttle submission still expects the TT CI / template contract. Keep `ttihp-verilog-template` RTL synced from `src/rtl/` before relying on CI GDS.
+GitHub harden for this project class uses `tt-gds-action` on the **ttihp26b** branch (LibreLane + ihp-sg13g2). Local Nix runs are for iteration and area learning; shuttle submission still expects the TT CI / template contract. Keep `ttihp-verilog-template` RTL copied from `src/` before relying on local harden GDS.
 
 ## Buffer-depth study (optional; not normal harden)
 
-[`scripts/buffer-study/README.md`](../../scripts/buffer-study/README.md) wraps this runbook for an optional `DMA_BUF_DEPTH` / `N` (on-chip RX-TX scratch depth) area vs QPI throughput study (`harden`, `max-fit`, `throughput`). Patched RTL copies set depth and `DMA_BUF_DEPTH_MAX` to the same `N`; canonical `src/rtl/` remains V1 `N=1`. LibreLane runs use unique tags such as `runs/bufstudy_1x1_n8_*` and must never clobber `runs/wokwi`. `test/` is unused except import-only reference scoring. Do **not** treat study max-fit as shuttle signoff; keep using the sequence in this document for V1.
+[`scripts/buffer-study/README.md`](../../scripts/buffer-study/README.md) wraps this runbook for an optional `DMA_BUF_DEPTH` / `N` (on-chip RX-TX scratch depth) area vs QPI throughput study (`harden`, `max-fit`, `throughput`). Patched RTL copies set depth and `DMA_BUF_DEPTH_MAX` to the same `N`; canonical `src/` stays at tapeout depth. LibreLane runs use unique tags such as `runs/bufstudy_1x1_n8_*` and must never clobber `runs/wokwi`. `test/` is unused except import-only reference scoring. Do **not** treat study max-fit as shuttle signoff; keep using the sequence in this document for V1.
 
 ## Related docs
 

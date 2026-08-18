@@ -1,0 +1,18 @@
+{
+  "index": [
+    {
+      "dirs": ["src"],
+      "excludeDirs": [
+        "dma-venv",
+        "IHP-Open-PDK",
+        "ttihp-verilog-template",
+        "ttsky-tinyDMA",
+        "tinytapeout-sky-26c",
+        "tt-micropython-firmware",
+        "sim_build",
+        "__pycache__",
+        ".git"
+      ]
+    }
+  ]
+}

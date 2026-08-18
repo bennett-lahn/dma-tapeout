@@ -76,10 +76,10 @@ This document specifies that future layout but does not create it.
 
 The integration jobs must compile production files in this order:
 
-1. `src/rtl/types.svh`
-2. `src/rtl/qspi_engine.sv`
-3. `src/rtl/sys_controller.sv`
-4. `src/rtl/top.v` when the top harness is selected
+1. `src/types.svh`
+2. `src/qspi_engine.sv`
+3. `src/sys_controller.sv`
+4. `src/top.v` when the top harness is selected
 5. the selected harness
 6. the applicable bind files
 

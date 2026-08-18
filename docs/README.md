@@ -22,7 +22,6 @@ Architecture and verification are parallel documentation sets under both `human/
 - Human: [`human/overview.md`](human/overview.md)
 - Human architecture: [`human/architecture/00-index.md`](human/architecture/00-index.md)
 - Human verification: [`human/verification/00-index.md`](human/verification/00-index.md)
-- Post-V1 features: [`human/architecture/post-v1.md`](human/architecture/post-v1.md) / [`llm/10-post-v1-features.md`](llm/10-post-v1-features.md)
 - Agent: [`llm/00-index.md`](llm/00-index.md)
 - Agent verification: [`llm/verification/00-index.md`](llm/verification/00-index.md)
 - Local LibreLane harden: [`human/architecture/hardening.md`](human/architecture/hardening.md) / [`llm/13-hardening-librelane.md`](llm/13-hardening-librelane.md)

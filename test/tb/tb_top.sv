@@ -65,7 +65,7 @@ module tb_top #(
    // drive of disagreeing levels resolves to x, and the three CS nets keep the
    // demoboard 10k pull-ups as their only keeper (docs/llm/03-architecture.md,
    // Bidirectional I/O ownership specification).
-   // Pin map per src/rtl/top.v:
+   // Pin map per src/top.v:
    //   uio[0] flash CS, [1:2]/[4:5] SIO0-3, [3] SCK, [6] RAM A CS, [7] RAM B CS
    // -------------------------------------------------------------------------
    wire   [7:0] uio_bus;

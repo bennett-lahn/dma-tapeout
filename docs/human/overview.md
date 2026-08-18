@@ -34,7 +34,7 @@ Target: **bulk mover** between PSRAM A and B (learning / resume demo). Shipped R
 
 ## Status
 
-**Phase 2** (V1 feature RTL + verification hardening). Working RTL under `src/rtl/` covers TT wrap, bus keeper / pass-through, QPI engine, and descriptor fetch / copy / chain / cross-device. Cocotb **M0–M5** accepted (M5: 2026-08-16). Manual LibreLane harden closed **1x1 @ 66 MHz** at tapeout **N=5** (**189** DFFs; first audit ~158 was likely N=1). Remaining: CI smoke, firmware / demoboard (M7), gate-level and physical closure. **M4** formal (`FP-*`) is not a V1 freeze gate (D33). Host unused pins tied 0; no ERROR logic (D34).
+**Phase 2** (V1 feature RTL + verification hardening). Working RTL under `src/` covers TT wrap, bus keeper / pass-through, QPI engine, and descriptor fetch / copy / chain / cross-device. Cocotb **M0–M5** accepted (M5: 2026-08-16). Manual LibreLane harden closed **1x1 @ 66 MHz** at tapeout **N=5** (**189** DFFs; first audit ~158 was likely N=1). Remaining: CI smoke, firmware / demoboard (M7), gate-level and physical closure. **M4** formal (`FP-*`) is not a V1 freeze gate (D33). Host unused pins tied 0; no ERROR logic (D34).
 
 ## See also
 

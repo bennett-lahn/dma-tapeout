@@ -4,7 +4,7 @@ Every case is DUT-master, mirroring ``tests.test_dma_directed``: a legal chain
 is backdoor-installed via :func:`common.bringup.bring_up_top` models, and the
 ASIC itself fetches descriptors and moves payload over QPI. START/BUS_REQ are
 asynchronous host levels behind a two-flop synchronizer (D24,
-``src/rtl/top.v``); several cases below drive the raw ``ui_in`` bits at exact
+``src/top.v``); several cases below drive the raw ``ui_in`` bits at exact
 clock-edge offsets to land the *synchronized* level inside one specific
 single-cycle controller/engine state, not just "close to" it.
 
@@ -111,7 +111,7 @@ def _assert_no_ordinary_qlaunch(bringup, *, window: str, repro: str) -> None:
         f"(ASIC SCK OE off is not a launch window): {hits[0]}. {repro}"
     )
 
-# qspi_pkg::qspi_state_t names (src/rtl/types.svh) resolved through the same
+# qspi_pkg::qspi_state_t names (src/types.svh) resolved through the same
 # dict monitors.handshake already owns, so no magic numbers are duplicated.
 _ENGINE_STATE_BY_NAME = {name: code for code, name in QSPI_ENGINE_STATES.items()}
 _QSPI_CS_ON = _ENGINE_STATE_BY_NAME["CS_ON"]

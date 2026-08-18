@@ -206,7 +206,7 @@ M3 delay behavior and timing checks live in `04-timing-in-sim.md`. Passing M1 or
 - Opcode allowlist, bit order, address range, dummy count, and AC timing summary: `../05-qspi-psram.md`
 - Stable levels, milestones, and IDs: `00-index.md`, `01-strategy.md`
 - Platform placement: `02-platform.md`
-- RTL pin and phase behavior: `../../../src/rtl/qspi_engine.sv`, `../../../src/rtl/top.v`, `../../../src/rtl/types.svh`
+- RTL pin and phase behavior: `../../../src/qspi_engine.sv`, `../../../src/top.v`, `../../../src/types.svh`
 - Datasheet conversion policy: `../../datasheets/README.md`
 - Converted APS6404L Rev 2.3 sections 11.1, 11.2, 13, and 14.6: `../../datasheets/md/APS6404L_3SQR.md`
 - Manufacturer PDF, authoritative for figures and tables: `../../datasheets/pdfs/APS6404L_3SQR.pdf`

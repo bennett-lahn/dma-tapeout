@@ -113,7 +113,7 @@ Default: `LEVEL=top`.
 
 `LEVEL=gl` implies `GATES=yes`. Supplying `GATES=yes` with `LEVEL=top` selects the same L2 flow for Tiny Tapeout compatibility. Other conflicting combinations must fail with a clear Make error instead of silently selecting a DUT.
 
-RTL source order must place `src/rtl/types.svh` before modules that import its packages, then compile `qspi_engine.sv`, `sys_controller.sv`, and `top.v`. L0 compiles only the package and engine sources it needs. L1 compiles the integrated source set. L2 uses the final gate-level netlist and IHP models instead of RTL.
+RTL source order must place `src/types.svh` before modules that import its packages, then compile `qspi_engine.sv`, `sys_controller.sv`, and `top.v`. L0 compiles only the package and engine sources it needs. L1 compiles the integrated source set. L2 uses the final gate-level netlist and IHP models instead of RTL.
 
 ## Simulator matrix
 
@@ -202,7 +202,7 @@ cd test && make test LEVEL=gl SIM=icarus GATES=yes NETLIST=gate_level_netlist.v
 cd test && make random LEVEL=top SIM=verilator SEED=4231 TIMING_PROFILE=nominal
 ```
 
-`DMA_BUF_DEPTH` is a module parameter on `tt_um_lahnb_sgdma` / `sys_controller` (V1 tapeout and default sim: **5**). Package `DMA_BUF_DEPTH_MAX` in `src/rtl/types.svh` sizes `qpi_byte_len_t` / cycle counters for elaboration `1..8`. At L1 the Makefile passes `-GDMA_BUF_DEPTH=$(DMA_BUF_DEPTH)` (or `-Ptb_top.DMA_BUF_DEPTH`) and rejects values outside `1..DMA_BUF_DEPTH_MAX`. At L2 the gate instance is flattened at N=5; Python still reads `DMA_BUF_DEPTH=5` for the scoreboard.
+`DMA_BUF_DEPTH` is a module parameter on `tt_um_lahnb_sgdma` / `sys_controller` (V1 tapeout and default sim: **5**). Package `DMA_BUF_DEPTH_MAX` in `src/types.svh` sizes `qpi_byte_len_t` / cycle counters for elaboration `1..8`. At L1 the Makefile passes `-GDMA_BUF_DEPTH=$(DMA_BUF_DEPTH)` (or `-Ptb_top.DMA_BUF_DEPTH`) and rejects values outside `1..DMA_BUF_DEPTH_MAX`. At L2 the gate instance is flattened at N=5; Python still reads `DMA_BUF_DEPTH=5` for the scoreboard.
 
 The Makefile maps `TEST_FILTER` to cocotb 2.x `COCOTB_TEST_FILTER` and lists modules through `COCOTB_TEST_MODULES`. Do not use removed legacy environment names.
 

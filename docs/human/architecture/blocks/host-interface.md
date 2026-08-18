@@ -128,7 +128,7 @@ Control plane:
 
 ### `sys_controller` RTL interface
 
-RTL: [`../../../../src/rtl/sys_controller.sv`](../../../../src/rtl/sys_controller.sv). The module integrates host/mode control and the descriptor FSM. START is post-sync and rising-edge detected by the top module; BUS_REQ is a post-sync level. The QPI engine remains a separate submodule.
+RTL: [`../../../../src/sys_controller.sv`](../../../../src/sys_controller.sv). The module integrates host/mode control and the descriptor FSM. START is post-sync and rising-edge detected by the top module; BUS_REQ is a post-sync level. The QPI engine remains a separate submodule.
 
 
 | Signal group | Direction | Contract |

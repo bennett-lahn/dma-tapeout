@@ -20,7 +20,7 @@ from models.psram import ADDR_NIBBLES, CMD_NIBBLES, SIO_UIO_BITS
 START_BIT = 0
 BUS_REQ_BIT = 2
 
-# Resolved ``uio`` bit map (src/rtl/top.v). SIO bits come from models.psram so
+# Resolved ``uio`` bit map (src/top.v). SIO bits come from models.psram so
 # the master and the device models share one pin map.
 UIO_FLASH_CS_BIT = 0
 UIO_SCK_BIT = 3

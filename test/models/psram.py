@@ -95,7 +95,7 @@ Q_SIO_X = "Q-SIO-X"
 CLASS_FAIL = "fail"
 CLASS_RESET_TRUNCATED = "RESET-TRUNCATED"
 
-# Resolved ``uio`` bit map, mirroring src/rtl/top.v and test/tb/tb_top.sv:
+# Resolved ``uio`` bit map, mirroring src/top.v and test/tb/tb_top.sv:
 # uio[0] flash CS, uio[1,2,4,5] SIO0..3, uio[3] SCK, uio[6:7] PSRAM0/1 CE#.
 SIO_UIO_BITS = (1, 2, 4, 5)
 

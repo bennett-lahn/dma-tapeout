@@ -51,7 +51,7 @@ Exact firmware serialization:
 
 ### `CTRL_FLAGS` (V1 / D19 / D24 names; bit positions from `types.svh`)
 
-Layout follows packed `tcd_t` in `src/rtl/types.svh` (first field = MSB). Hardware latches `reserved[3:0]` after `quit`; that nibble is the last nibble of the 11-byte record.
+Layout follows packed `tcd_t` in `src/types.svh` (first field = MSB). Hardware latches `reserved[3:0]` after `quit`; that nibble is the last nibble of the 11-byte record.
 
 | Bits | Name | Encoding |
 |---|---|---|

@@ -1,6 +1,6 @@
 # Agent Guide
 
-This repository implements a **descriptor-based scatter-gather DMA** for Tiny Tapeout on the **IHP SG13G2** shuttle (**TTIHP26b**, 2-tile budget) targeting **dual** QSPI PSRAM as a **bulk mover** (cross-device OK). Flash on the PMOD is MCU pass-through only for V1. ALU / cond-stop / ring / ASIC flash are post-V1 (`docs/llm/10-post-v1-features.md`).
+This repository implements a **descriptor-based scatter-gather DMA** for Tiny Tapeout on the **IHP SG13G2** shuttle (**TTIHP26b**, **1x1** / one-tile budget) targeting **dual** QSPI PSRAM as a **bulk mover** (cross-device OK). Flash on the PMOD is MCU pass-through only. Shipped RTL is this V1 feature set only (no ALU / cond-stop / ring / ASIC flash).
 
 ## Context sources
 
@@ -19,7 +19,7 @@ Related skill: [`.cursor/skills/tinydma-prior-art/SKILL.md`](.cursor/skills/tiny
 
 ## Current phase
 
-**Phase 2** - V1 feature RTL is in place under `src/rtl/`; cocotb **M0–M3** accepted. Manual IHP LibreLane harden closed **1x1 @ 66 MHz** (~158 DFFs; see harden runbook). Next: M4 formal, remaining opens in `docs/llm/08-open-questions.md` (`uo_out[7:2]` status / error model), then M5–M7 and shuttle closure. Process / pad model: **D27** in `docs/llm/07-decision-log.md`.
+**Phase 2** - V1 feature RTL is in place under `src/`; cocotb **M0–M5** accepted (M5: 2026-08-16). Manual IHP LibreLane harden closed **1x1 @ 66 MHz** at tapeout **N=5** (**189** DFFs; first audit ~158 was likely N=1; see harden runbook). V1 tile budget is **1x1 only** (D36); `1x2` is out of budget. **M4** formal is not a V1 freeze gate (D33). Then M6-M7 and shuttle closure. Host unused pins tied 0; no ERROR logic (D34). `ptr[23]` don't-care; self-pointing TCD allowed (D35). Process / pad model: **D27** in `docs/llm/07-decision-log.md`.
 
 ## Do / don't
 
@@ -30,5 +30,5 @@ Related skill: [`.cursor/skills/tinydma-prior-art/SKILL.md`](.cursor/skills/tiny
 - Don't leave new requirements, catalogs, or architecture choices llm-only with a human stub/pointer (see `docs/README.md` parity rule; `CHK-*` checkers are a known bad example)
 - Don't edit Obsidian vault files
 - Don't copy TinyDMA-2C architecture or RTL
-- Don't expand scope past the 2-tile / shuttle reality without an explicit cut plan
+- Don't expand scope past the 1x1 / shuttle reality without an explicit cut plan
 - Don't cite sky130 GPIO MHz ratings as binding on this IHP project

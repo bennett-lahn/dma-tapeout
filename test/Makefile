@@ -30,7 +30,7 @@ SIM                 ?= icarus
 LEVEL               ?= top
 SEED                ?= 1
 TEST_FILTER         ?=
-# Package ceiling from src/rtl/types.svh (D20). Tapeout default matches RTL N=5.
+# Package ceiling from src/types.svh (D20). Tapeout default matches RTL N=5.
 DMA_BUF_DEPTH_MAX   ?= 8
 DMA_BUF_DEPTH       ?= 5
 TIMING_PROFILE      ?= ideal
@@ -50,7 +50,7 @@ SDF                 ?=
 
 PWD                 := $(CURDIR)
 REPO_ROOT           := $(abspath $(CURDIR)/..)
-SRC_RTL             := $(REPO_ROOT)/src/rtl
+SRC_RTL             := $(REPO_ROOT)/src
 TB_DIR              := $(PWD)/tb
 SCRIPTS_DIR         := $(PWD)/scripts
 

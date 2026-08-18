@@ -1,0 +1,50 @@
+name: timing
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  timing:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install Icarus Verilog 13
+        shell: bash
+        run: |
+          wget https://github.com/TinyTapeout/iverilog/releases/download/v13.0/iverilog_13.0-1_amd64.deb
+          sudo apt-get update -y
+          sudo apt-get install -y ./iverilog_13.0-1_amd64.deb
+
+      - name: Setup python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install Python packages
+        shell: bash
+        run: pip install -r test/requirements.txt
+
+      - name: Run executable timing
+        env:
+          TIMING_PROFILE: nominal
+        run: test/scripts/run_timing.sh
+
+      - name: Test Summary
+        uses: test-summary/action@v2.4
+        with:
+          paths: "test/results.xml"
+        if: always()
+
+      - name: upload timing results
+        if: success() || failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: timing-results
+          path: |
+            test/results.xml
+            test/runs/**

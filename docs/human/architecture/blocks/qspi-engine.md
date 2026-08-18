@@ -47,7 +47,7 @@ Phase lengths are counted in **SCK beats**. Pad states (`CS_ON`, `SCLK_OFF`, `CS
 
 ## Descriptor FSM interface (D21)
 
-Engine is a **transaction slave** of the descriptor FSM. Request is **not** a TCD; TCD fields stay in the FSM. Types: `qspi_pkg` in [`../../../../src/rtl/types.svh`](../../../../src/rtl/types.svh). RTL: [`../../../../src/rtl/qspi_engine.sv`](../../../../src/rtl/qspi_engine.sv).
+Engine is a **transaction slave** of the descriptor FSM. Request is **not** a TCD; TCD fields stay in the FSM. Types: `qspi_pkg` in [`../../../../src/types.svh`](../../../../src/types.svh). RTL: [`../../../../src/qspi_engine.sv`](../../../../src/qspi_engine.sv).
 
 Start legality is `~busy`. Write/read length is entirely from `byte_len` (engine counts `2 * byte_len` SCK beats, then `SCLK_OFF` → `CS_OFF` → `IDLE`). Engine does **not** latch the request: FSM holds `{cmd, addr, device_sel, byte_len}` from `txn_valid` until `busy` falls. Engine never stalls SCK/CE# for the FSM.
 

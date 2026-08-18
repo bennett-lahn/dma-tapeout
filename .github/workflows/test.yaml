@@ -1,0 +1,64 @@
+name: test
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install Icarus Verilog 13
+        shell: bash
+        run: |
+          wget https://github.com/TinyTapeout/iverilog/releases/download/v13.0/iverilog_13.0-1_amd64.deb
+          sudo apt-get update -y
+          sudo apt-get install -y ./iverilog_13.0-1_amd64.deb
+
+      - name: Setup python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install Python packages
+        shell: bash
+        run: pip install -r test/requirements.txt
+
+      - name: Run logic smoke
+        env:
+          TIMING_PROFILE: ideal
+        run: |
+          cd test
+          make clean
+          make smoke TIMING_PROFILE=ideal WAVES=never
+          # WS2 contract: GATES=yes make writes test/results.xml.
+          # smoke uses the same path when present; otherwise copy the default RUN_DIR file.
+          if [ ! -f results.xml ]; then
+            if [ -f runs/top/icarus/n5/ideal/seed-1/results.xml ]; then
+              cp -f runs/top/icarus/n5/ideal/seed-1/results.xml results.xml
+            fi
+          fi
+          test -f results.xml
+          ! grep failure results.xml
+
+      - name: Test Summary
+        uses: test-summary/action@v2.4
+        with:
+          paths: "test/results.xml"
+        if: always()
+
+      - name: upload waveform and test results
+        if: success() || failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results
+          path: |
+            test/tb.fst
+            test/results.xml
+            test/output/*
+            test/runs/top/icarus/n5/ideal/seed-1/**

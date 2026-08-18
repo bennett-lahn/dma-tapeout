@@ -361,4 +361,4 @@ Those items remain in `../11-timing-analysis.md` for STA and demoboard evidence.
 - Physical `T-*` closure: `../11-timing-analysis.md`
 - Converted APS6404L Rev 2.3 timing text: `../../datasheets/md/APS6404L_3SQR.md`
 - Authoritative APS6404L Rev 2.3 PDF: `../../datasheets/pdfs/APS6404L_3SQR.pdf`
-- Engine RTL implementing this contract: `../../../src/rtl/qspi_engine.sv`
+- Engine RTL implementing this contract: `../../../src/qspi_engine.sv`

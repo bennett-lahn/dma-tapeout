@@ -159,7 +159,7 @@ NO_PIN_EVIDENCE_REASON = (
 QSPI_CMD_FAST_READ = 0xEB
 QSPI_CMD_WRITE = 0x02
 
-# sys_control_pkg::sys_control_state_t (src/rtl/types.svh). All eight encodings
+# sys_control_pkg::sys_control_state_t (src/types.svh). All eight encodings
 # of the 3-bit enum are members, so CHK-CTRL-STATE-VALID reduces to resolution
 # plus membership.
 SYS_CONTROL_IDLE = 0
@@ -182,7 +182,7 @@ SYS_CONTROL_STATES = {
     SYS_CONTROL_STALL: "STALL",
 }
 
-# qspi_pkg::qspi_state_t (src/rtl/types.svh); 4-bit encoding, 10 members.
+# qspi_pkg::qspi_state_t (src/types.svh); 4-bit encoding, 10 members.
 QSPI_ENGINE_STATES = {
     0: "QSPI_IDLE",
     1: "CS_ON",
