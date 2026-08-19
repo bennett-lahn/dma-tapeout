@@ -10,7 +10,7 @@ This directory is the canonical, verbose project context for AI agents working a
 4. `04-tcd-and-datapath.md` - descriptors / FSM (11-byte TCD; device flags in `CTRL_FLAGS`; `QUIT` flag)
 5. `05-qspi-psram.md` - external memory protocol reality
 6. `06-system-use-case.md` - dual-PSRAM bulk-mover framing
-7. `12-firmware.md` - demoboard MicroPython firmware (SPI / TCD / M7; twin of human `architecture/firmware.md`)
+7. `12-firmware.md` - demoboard MicroPython firmware (QPI install/dump after Enter Quad; TCD tools; one demo; M7; twin of human `architecture/firmware.md`)
 8. `07-decision-log.md` - alternatives rejected and why DMA won
 9. `08-open-questions.md` - unresolved design choices
 10. `09-references.md` - links and external notes

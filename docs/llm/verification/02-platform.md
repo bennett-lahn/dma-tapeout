@@ -174,7 +174,7 @@ Equivalent Make targets (after `source test/env.sh` and `cd test`):
 | `make gl_test` | L2 Icarus directed subset at flattened `DMA_BUF_DEPTH=5` / `TIMING_PROFILE=ideal` (zero TB placeholders) |
 | `make clean` | Remove generated simulation build and run artifacts only |
 
-`make` may alias `make test`, matching the TT template. `GATES=yes make` (TT gate action) selects `LEVEL=gl` and the L2 module `tests.test_gate_level`, not full random. After every `test` target, `RUN_DIR/results.xml` is also copied to `test/results.xml` so the official Tiny Tapeout action can grep that path.
+`.DEFAULT_GOAL` is `test`, so bare `make` and Tiny Tapeout `GATES=yes make` run the test recipe rather than an earlier helper such as `_ensure_run_dir`. `GATES=yes make` (TT `gl_test` action) selects `LEVEL=gl` and the L2 module `tests.test_gate_level`, not full random. After every `test` target, `RUN_DIR/results.xml` is copied to `test/results.xml` and `dump.fst` / `dump.vcd` to `test/tb.fst` / `test/tb.vcd` so the official action can grep and upload those paths.
 
 ### Stable variables
 
@@ -355,7 +355,7 @@ Shipped GitHub Actions (`.github/workflows/`):
 |---|---|---|
 | `test.yaml` | L1 Icarus `make smoke` at `TIMING_PROFILE=ideal` (zero TB placeholders) | Writes `test/results.xml` |
 | `timing.yaml` | `bash test/scripts/run_timing.sh` at `TIMING_PROFILE=nominal` (documented APS6404L min/max AC with zero TB placeholders) | Invoke via `bash` so a missing git execute bit is not a 126. Suites: `test_qspi_timing`, `test_qspi_timing_delay`, `test_qspi_timing_launch_rx`, ownership negatives |
-| `gds.yaml` | `tt-gds-action@ttihp26b` | Port check reads `info.yaml` `source_files[0]` with yowasp Yosys; `top.v` must be first and package-free. Synth still uses `USE_SLANG` |
+| `gds.yaml` | `tt-gds-action@ttihp26b` (harden, precheck, `gl_test`, viewer) | Port check reads `info.yaml` `source_files[0]` with yowasp Yosys; `top.v` must be first and package-free. Synth still uses `USE_SLANG`. `gl_test` copies the GDS netlist to `test/gate_level_netlist.v` and runs `GATES=yes make`, which must produce `test/results.xml` |
 | `docs.yaml` | `tt-gds-action/docs@ttihp26b` | Datasheet render |
 
 Hook scripts under `test/scripts/` should be git `+x`, but CI must not depend on that bit.

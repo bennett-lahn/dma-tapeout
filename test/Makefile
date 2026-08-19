@@ -297,12 +297,20 @@ doctor:
 
 .PHONY: default test smoke directed depth random regression formal waves gl_test
 
+# Helper rules (_ensure_run_dir, etc.) appear earlier in this file. Without an
+# explicit default goal, GNU make would run the first of those and succeed
+# without simulating. Tiny Tapeout gl_test then does `GATES=yes make` and
+# greps test/results.xml.
+.DEFAULT_GOAL := test
 default: test
 
 test: sim_prep
 	@$(MAKE) sim 2>&1 | tee "$(RUN_DIR)/run.log"; \
 	 exit=$${PIPESTATUS[0]}; \
 	 if [ -f "$(PWD)/dump.fst" ]; then mv -f "$(PWD)/dump.fst" "$(RUN_DIR)/dump.fst"; fi; \
+	 if [ -f "$(PWD)/dump.vcd" ]; then mv -f "$(PWD)/dump.vcd" "$(RUN_DIR)/dump.vcd"; fi; \
+	 if [ -f "$(RUN_DIR)/dump.fst" ]; then cp -f "$(RUN_DIR)/dump.fst" "$(PWD)/tb.fst"; fi; \
+	 if [ -f "$(RUN_DIR)/dump.vcd" ]; then cp -f "$(RUN_DIR)/dump.vcd" "$(PWD)/tb.vcd"; fi; \
 	 if [ -f "$(RUN_DIR)/results.xml" ]; then \
 	   cp -f "$(RUN_DIR)/results.xml" "$(PWD)/results.xml"; \
 	 elif [ -f "$(PWD)/results.xml" ] && [ "$(PWD)/results.xml" != "$(RUN_DIR)/results.xml" ]; then \
