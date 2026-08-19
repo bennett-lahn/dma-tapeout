@@ -64,8 +64,12 @@ module sys_controller
 
 // Elaboration check: package qpi_* widths assume N <= DMA_BUF_DEPTH_MAX.
 generate
-   if (DMA_BUF_DEPTH < 1 || DMA_BUF_DEPTH > DMA_BUF_DEPTH_MAX)
+   if (DMA_BUF_DEPTH < 1 || DMA_BUF_DEPTH > DMA_BUF_DEPTH_MAX) begin : gen_dma_buf_depth
       $error("sys_controller: DMA_BUF_DEPTH must be in 1 .. DMA_BUF_DEPTH_MAX");
+   end
+   if (TCD_LEN != (2 * QPI_TCD_BYTES)) begin : gen_tcd_nibble_len
+      $error("sys_controller: TCD_LEN nibble count must match 2 * QPI_TCD_BYTES");
+   end
 endgenerate
 
 localparam int unsigned BUF_BITS = 8 * DMA_BUF_DEPTH;

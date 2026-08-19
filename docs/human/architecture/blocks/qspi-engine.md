@@ -58,9 +58,9 @@ Start legality is `~busy`. Write/read length is entirely from `byte_len` (engine
 | `clk` | in | 1 | System clock (**66 MHz**). |
 | `rst_n` | in | 1 | Sync **active-low** reset. |
 | `txn_valid` | in | 1 | **1-`clk` pulse** to start; legal **only when `~busy`**. |
-| `cmd` | in | `qspi_cmd_t` | V1: `QSPI_CMD_FAST_READ` (`0xEB`) or `QSPI_CMD_WRITE` (`0x02`). Hold until `!busy`. |
+| `cmd` | in | `logic [7:0]` (same width as `qspi_cmd_t`) | V1: `QSPI_CMD_FAST_READ` (`0xEB`) or `QSPI_CMD_WRITE` (`0x02`). Packed `logic` so the Tiny Tapeout wrapper can stay free of `qspi_pkg` for yowasp. Hold until `!busy`. |
 | `addr` | in | `qspi_addr_t` `[23:0]` | Full 24-bit QPI address phase. Device uses `addr[22:0]` as `A[22:0]`; **`addr[23]` don't-care** (D35). Hold until `!busy`. |
-| `device_sel` | in | `qspi_device_sel_t` | `QSPI_PSRAM0` / `QSPI_PSRAM1` from `CTRL_FLAGS` device bits; steers `ram_*_cs_n`. Hold until `!busy`. |
+| `device_sel` | in | `logic` (same width as `qspi_device_sel_t`) | `QSPI_PSRAM0` / `QSPI_PSRAM1` from `CTRL_FLAGS` device bits; steers `ram_*_cs_n`. Packed `logic` for the same wrapper constraint. Hold until `!busy`. |
 | `byte_len` | in | `qpi_byte_len_t` | Payload bytes this CE# (FETCH=`QPI_TCD_BYTES`, data=`k` ≤ `N`). `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)`, `QPI_MAX_BYTES = max(DMA_BUF_DEPTH_MAX, QPI_TCD_BYTES)`. Hold until `!busy`. |
 | `wdata` | in | `[3:0]` | Write nibble. **Must be valid on the `txn_valid` cycle**. When `wdata_next` asserts, the **next** nibble must already be on `wdata` **before the next `clk` cycle** (same-cycle response) so the engine has setup time into the SPI/SIO path for the following rising SCK. |
 | `busy` | out | 1 | High while not `IDLE` (in flight through CE# complete). Start qualifier; OE reclaim / BUS_GNT wait for 0. |

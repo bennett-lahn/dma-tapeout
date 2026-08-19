@@ -100,7 +100,7 @@ First harden (likely `DMA_BUF_DEPTH` **N=1**) **fits 1x1** at 66 MHz (`CLOCK_PER
 - Stale `config_merged.json` → wrong tile DEF
 - OSS CAD Python venv → missing `chevron` / broken `tkinter`
 - No slang / `USE_SLANG` → `types.svh` parse errors
-- GitHub `tt-gds-action` port check uses yowasp Yosys on `source_files[0]` only: keep `top.v` first in `info.yaml` and do not import `qspi_pkg` in that wrapper (local slang `project.py` patch is not used in CI)
+- GitHub `tt-gds-action` port check uses yowasp Yosys on `source_files[0]` only: keep `top.v` first in `info.yaml` and do not import `qspi_pkg` in that wrapper (local slang `project.py` patch is not used in CI). Engine `cmd` / `device_sel` ports are packed `logic` of the same widths as the package enums so LibreLane slang can connect the wrapper without implicit enum casts.
 - Total instances after fill ≠ design size (decap/fill dominate on 1x2)
 
 ## Buffer-depth study (optional; not V1 harden)

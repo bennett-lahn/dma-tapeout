@@ -8,9 +8,10 @@
 // clk          in   system clock
 // rst_n        in   sync active-low reset
 // txn_valid    in   1-clk start pulse; legal only when ~busy
-// cmd          in   QSPI_CMD_FAST_READ / QSPI_CMD_WRITE (hold until ~busy)
+// cmd          in   FAST_READ 0xEB / WRITE 0x02 (hold until ~busy); packed as
+//                   logic[7:0] so the TT wrapper can stay package-free
 // addr         in   24-bit QPI address phase; addr[23] don't-care (D35); A[22:0] in addr[22:0]
-// device_sel      in   QSPI_PSRAM0/1 -> which ram_*_cs_n
+// device_sel      in   0/1 -> which ram_*_cs_n; packed as logic so wrapper stays package-free
 // byte_len     in   payload bytes this CE#; width QPI_BYTE_LEN_W; hold until ~busy
 // wdata        in   write nibble; must be valid on txn_valid; when wdata_next
 //                   asserts, next nibble must be on wdata before the next clk
@@ -35,9 +36,11 @@ module qspi_engine
    ,input  logic          rst_n
 
    ,input  logic          txn_valid
-   ,input  qspi_cmd_t     cmd
+   // Packed widths match qspi_cmd_t / qspi_device_sel_t. The TT wrapper cannot
+   // import qspi_pkg (yowasp port check), so slang needs logic here, not enums.
+   ,input  logic    [7:0] cmd
    ,input  qspi_addr_t    addr
-   ,input  qspi_device_sel_t device_sel
+   ,input  logic          device_sel
    ,input  qpi_byte_len_t byte_len
    ,input  logic    [3:0] wdata
 
@@ -92,7 +95,7 @@ always_comb begin
       end
       SEND_ADDR: begin
          if (cycle_cnt == 'd6) begin
-            if (qspi_wait_cycles(cmd) == 3'd0)
+            if (qspi_wait_cycles(qspi_cmd_t'(cmd)) == 3'd0)
                next_state = qspi_state_t'((cmd == QSPI_CMD_WRITE) ? WRITE_DATA : READ_DATA);
             else
                next_state = WAIT;
@@ -101,7 +104,7 @@ always_comb begin
          end
       end
       WAIT: begin
-         if (cycle_cnt == QPI_CYCLE_CNT_W'(qspi_wait_cycles(cmd)))
+         if (cycle_cnt == QPI_CYCLE_CNT_W'(qspi_wait_cycles(qspi_cmd_t'(cmd))))
             next_state = qspi_state_t'((cmd == QSPI_CMD_WRITE) ? WRITE_DATA : READ_DATA);
          else
             next_state = WAIT;
