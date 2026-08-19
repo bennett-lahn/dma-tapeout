@@ -32,13 +32,14 @@ jobs:
       - name: Run executable timing
         env:
           TIMING_PROFILE: nominal
-        run: test/scripts/run_timing.sh
+        # Invoke via bash so a Windows commit without the git +x bit still runs.
+        run: bash test/scripts/run_timing.sh
 
       - name: Test Summary
         uses: test-summary/action@v2.4
         with:
           paths: "test/results.xml"
-        if: always()
+        if: always() && hashFiles('test/results.xml') != ''
 
       - name: upload timing results
         if: success() || failure()

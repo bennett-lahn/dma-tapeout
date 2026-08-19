@@ -17,10 +17,11 @@
 
 `default_nettype none
 
+// Do not `import qspi_pkg` here. GitHub tt-gds-action runs yowasp Yosys on
+// sources[0] only (`info.yaml` lists this file first) to extract TT ports.
 module tt_um_lahnb_sgdma
-   import qspi_pkg::*;
 #(
-  parameter int unsigned DMA_BUF_DEPTH = 5 // N (D20); V1 tapeout = 5; sim sweep via -G
+  parameter DMA_BUF_DEPTH = 5 // N (D20); V1 tapeout = 5; sim sweep via -G
 )(
   input  wire [7:0] ui_in     // Dedicated inputs
   ,output wire [7:0] uo_out    // Dedicated outputs
@@ -44,13 +45,14 @@ logic bus_req;
 logic bus_gnt;
 logic bus_park;
 
-// System Controller
-logic [3:0]       qspi_wdata;
-logic             qspi_txn_valid;
-qspi_cmd_t        qspi_cmd;
-qspi_addr_t       qspi_addr;
-qspi_device_sel_t qspi_device_sel;
-qpi_byte_len_t    qspi_byte_len;
+// System Controller. Widths match qspi_pkg in types.svh (no package import:
+// yowasp Yosys port check reads this file alone).
+logic [3:0]  qspi_wdata;
+logic        qspi_txn_valid;
+logic [7:0]  qspi_cmd;         // qspi_cmd_t
+logic [23:0] qspi_addr;        // qspi_addr_t
+logic        qspi_device_sel;  // qspi_device_sel_t
+logic [3:0]  qspi_byte_len;    // qpi_byte_len_t (QPI_BYTE_LEN_W)
 
 
 // QSPI Engine
@@ -67,7 +69,7 @@ logic    [3:0] sio_oe;
 
 // Synchronize START/BUS_REQ into clk, then rising-edge detect START into a
 // one-clk pulse. sys_controller never samples raw ui_in.
-always_ff @(posedge clk) begin
+always @(posedge clk) begin
    if (~rst_n) begin
       start_sync   <= 2'b00;
       start_sync_d <= 1'b0;

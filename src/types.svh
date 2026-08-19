@@ -19,11 +19,13 @@ typedef enum logic [7:0] {
    ,QSPI_CMD_FAST_READ = 8'hEB
 } qspi_cmd_t;
 
-// Returns required SCK wait cycles for a given cmd between addr and data phase
+// Required SCK wait cycles between addr and data. Assign-to-name (not
+// `return`) so yowasp Yosys can parse this package during TT port checks.
 function automatic logic [2:0] qspi_wait_cycles(input qspi_cmd_t cmd);
-   unique case (cmd)
-      QSPI_CMD_FAST_READ: return 3'd6;
-      QSPI_CMD_WRITE:     return 3'd0; // WRITE: no wait
+   case (cmd)
+      QSPI_CMD_FAST_READ: qspi_wait_cycles = 3'd6;
+      QSPI_CMD_WRITE:     qspi_wait_cycles = 3'd0; // WRITE: no wait
+      default:            qspi_wait_cycles = 3'd0;
    endcase
 endfunction
 

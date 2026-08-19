@@ -349,6 +349,17 @@ The minimum pre-merge matrix after the corresponding milestones exist is:
 
 M0 starts with only the L1 Icarus smoke. Jobs are added as their milestone becomes implementable. A missing future artifact such as the gate netlist is reported as `blocked`, not treated as a passing skip.
 
+Shipped GitHub Actions (`.github/workflows/`):
+
+| Workflow | What it runs | Notes |
+|---|---|---|
+| `test.yaml` | L1 Icarus `make smoke` at `TIMING_PROFILE=ideal` (zero TB placeholders) | Writes `test/results.xml` |
+| `timing.yaml` | `bash test/scripts/run_timing.sh` at `TIMING_PROFILE=nominal` (documented APS6404L min/max AC with zero TB placeholders) | Invoke via `bash` so a missing git execute bit is not a 126. Suites: `test_qspi_timing`, `test_qspi_timing_delay`, `test_qspi_timing_launch_rx`, ownership negatives |
+| `gds.yaml` | `tt-gds-action@ttihp26b` | Port check reads `info.yaml` `source_files[0]` with yowasp Yosys; `top.v` must be first and package-free. Synth still uses `USE_SLANG` |
+| `docs.yaml` | `tt-gds-action/docs@ttihp26b` | Datasheet render |
+
+Hook scripts under `test/scripts/` should be git `+x`, but CI must not depend on that bit.
+
 ## Platform acceptance checklist
 
 - One command selects each DUT level without source edits.

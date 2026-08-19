@@ -50,7 +50,7 @@ jobs:
         uses: test-summary/action@v2.4
         with:
           paths: "test/results.xml"
-        if: always()
+        if: always() && hashFiles('test/results.xml') != ''
 
       - name: upload waveform and test results
         if: success() || failure()

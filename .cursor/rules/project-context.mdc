@@ -5,7 +5,7 @@ alwaysApply: true
 
 # DMA Tapeout Project Context
 
-This repo is a Tiny Tapeout scatter-gather DMA project in **Phase 2** (V1 feature RTL under `src/rtl/`; cocotb M0–M3 accepted; manual IHP LibreLane harden closed 1x1 @ 66 MHz), targeting **IHP SG13G2 / TTIHP26b** (D27).
+This repo is a Tiny Tapeout scatter-gather DMA project in **Phase 2** (V1 feature RTL under `src/`; cocotb M0–M5 accepted; manual IHP LibreLane harden closed 1x1 @ 66 MHz), targeting **IHP SG13G2 / TTIHP26b** (D27).
 
 ## Before nontrivial work
 
@@ -17,13 +17,13 @@ Human summaries live in `docs/human/` (condensed, not stubs). Every durable fact
 
 ## Hard constraints
 
-- Budget: **2 Tiny Tapeout tiles max**; treat ~500 DFFs as a soft ceiling (first harden: ~158 DFFs; 1x1 fits at 66 MHz)
+- Budget: **1x1 only** (one Tiny Tapeout tile; D36). `1x2` / 2-tile is out of budget. Soft caution ~200 DFFs on 1x1 (first harden: ~158 DFFs, ~60% util). Hard gate: fits and times on `tt_block_1x1`. If N=5 does not close, cut area; never grow tiles.
 - PDK / shuttle: **ihp-sg13g2** / **TTIHP26b** (not sky130); do not cite sky130 GPIO MHz ratings as binding
 - Start from scratch; TinyDMA-2C is prior art only, not a code source
 - Obsidian notes under `C:\Users\lahnb\Documents\Obsidian Vault\Projects\Tiny Tapeout\` are **read-only**
-- Prefer shipping a smaller verified V1 over late feature creep
-- When proposing features, state DFF / tile impact
-- **Memory scope (D11/D12/D19):** both PSRAM devices are DMA endpoints (incl. cross-device); V1 is bulk memcpy via 11-byte TCDs (`ptr[23]` device, `QUIT` end-of-chain; no ALU/ring/cond-stop); ASIC flash R/W is post-V1; see `docs/llm/10-post-v1-features.md`
+- Prefer shipping the verified V1 bulk mover; do not grow RTL beyond the frozen feature set
+- When proposing features, state DFF / tile impact and treat RTL growth as out of scope unless the user reopens it
+- **Memory scope (D11/D12/D19):** both PSRAM devices are DMA endpoints (incl. cross-device); shipped RTL is bulk memcpy via 11-byte TCDs (`QUIT` end-of-chain; no ALU/ring/cond-stop); ASIC does not master flash (MCU pass-through only)
 
 ## TinyDMA-2C prior art (separate context)
 
@@ -37,3 +37,4 @@ Human summaries live in `docs/human/` (condensed, not stubs). Every durable fact
 - SystemVerilog port/instance commas at the beginning of lines
 - Synchronous active-low reset only (`rst_n`; assert with `if (~rst_n)`)
 - No unsolicited extra markdown docs outside `docs/`
+- GitHub `tt-gds-action` port check: `info.yaml` `source_files` lists `top.v` first; that wrapper must not `import` SV packages (yowasp Yosys). Sim Makefile still compiles `types.svh` first.

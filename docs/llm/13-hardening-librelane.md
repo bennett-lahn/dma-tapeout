@@ -99,7 +99,7 @@ Edit before regenerating merged config:
 | Knob | File | Notes |
 |---|---|---|
 | Tile size | `info.yaml` → `project.tiles` | V1 is **`"1x1"` only** (D36). Selects `tt/tech/ihp-sg13g2/def/tt_block_1x1_pgvdd.def`. Do not set `"1x2"` as an N=5 or area escape |
-| Top / sources | `info.yaml` | Must match files under `src/` |
+| Top / sources | `info.yaml` | Must match files under `src/`. **`top.v` first** so GitHub `tt-gds-action` yowasp port check can extract TT pins without parsing SV packages. Simulation Makefile still compiles `types.svh` first |
 | Clock period | `src/config.json` → `CLOCK_PERIOD` | ns. **15.15** ≈ **66 MHz** (D16). I/O delays in SDC scale from this |
 | Density | `src/config.json` → `PL_TARGET_DENSITY_PCT` | Default 60; GPL may auto-bump (e.g. to 0.69) on tight 1x1 |
 | Hold margins | `PL_RESIZER_HOLD_SLACK_MARGIN`, `GRT_RESIZER_HOLD_SLACK_MARGIN` | Raise if hold fails |
@@ -206,7 +206,7 @@ Takeaways:
 
 1. **`chevron` / TT deps missing** - use `~/ttsetup/venv` from **system** `/usr/bin/python3`, not OSS CAD Python.
 2. **`libtk8.6.so` / tkinter** - same root cause (venv built with suite Python). Recreate venv; install `python3-tk`.
-3. **`TOK_CONSTVAL` on `types.svh`** - yowasp Yosys cannot parse SV packages. Need host Yosys + slang + `USE_SLANG: true`, and the local `tt/project.py` host-yosys preference.
+3. **`TOK_CONSTVAL` on `types.svh`** - yowasp Yosys cannot parse SV packages (`return` / `unique case` in functions is one failure mode). Local harden: host Yosys + slang + `USE_SLANG: true`, and the local `tt/project.py` host-yosys preference. GitHub `tt-gds-action` still uses stock yowasp for `--create-user-config` port check, which reads **only** `info.yaml` `source_files[0]`. Keep **`top.v` first** and do **not** `import qspi_pkg` in that wrapper (explicit widths instead). Simulation Makefile still compiles `types.svh` first. LibreLane synth still needs `USE_SLANG: true`.
 4. **Sourcing OSS CAD after the TT venv** - suite Python can shadow `chevron` again. For `--create-user-config`, TT venv alone is enough once `find_host_yosys` resolves `~/tools/oss-cad-suite/bin/yosys`.
 5. **Stale `config_merged.json`** - changing `info.yaml` tiles without `--create-user-config` hardens the wrong die.
 6. **Reports inside `nix develop`** - use TT venv Python for `tt_tool` print-* helpers.
@@ -215,7 +215,7 @@ Takeaways:
 
 ## CI / shuttle path
 
-GitHub harden for this project class uses `tt-gds-action` on the **ttihp26b** branch (LibreLane + ihp-sg13g2). Local Nix runs are for iteration and area learning; shuttle submission still expects the TT CI / template contract. Keep `ttihp-verilog-template` RTL copied from `src/` before relying on local harden GDS.
+GitHub harden for this project class uses `tt-gds-action` on the **ttihp26b** branch (LibreLane + ihp-sg13g2). That action clones upstream `tt-support-tools` (not the local slang `project.py` patch) and runs `yowasp-yosys` on `source_files[0]` to extract TT ports before LibreLane. The in-repo contract for that step is `info.yaml` listing `top.v` first, with the wrapper free of SV packages. Local Nix runs are for iteration and area learning; shuttle submission still expects the TT CI / template contract. Keep `ttihp-verilog-template` RTL copied from `src/` before relying on local harden GDS.
 
 ## Buffer-depth study (optional; not normal harden)
 

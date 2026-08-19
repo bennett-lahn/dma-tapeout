@@ -16,11 +16,14 @@ project:
   # List your project's source files here.
   # Source files must be in ./src and you must list each source file separately, one per line.
   # Don't forget to also update `PROJECT_SOURCES` in test/Makefile.
+  # top.v must be first: tt-gds-action --create-user-config uses yowasp Yosys on
+  # sources[0] only to extract TT ports. That file cannot use SV packages.
+  # Simulation Makefile still compiles types.svh first.
   source_files:
+    - "top.v"
     - "types.svh"
     - "qspi_engine.sv"
     - "sys_controller.sv"
-    - "top.v"
 
 # The pinout of your project. Leave unused pins blank. DO NOT delete or add any pins.
 # This section is for the datasheet/website. Use descriptive names (e.g., RX, TX, MOSI, SCL, SEG_A, etc.).

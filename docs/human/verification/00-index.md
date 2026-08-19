@@ -56,6 +56,8 @@ test/scripts/run_gl.sh
 
 System Python is `python3`. Prefer suite Verilator 5.051 over older `/usr/local` builds. `env.sh` puts a cocotb-friendly `vvp` wrapper first on PATH (raw suite `bin/vvp` breaks the venv). Full contract: [`../../llm/verification/02-platform.md`](../../llm/verification/02-platform.md).
 
+GitHub Actions: `test.yaml` (L1 Icarus smoke), `timing.yaml` (`bash test/scripts/run_timing.sh` so a missing git execute bit is not a 126), `gds.yaml` (`tt-gds-action@ttihp26b`; `info.yaml` lists `top.v` first because yowasp Yosys port-checks only that file). The CI smoke job stays `todo` until those jobs are green.
+
 ## Current status
 
 | Gate | Status | Note |
