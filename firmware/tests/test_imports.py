@@ -53,3 +53,56 @@ def test_no_cases_py_or_second_demo_script():
     assert "demo_min.py" not in names
     demos = [name for name in names if name.startswith("demo")]
     assert demos == ["demo.py"]
+
+
+def _normalize_oracle_source(text):
+    """Drop import lines and the MicroPython dataclass try/except shim."""
+    lines = text.splitlines()
+    out = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        stripped = lines[i].strip()
+        if stripped.startswith("from ") or stripped.startswith("import "):
+            if "(" in stripped and ")" not in stripped:
+                i += 1
+                while i < n and ")" not in lines[i]:
+                    i += 1
+                i += 1
+                continue
+            i += 1
+            continue
+        if stripped == "try:":
+            j = i + 1
+            while j < n and (
+                lines[j].startswith(" ")
+                or lines[j].startswith("\t")
+                or not lines[j].strip()
+            ):
+                j += 1
+            if j < n and "ImportError" in lines[j]:
+                j += 1
+                while j < n and (
+                    lines[j].startswith(" ")
+                    or lines[j].startswith("\t")
+                    or not lines[j].strip()
+                ):
+                    j += 1
+                i = j
+                continue
+        out.append(lines[i].rstrip())
+        i += 1
+    compact = [line for line in out if line.strip()]
+    return "\n".join(compact)
+
+
+def test_firmware_oracle_copies_match_reference():
+    repo = FIRMWARE_ROOT.parent
+    pairs = [
+        (FIRMWARE_ROOT / "tcd.py", repo / "test" / "reference" / "tcd.py"),
+        (FIRMWARE_ROOT / "chain.py", repo / "test" / "reference" / "chain.py"),
+    ]
+    for fw_path, ref_path in pairs:
+        fw = _normalize_oracle_source(fw_path.read_text(encoding="utf-8"))
+        ref = _normalize_oracle_source(ref_path.read_text(encoding="utf-8"))
+        assert fw == ref, "%s drifted from %s" % (fw_path.name, ref_path)

@@ -46,27 +46,34 @@ class MockShuttle:
 
 
 class MockDemoBoard:
-    """Integer ui_in / uo_out / uio_oe_pico plus grant and optional START ACK."""
+    """Integer ui_in / uo_out / uio_oe_pico plus grant and optional START ACK.
 
-    def __init__(self, auto_ack_start=False, instant_complete=False):
+    Protocol-shape only: grant is combinational with BUS_REQ (no 2-flop), and
+    START is accepted on falling START rather than a controller DONE-low pulse.
+    Do not treat mock grant latency as D21/D16 coverage.
+    """
+
+    def __init__(self, auto_ack_start=False, instant_complete=False, auto_grant=True):
         self.ui_in = BitPort(0, self._on_ui)
         self.uo_out = BitPort(0x01)  # DONE=1, BUS_GNT=0
         self.uio_oe_pico = BitPort(0, self._on_oe)
         self.shuttle = MockShuttle()
         self.clock_hz = None
-        self._in_reset = False
+        self.mode = "ASIC_RP_CONTROL"
         self.auto_ack_start = auto_ack_start
         self.instant_complete = instant_complete
+        self.auto_grant = auto_grant
         self.dma_hook = None
         self.events = []
         self._start_seen = False
         self._complete_dma = False
+        self._reset_held = False
 
     def clock_project_PWM(self, freq):
         self.clock_hz = freq
 
     def reset_project(self, asserted):
-        self._in_reset = bool(asserted)
+        self._reset_held = bool(asserted)
         self.events.append(("reset", bool(asserted)))
         if asserted:
             self.uo_out[0] = 1
@@ -79,10 +86,11 @@ class MockDemoBoard:
         req = self.ui_in[2]
         start = self.ui_in[0]
         self.events.append(("ui", int(self.ui_in), "oe", int(self.uio_oe_pico)))
-        if req:
-            self.uo_out[1] = 1
-        else:
-            self.uo_out[1] = 0
+        if self.auto_grant:
+            if req:
+                self.uo_out[1] = 1
+            else:
+                self.uo_out[1] = 0
         if start and not req and self.uo_out[0]:
             self._start_seen = True
         elif self._start_seen and not start:

@@ -4,13 +4,17 @@ Golden expected memory is `interpret_chain(initial_memory).final_memory`.
 Install/dump use chunked QPI (`psram.Psram.write` / `read`); never a single
 unchunked CE# dump. After START, `wait_idle_after_start` treats a missed DONE
 low pulse as already idle (fast completion), not a timeout.
+
+`bring_up=False` is QPI-only: devices are already in QPI and this path must
+not issue SPI Enter Quad `0x35`. Empty dest (no expected writes) is not a
+PASS; dest that already matched before START cannot prove DMA ran.
 """
 
-from .chain import interpret_chain
+from .chain import DEFAULT_DMA_BUF_DEPTH, interpret_chain
 
 
 class RunError(Exception):
-    """Install/dump compare failed, or host sequencing failed."""
+    """Install/dump compare failed, empty dest check, or host sequencing failed."""
 
 
 def coalesced_spans(mem):
@@ -80,23 +84,83 @@ def compare_final(result, dumped):
     return mismatches
 
 
-def run_chain(host, psram, mem, exit_qpi=False, timeout_ms=5000, bring_up=True):
-    """Program-start-compare loop. Returns (ok, chain_result, mismatches)."""
-    result = interpret_chain(mem)
-    host.request_bus()
-    if bring_up:
-        psram.bring_up_both()
-    else:
-        psram.enter_qpi_both()
-    install_image(psram, mem)
-    host.release_bus()
-    host.pulse_start()
-    host.wait_idle_after_start(timeout_ms)
-    host.request_bus()
+def _format_got(got):
+    if got is None:
+        return "None"
+    return "0x%02X" % got
+
+
+def run_chain(
+    host,
+    psram,
+    mem,
+    exit_qpi=False,
+    timeout_ms=5000,
+    bring_up=True,
+    dma_buf_depth=DEFAULT_DMA_BUF_DEPTH,
+    allow_empty_dest=False,
+):
+    """Program-start-compare loop. Returns (ok, chain_result, mismatches).
+
+    Raises RunError on dest mismatch, empty dest (unless allow_empty_dest),
+    or dest that already matched the oracle before START.
+    """
+    if getattr(psram, "host", None) is None:
+        psram.host = host
+    result = interpret_chain(mem, dma_buf_depth=dma_buf_depth)
     extents = dest_extents(result)
-    dumped = dump_extents(psram, extents)
-    mismatches = compare_final(result, dumped)
-    if exit_qpi:
-        psram.exit_qpi_both()
-    host.release_bus()
-    return (not mismatches, result, mismatches)
+    held = False
+    try:
+        host.request_bus()
+        held = True
+        if bring_up:
+            psram.bring_up_both()
+        install_image(psram, mem)
+        if not result.expected_writes:
+            if not allow_empty_dest:
+                raise RunError(
+                    "no dest writes to check (QUIT-only or empty chain); "
+                    "pass allow_empty_dest=True to skip compare"
+                )
+            if exit_qpi:
+                psram.exit_qpi_both()
+            host.release_bus()
+            held = False
+            return (False, result, [])
+        pre_start = dump_extents(psram, extents)
+        if pre_start == result.expected_writes:
+            for device, addr, length in extents:
+                psram.write(device, addr, bytes(length))
+            pre_start = dump_extents(psram, extents)
+        host.release_bus()
+        held = False
+        host.pulse_start()
+        host.wait_idle_after_start(timeout_ms)
+        host.request_bus()
+        held = True
+        dumped = dump_extents(psram, extents)
+        mismatches = compare_final(result, dumped)
+        if mismatches:
+            parts = [
+                "dev%d 0x%06X expected=0x%02X got=%s"
+                % (device, addr, exp, _format_got(got))
+                for device, addr, exp, got in mismatches
+            ]
+            raise RunError("dest mismatch: " + "; ".join(parts))
+        if dumped == pre_start:
+            raise RunError(
+                "dest already matched expected bytes before START; "
+                "cannot prove DMA ran (missed START would also match)"
+            )
+        if exit_qpi:
+            psram.exit_qpi_both()
+        host.release_bus()
+        held = False
+        return (True, result, [])
+    finally:
+        if held:
+            try:
+                host.release_bus()
+            except Exception:
+                host.hiz()
+                host.zero_ui_in()

@@ -20,6 +20,59 @@ def test_enable_project_clock_and_unused_ui_in_zero():
     assert tt.clock_hz == PROJECT_CLOCK_HZ
     assert int(tt.ui_in) == 0
     assert int(tt.uio_oe_pico) == OE_HIZ
+    assert host.done is True
+    assert host.bus_gnt is False
+    resets = [ev for ev in tt.events if ev[0] == "reset"]
+    assert (True,) in [(r[1],) for r in resets] or any(r[1] is True for r in resets)
+    assert any(r[1] is False for r in resets)
+
+
+def test_rst_n_low_does_not_use_in_reset_attr():
+    class BoardNoInReset:
+        def __init__(self):
+            self.ui_in = 0
+            self.uo_out = 0x01
+            self.uio_oe_pico = 0
+            self.shuttle = MockDemoBoard().shuttle
+            self.mode = "ASIC_RP_CONTROL"
+            self.clock_hz = None
+            self._held = False
+
+        def clock_project_PWM(self, freq):
+            self.clock_hz = freq
+
+        def reset_project(self, asserted):
+            self._held = bool(asserted)
+            if asserted:
+                self.uo_out = 0x01
+
+    tt = BoardNoInReset()
+    assert not hasattr(tt, "_in_reset")
+    host = Host(tt, sleep_us=lambda us: None)
+    host.reset_asic(True)
+    assert host.rst_n_low is True
+    host.enable_drive()
+    host.reset_asic(False)
+    assert host.rst_n_low is False
+    with pytest.raises(HostError, match="BUS_GNT"):
+        host.enable_drive()
+
+
+def test_timeout_clears_ui_in():
+    tt = MockDemoBoard(auto_grant=False)
+    host = Host(tt, sleep_us=lambda us: None)
+    with pytest.raises(HostError, match="timeout"):
+        host.request_bus(timeout_ms=0)
+    assert int(tt.ui_in) == 0
+    assert host.bus_req is False
+
+
+def test_wrong_mode_is_rejected():
+    tt = MockDemoBoard()
+    tt.mode = "SAFE"
+    host = Host(tt, sleep_us=lambda us: None)
+    with pytest.raises(HostError, match="ASIC_RP_CONTROL"):
+        host.enable_project()
 
 
 def test_start_refused_while_req():

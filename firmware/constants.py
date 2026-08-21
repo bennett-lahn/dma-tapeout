@@ -30,7 +30,7 @@ CTRL_DEST_DEVICE_BIT = 6
 CTRL_NEXT_DEVICE_BIT = 7
 CTRL_RESERVED_SHIFT = 0
 
-# --- Buffer (types.svh DMA_BUF_DEPTH_MAX / tapeout N; not the chain default 1) ---
+# --- Buffer (types.svh DMA_BUF_DEPTH_MAX / tapeout N; chain default is N=5) ---
 
 DMA_BUF_DEPTH_MAX = 8
 DMA_BUF_DEPTH_TAPEOUT = 5
@@ -75,10 +75,21 @@ DEFAULT_PROJECT = "tt_um_lahnb_sgdma"
 # uio bit: 0 flash CS, 1 SIO0, 2 SIO1, 3 SCK, 4 SIO2, 5 SIO3, 6 RAM A CS, 7 RAM B CS.
 # SDK: bits set to 1 are driven by the RP2.
 OE_HIZ = 0
+# SPI: drive flash CS, MOSI, SCK, RAM CS; MISO/SD2/SD3 are inputs (HOLD#/WP#).
 OE_SPI = (
     (1 << 0) | (1 << 1) | (1 << 3) | (1 << 6) | (1 << 7)
 )
+# QPI command/addr/write: all eight uio bits driven by the RP2.
 OE_QPI = 0xFF
+# QPI read data/dummy: drive CS and SCK only; SIO0..3 must be Hi-Z.
+OE_QPI_READ = (1 << 0) | (1 << 3) | (1 << 6) | (1 << 7)
+SIO_OE_MASK = (1 << 1) | (1 << 2) | (1 << 4) | (1 << 5)
+
+# Conservative MCU payload bytes per CE# pulse. SCK-only planning can fit more
+# under tCEM (max CE# low); Python-fed PIO holds CE# across puts, so the MCU
+# path raises CE# between these chunks. Residual: one PIO burst wall-clock on
+# hardware is not proven by host pytest.
+MCU_QPI_PAYLOAD_MAX = 1
 
 # Optional extra START high time. Capture does not depend on this: two GPIO
 # writes already last much longer than two 66 MHz synchronizer clocks.

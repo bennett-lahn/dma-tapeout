@@ -3,6 +3,13 @@
 CPython tests use the real dataclasses module. This shim is only imported when
 `import dataclasses` fails. It covers `@dataclass` / `@dataclass(frozen=True)`,
 `field(default=..., compare=...)`, and `replace` as used by tcd.py and chain.py.
+
+Hash and constructor rules match CPython dataclasses:
+unfrozen instances are unhashable; extra positional args raise TypeError;
+class-level constants without annotations are not fields.
+
+Frozen assignment raises FrozenInstanceError, a subclass of AttributeError
+(CPython dataclasses.FrozenInstanceError is also an AttributeError subclass).
 """
 
 
@@ -11,6 +18,10 @@ class _MISSING_TYPE:
 
 
 MISSING = _MISSING_TYPE()
+
+
+class FrozenInstanceError(AttributeError):
+    """Raised when assigning to a frozen shim dataclass field."""
 
 
 class _Field:
@@ -31,10 +42,12 @@ def _iter_field_specs(cls):
     if annotations:
         names = list(annotations.keys())
     else:
+        # No annotations: only explicit field() objects are fields. Class-level
+        # tuples such as EQUALITY_FIELDS must not become instance attributes.
         names = [
             name
             for name, value in cls.__dict__.items()
-            if not name.startswith("_") and not callable(value)
+            if isinstance(value, _Field)
         ]
     specs = []
     for name in names:
@@ -51,6 +64,7 @@ def _iter_field_specs(cls):
 def dataclass(cls=None, *, frozen=False):
     def wrap(cls):
         specs = _iter_field_specs(cls)
+        post_init = getattr(cls, "__post_init__", None)
 
         def __init__(self, *args, **kwargs):
             values = {}
@@ -67,11 +81,19 @@ def dataclass(cls=None, *, frozen=False):
                     values[name] = spec.default
                 else:
                     raise TypeError("missing argument %s" % name)
+            if idx < len(args):
+                raise TypeError(
+                    "%s() takes %d positional arguments but %d were given"
+                    % (cls.__name__, len(specs), len(args))
+                )
             if kwargs:
                 raise TypeError("unexpected kwargs %s" % sorted(kwargs))
-            object.__setattr__(self, "_dc_frozen", frozen)
+            object.__setattr__(self, "_dc_frozen", False)
             for name, value in values.items():
                 object.__setattr__(self, name, value)
+            if post_init is not None:
+                post_init(self)
+            object.__setattr__(self, "_dc_frozen", frozen)
 
         def __repr__(self):
             parts = ["%s=%r" % (name, getattr(self, name)) for name, _spec in specs]
@@ -101,15 +123,17 @@ def dataclass(cls=None, *, frozen=False):
         if frozen:
             def __setattr__(self, name, value):
                 if getattr(self, "_dc_frozen", False):
-                    raise AttributeError("cannot assign to field %r" % name)
+                    raise FrozenInstanceError("cannot assign to field %r" % name)
                 object.__setattr__(self, name, value)
 
             def __delattr__(self, name):
-                raise AttributeError("cannot delete field %r" % name)
+                raise FrozenInstanceError("cannot delete field %r" % name)
 
             cls.__setattr__ = __setattr__
             cls.__delattr__ = __delattr__
             cls.__hash__ = __hash__
+        else:
+            cls.__hash__ = None
         return cls
 
     if cls is None:

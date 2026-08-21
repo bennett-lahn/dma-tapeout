@@ -1,14 +1,18 @@
-"""11-byte TCD encode/decode/validate (``TC-TCD-BE`` unit vector).
+"""Firmware-side copy of the 11-byte TCD oracle, used on the MCU and in firmware pytest.
 
-Pure Python only; no cocotb imports. See ``docs/llm/verification/05-reference-model.md``.
+Keep the firmware and ``test/reference`` copies aligned except import paths
+and the MicroPython dataclass shim. Pure Python only; no cocotb imports.
+See ``docs/llm/verification/05-reference-model.md``.
 
 Architecture numbers (byte offsets, ``CTRL_FLAGS`` bit positions, pointer
-width) live in ``constants.py`` as copies of ``../04-tcd-and-datapath.md``.
+width) live in the sibling ``constants`` module as copies of
+``../04-tcd-and-datapath.md``.
 Packed ``tcd_t`` in ``types.svh`` is the layout: RTL is 88 bits and latches
-``reserved`` as the packed LSB nibble. This dataclass keeps ``reserved`` as the last field so
-encode/decode can round-trip the 11-byte memory record
-(``CTRL_FLAGS[3:0]``, last wire nibble). Constants are never parsed out of
-SystemVerilog.
+``reserved`` as the packed LSB nibble. This dataclass keeps ``reserved`` as
+the last field so encode/decode can round-trip the 11-byte memory record
+(``CTRL_FLAGS[3:0]``, last wire nibble). Do not ``struct.pack`` by iterating
+dataclass fields: Python field order is not the packed ``tcd_t`` order.
+Constants are never parsed out of SystemVerilog.
 
 Representation and V1 validity are deliberately separate:
 
@@ -83,6 +87,14 @@ class Tcd:
     dest_device: int = 0
     next_device: int = 0
     reserved: int = 0
+
+    def __post_init__(self):
+        """Normalize ``quit`` to bool so ``Tcd(quit=1)`` equals a decoded TCD."""
+        quit = self.quit
+        if isinstance(quit, bool):
+            return
+        if isinstance(quit, int) and quit in (0, 1):
+            object.__setattr__(self, "quit", bool(quit))
 
 
 # Mandatory unit vector from 05-reference-model.md. Unit tests restate the byte
@@ -174,7 +186,16 @@ def validate_tcd(tcd: Tcd) -> Tcd:
 
 
 def ctrl_flags(tcd: Tcd) -> int:
-    """Return byte 10 of *tcd*: NEXT, DEST, SRC, QUIT, then reserved."""
+    """Return byte 10 of *tcd*: NEXT, DEST, SRC, QUIT, then reserved.
+
+    Public encode is :func:`encode_tcd`, which validates first. This helper
+    still range-checks device and reserved bits so a caller that skips
+    ``validate_tcd`` cannot pack out-of-range flags.
+    """
+    _check_integer("next_device", tcd.next_device, 0, 1)
+    _check_integer("dest_device", tcd.dest_device, 0, 1)
+    _check_integer("src_device", tcd.src_device, 0, 1)
+    _check_integer("reserved", tcd.reserved, 0, RESERVED_MAX)
     return (
         (tcd.next_device << CTRL_NEXT_DEVICE_BIT)
         | (tcd.dest_device << CTRL_DEST_DEVICE_BIT)

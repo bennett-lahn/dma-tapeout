@@ -9,6 +9,9 @@ GPIO write duration already covers the two-flop synchronizer.
 
 Takes a `tt` object so REPL can pass `DemoBoard.get()` and tests can inject a
 mock with integer `ui_in` / `uo_out` / `uio_oe_pico`.
+
+`rst_n_low` uses firmware-recorded `reset_project` state, not a DemoBoard
+private `_in_reset` attribute (the SDK has no such field).
 """
 
 from .constants import (
@@ -19,11 +22,15 @@ from .constants import (
     DONE_BIT,
     OE_HIZ,
     OE_QPI,
+    OE_QPI_READ,
+    OE_SPI,
     PROJECT_CLOCK_HZ,
     START_BIT,
     START_HOLD_US,
 )
 from .psram import sleep_us as _default_sleep_us
+
+EXPECTED_MODE = "ASIC_RP_CONTROL"
 
 
 class HostError(Exception):
@@ -84,6 +91,7 @@ class Host:
         self._poll_us = poll_us
         self._awaiting_done_fall = False
         self._saw_busy = False
+        self._rst_held = False
 
     def _now_ms(self):
         import time
@@ -125,13 +133,15 @@ class Host:
 
     @property
     def rst_n_low(self):
-        held = getattr(self.tt, "_in_reset", None)
-        if held is not None:
-            return bool(held)
-        return False
+        """True while this Host has `reset_project(True)` held (DemoBoard rst_n=0)."""
+        return bool(self._rst_held)
 
     def _drive_legal(self):
         return self.bus_gnt or self.rst_n_low
+
+    def zero_ui_in(self):
+        """Drive unused and used `ui_in` bits to 0 (D34)."""
+        _set_port(self.tt, "ui_in", 0)
 
     def hiz(self):
         _set_port(self.tt, "uio_oe_pico", OE_HIZ)
@@ -141,9 +151,26 @@ class Host:
             raise HostError("MCU QSPI drive only while BUS_GNT=1 or rst_n=0")
         _set_port(self.tt, "uio_oe_pico", oe)
 
+    def qpi_write_oe(self):
+        """All SIO driven: QPI command, address, and write data."""
+        self.enable_drive(OE_QPI)
+
+    def qpi_read_oe(self):
+        """Float SIO during QPI dummy/data; keep CS and SCK driven."""
+        self.enable_drive(OE_QPI_READ)
+
+    def spi_oe(self):
+        """SPI pin directions: MOSI out, MISO/SD2/SD3 in."""
+        self.enable_drive(OE_SPI)
+
     def enable_project(self, name=None, clock_hz=PROJECT_CLOCK_HZ):
-        """Mux-select this design (or an M7 bitstream), ASIC_RP_CONTROL, 66 MHz."""
+        """ui_in=0, reset assert, mux, 66 MHz, reset deassert, sample DONE/GNT."""
         name = name or DEFAULT_PROJECT
+        mode = getattr(self.tt, "mode", None)
+        if mode is not None and str(mode) != EXPECTED_MODE:
+            raise HostError("expected mode %s, got %s" % (EXPECTED_MODE, mode))
+        self.zero_ui_in()
+        self.reset_asic(True)
         shuttle = getattr(self.tt, "shuttle", None)
         if shuttle is not None:
             design = getattr(shuttle, name, None)
@@ -157,8 +184,12 @@ class Host:
         clock = getattr(self.tt, "clock_project_PWM", None)
         if clock is not None:
             clock(clock_hz)
-        _set_port(self.tt, "ui_in", 0)
         self.hiz()
+        self.reset_asic(False)
+        if not self.done:
+            raise HostError("DONE=1 expected after reset release")
+        if self.bus_gnt:
+            raise HostError("BUS_GNT=0 expected after reset release")
         self._awaiting_done_fall = False
         self._saw_busy = False
 
@@ -168,14 +199,16 @@ class Host:
         if reset is None:
             raise HostError("tt.reset_project is not available")
         reset(bool(asserted))
+        self._rst_held = bool(asserted)
         if asserted:
             self.hiz()
             self._awaiting_done_fall = False
             self._saw_busy = False
 
     def kill_dma(self):
-        """Assert rst_n; leave MCU OE Hi-Z. Re-enter QPI after deassert before START."""
+        """Assert rst_n, clear ui_in (BUS_REQ/START=0), leave MCU OE Hi-Z."""
         self.hiz()
+        self.zero_ui_in()
         self.reset_asic(True)
 
     def _wait(self, pred, timeout_ms, what):

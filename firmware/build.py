@@ -5,6 +5,9 @@ module is the REPL/script layer so callers do not hand-place descriptor bytes.
 
 Head convention: the first TCD (or a QUIT TCD for an empty run) lives at
 PSRAM 0 address 0. Address 0 is a valid link, not a terminator.
+
+Layout errors (TCD overlapping payload, missing QUIT) are interpret-time:
+place_* span-check only that each write fits in 0x000000..0x7FFFFF.
 """
 
 from .chain import HEAD_ADDRESS, HEAD_DEVICE, MemoryImage
@@ -44,10 +47,18 @@ def add_copy(
     length,
     src_device=0,
     dest_device=0,
-    next_tcd=0,
+    next_tcd=None,
     next_device=0,
 ):
-    """Place one data TCD with SRC/DEST/LEN/NEXT and device bits in CTRL_FLAGS."""
+    """Place one data TCD. *next_tcd* is required so NEXT does not silently loop.
+
+    Pass *next_tcd* explicitly (0 is a self-pointing fetch, D35). Forgetting
+    QUIT used to default NEXT to the head and refetch until budget/rst_n.
+    """
+    if next_tcd is None:
+        raise ValueError(
+            "add_copy requires next_tcd (link to the next descriptor or add_quit)"
+        )
     tcd = Tcd(
         src_ptr=src_ptr,
         dest_ptr=dest_ptr,

@@ -44,6 +44,7 @@ from .constants import (
     CS_PSRAM0,
     CS_PSRAM1,
     EB_OVERHEAD_SCK,
+    MCU_QPI_PAYLOAD_MAX,
     PIN_FLASH_CS,
     PIN_MISO,
     PIN_MOSI,
@@ -60,6 +61,25 @@ from .constants import (
     TPU_US,
     WR_OVERHEAD_SCK,
 )
+
+# D16: APS6404L QPI RX samples on rising SCK (device launches on falling SCK /
+# tACLK, read data valid after falling SCK). side(0)=SCK low, side(1)=SCK high.
+# The rp2 program body must match this order: nop on SCK low, in_ on SCK high.
+QPI_READ_PIO_INTENT = (
+    ("nop", 0),
+    ("in_", 1, 4),
+)
+
+# After Exit Quad, SPI HOLD#/WP# (SIO3/SIO2) must not stay driven as outputs.
+SPI_PIN_MODES = {
+    "MOSI": "OUT",
+    "MISO": "IN",
+    "SD2": "IN_PULLUP",
+    "SD3": "IN_PULLUP",
+}
+
+# PioTransport.__init__ must not claim Pin.OUT; arm() runs after grant/reset.
+PIO_TRANSPORT_CLAIMS_PINS_IN_INIT = False
 
 
 class PsramError(Exception):
@@ -124,8 +144,13 @@ def qpi_chunk_bytes(
     sck_hz,
     tcem_us=TCEM_US_DEFAULT,
     margin=TCEM_MARGIN_DEFAULT,
+    mcu_payload_max=None,
 ):
-    """Max payload bytes per CE# for QPI `0xEB` / `0x02`. Refuse nbytes_max < 1."""
+    """Max payload bytes per CE# for QPI `0xEB` / `0x02`. Refuse nbytes_max < 1.
+
+    SCK-only planning ignores Python put overhead. Pass *mcu_payload_max* so the
+    MCU path raises CE# between small chunks (tCEM: max CE# low).
+    """
     if opcode == CMD_QPI_READ:
         overhead = EB_OVERHEAD_SCK
     elif opcode == CMD_QPI_WRITE:
@@ -133,12 +158,36 @@ def qpi_chunk_bytes(
     else:
         raise PsramError("chunk planner is for QPI 0xEB / 0x02, got 0x%02X" % opcode)
     n = math.floor((sck_budget(sck_hz, tcem_us, margin) - overhead) / SCK_PER_BYTE_QPI)
+    if mcu_payload_max is not None:
+        n = min(n, int(mcu_payload_max))
     if n < 1:
         raise PsramError(
             "SCK %s Hz cannot fit one payload byte under tCEM=%s us (25%% margin)"
             % (sck_hz, tcem_us)
         )
     return int(n)
+
+
+def drain_sm(sm):
+    """Wait until a PIO state machine has finished shifting, then it may stop."""
+    wait_idle = getattr(sm, "wait_idle", None)
+    if wait_idle is not None:
+        wait_idle()
+        return
+    drained = getattr(sm, "drained", None)
+    if drained is False:
+        raise PsramError("state machine deactivated before drain")
+
+
+def park_and_switch_sm(old_sm, new_sm, park_sck=None):
+    """Drain *old_sm*, park SCK low, then activate *new_sm*. No overlapping active(1)."""
+    if old_sm is not None:
+        drain_sm(old_sm)
+        old_sm.active(0)
+    if park_sck is not None:
+        park_sck()
+    if new_sm is not None:
+        new_sm.active(1)
 
 
 def spi_reset_frames():
@@ -178,28 +227,53 @@ class Psram:
         sck_hz=SCK_HZ_DEFAULT,
         tcem_us=TCEM_US_DEFAULT,
         margin=TCEM_MARGIN_DEFAULT,
+        host=None,
     ):
         self.transport = transport
+        self.host = host
         self.sck_hz = sck_hz
         self.tcem_us = tcem_us
         self.margin = margin
-        self.eb_chunk = qpi_chunk_bytes(CMD_QPI_READ, sck_hz, tcem_us, margin)
-        self.wr_chunk = qpi_chunk_bytes(CMD_QPI_WRITE, sck_hz, tcem_us, margin)
+        self.eb_chunk = qpi_chunk_bytes(
+            CMD_QPI_READ, sck_hz, tcem_us, margin, mcu_payload_max=MCU_QPI_PAYLOAD_MAX
+        )
+        self.wr_chunk = qpi_chunk_bytes(
+            CMD_QPI_WRITE, sck_hz, tcem_us, margin, mcu_payload_max=MCU_QPI_PAYLOAD_MAX
+        )
+
+    def _spi_oe(self):
+        if self.host is not None:
+            self.host.spi_oe()
+
+    def _qpi_write_oe(self):
+        if self.host is not None:
+            self.host.qpi_write_oe()
+
+    def _qpi_read_oe(self):
+        if self.host is not None:
+            self.host.qpi_read_oe()
 
     def wait_tpu(self):
         wait_at_least_us(TPU_US, sleep=self.transport.sleep_us)
 
     def spi_reset(self, cs):
+        self._spi_oe()
         enable, reset = spi_reset_frames()
         self.transport.spi_write(cs, enable)
         self.transport.spi_write(cs, reset)
 
     def enter_qpi(self, cs):
+        self._spi_oe()
         self.transport.spi_write(cs, enter_qpi_frame())
 
     def exit_qpi(self, cs):
+        self._qpi_write_oe()
         frame = exit_qpi_frame()
         self.transport.qpi_write(cs, frame)
+        restore = getattr(self.transport, "restore_spi_pins", None)
+        if restore is not None:
+            restore()
+        self._spi_oe()
 
     def enter_qpi_both(self):
         self.enter_qpi(CS_PSRAM0)
@@ -221,6 +295,7 @@ class Psram:
         offset = 0
         while offset < len(payload):
             n = min(self.wr_chunk, len(payload) - offset)
+            self._qpi_write_oe()
             self.transport.qpi_write(
                 cs, qpi_write_frame(addr + offset, payload[offset : offset + n])
             )
@@ -232,6 +307,7 @@ class Psram:
         remaining = int(n)
         while remaining > 0:
             k = min(self.eb_chunk, remaining)
+            self._qpi_read_oe()
             chunk = self.transport.qpi_read(
                 cs,
                 qpi_read_cmd_addr(addr + offset),
@@ -285,9 +361,9 @@ if rp2 is not None:
         set_init=(rp2.PIO.IN_LOW,) * 4,
     )
     def qpi_read_cpha0():
-        # Sample 4-bit data on the rising SCK (mode 0). Two clocks per byte.
-        in_(pins, 4).side(0)
-        nop().side(1)
+        # Must match QPI_READ_PIO_INTENT: nop on SCK low, in_ on rising SCK (D16).
+        nop().side(0)
+        in_(pins, 4).side(1)
 
     class PIOSPI:
         """1-bit PIO SPI master (guide `PIOSPI`). Not used as SoftSPI / machine.SPI."""
@@ -334,13 +410,28 @@ if rp2 is not None:
 
         Flash CS is driven high and never selected. RAM A is device 0, RAM B is
         device 1. Default SCK is 20 MHz (tCEM planner refuses a too-slow SCK).
+        Pin.OUT is claimed in arm(), not __init__ (D26: no drive before grant).
         """
 
         def __init__(self, sck_hz=SCK_HZ_DEFAULT, sleep=sleep_us):
             if rp2 is None or Pin is None:
                 raise PsramError("PioTransport requires rp2 and machine.Pin")
+            if PIO_TRANSPORT_CLAIMS_PINS_IN_INIT:
+                raise PsramError("PioTransport must not claim pins in __init__")
             self.sck_hz = sck_hz
             self._sleep = sleep
+            self._armed = False
+            self.flash_cs = None
+            self.ram_cs = None
+            self._sck = None
+            self.spi = None
+            self._qpi_wr = None
+            self._qpi_rd = None
+
+        def arm(self):
+            """Claim CS/SCK/SIO after BUS_GNT=1 or rst_n=0. Idempotent."""
+            if self._armed:
+                return
             self.flash_cs = Pin(PIN_FLASH_CS, Pin.OUT)
             self.ram_cs = (
                 Pin(PIN_RAM_A_CS, Pin.OUT),
@@ -351,27 +442,37 @@ if rp2 is not None:
             self.ram_cs[1].on()
             self._sck = Pin(PIN_SCK, Pin.OUT)
             self._sck.off()
-            self._sio = (
-                Pin(PIN_MOSI, Pin.OUT),
-                Pin(PIN_MISO, Pin.IN),
-                Pin(PIN_SD2, Pin.IN, Pin.PULL_UP),
-                Pin(PIN_SD3, Pin.IN, Pin.PULL_UP),
-            )
-            self.spi = PIOSPI(1, PIN_MOSI, PIN_MISO, PIN_SCK, freq=sck_hz)
+            self.restore_spi_pins()
+            self.spi = PIOSPI(1, PIN_MOSI, PIN_MISO, PIN_SCK, freq=self.sck_hz)
             self._qpi_wr = rp2.StateMachine(
                 2,
                 qpi_write_cpha0,
-                freq=2 * sck_hz,
+                freq=2 * self.sck_hz,
                 sideset_base=Pin(PIN_SCK),
                 out_base=Pin(PIN_MOSI),
             )
             self._qpi_rd = rp2.StateMachine(
                 3,
                 qpi_read_cpha0,
-                freq=2 * sck_hz,
+                freq=2 * self.sck_hz,
                 sideset_base=Pin(PIN_SCK),
                 in_base=Pin(PIN_MOSI),
             )
+            self._qpi_wr.active(0)
+            self._qpi_rd.active(0)
+            self._armed = True
+
+        def restore_spi_pins(self):
+            """MOSI out, MISO in, SD2/SD3 pull-up in (SPI HOLD#/WP# safe)."""
+            Pin(PIN_MOSI, Pin.OUT)
+            Pin(PIN_MISO, Pin.IN)
+            Pin(PIN_SD2, Pin.IN, Pin.PULL_UP)
+            Pin(PIN_SD3, Pin.IN, Pin.PULL_UP)
+            self.pin_modes = dict(SPI_PIN_MODES)
+
+        def _park_sck(self):
+            if self._sck is not None:
+                self._sck.off()
 
         def _select(self, cs):
             self.flash_cs.on()
@@ -388,41 +489,57 @@ if rp2 is not None:
             self._sleep(us)
 
         def spi_write(self, cs, data):
-            self._qpi_wr.active(0)
-            self._qpi_rd.active(0)
+            self.arm()
+            park_and_switch_sm(self._qpi_wr, None, park_sck=self._park_sck)
+            park_and_switch_sm(self._qpi_rd, None, park_sck=self._park_sck)
+            self.restore_spi_pins()
             self.spi._sm.active(1)
-            Pin(PIN_MOSI, Pin.OUT)
-            Pin(PIN_MISO, Pin.IN)
             self._select(cs)
             self.spi.write(bytes(data))
+            drain_sm(self.spi._sm)
             self._deselect()
+
+        def _drain_bytes(self, sm, n_bytes):
+            wait_idle = getattr(sm, "wait_idle", None)
+            if wait_idle is not None:
+                wait_idle()
+                return
+            n_sck = n_bytes * SCK_PER_BYTE_QPI
+            self._sleep(max(1, int((n_sck / float(self.sck_hz)) * 1e6) + 1))
 
         def qpi_write(self, cs, data):
+            self.arm()
             payload = bytes(data)
-            self.spi._sm.active(0)
-            self._qpi_rd.active(0)
+            park_and_switch_sm(self.spi._sm, None, park_sck=self._park_sck)
+            park_and_switch_sm(self._qpi_rd, None, park_sck=self._park_sck)
             for pin in (PIN_MOSI, PIN_MISO, PIN_SD2, PIN_SD3):
                 Pin(pin, Pin.OUT)
-            self._qpi_wr.active(1)
-            self._select(cs)
+            self._qpi_wr.active(0)
             for b in payload:
                 self._qpi_wr.put(b, 24)
+            self._select(cs)
+            self._qpi_wr.active(1)
+            self._drain_bytes(self._qpi_wr, len(payload))
             self._deselect()
             self._qpi_wr.active(0)
+            self._park_sck()
 
         def qpi_read(self, cs, header, dummy_cycles, n):
+            self.arm()
             header = bytes(header)
-            self.spi._sm.active(0)
+            park_and_switch_sm(self.spi._sm, None, park_sck=self._park_sck)
+            park_and_switch_sm(self._qpi_rd, None, park_sck=self._park_sck)
             for pin in (PIN_MOSI, PIN_MISO, PIN_SD2, PIN_SD3):
                 Pin(pin, Pin.OUT)
-            self._qpi_wr.active(1)
-            self._select(cs)
+            self._qpi_wr.active(0)
             for b in header:
                 self._qpi_wr.put(b, 24)
-            self._qpi_wr.active(0)
+            self._select(cs)
+            self._qpi_wr.active(1)
+            self._drain_bytes(self._qpi_wr, len(header))
+            park_and_switch_sm(self._qpi_wr, None, park_sck=self._park_sck)
             for pin in (PIN_MOSI, PIN_MISO, PIN_SD2, PIN_SD3):
                 Pin(pin, Pin.IN)
-            # Dummy clocks: 6 SCK = 3 QPI bytes of High-Z sampling.
             dummy_bytes = dummy_cycles // SCK_PER_BYTE_QPI
             self._qpi_rd.active(1)
             for _ in range(dummy_bytes):
@@ -430,8 +547,10 @@ if rp2 is not None:
             out = bytearray(n)
             for i in range(n):
                 out[i] = self._qpi_rd.get() & 0xFF
+            self._drain_bytes(self._qpi_rd, dummy_bytes + n)
             self._qpi_rd.active(0)
             self._deselect()
+            self._park_sck()
             return bytes(out)
 
 

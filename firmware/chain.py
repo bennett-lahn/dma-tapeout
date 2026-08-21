@@ -1,9 +1,11 @@
-"""Pure-Python oracle for TCD chains.
+"""Firmware-side copy of the TCD-chain oracle, used on the MCU and in firmware pytest.
 
-Given an initial PSRAM memory layout, ``interpret_chain`` walks the TCD chain
-from the fixed head (PSRAM0 ``0x000000``) and returns what a correct DMA must
-produce: an ordered QPI transaction log and the final memory images. It models
-architecture only (fetch, chunked copy, quit, next-device links), no timing.
+Keep the firmware and ``test/reference`` copies aligned except import paths
+and the MicroPython dataclass shim. Given an initial PSRAM memory layout,
+``interpret_chain`` walks the TCD chain from the fixed head (PSRAM0
+``0x000000``) and returns what a correct DMA must produce: an ordered QPI
+transaction log and the final memory images. It models architecture only
+(fetch, chunked copy, quit, next-device links), no timing.
 
 Main types:
 
@@ -31,6 +33,7 @@ except ImportError:  # MicroPython UF2 without stdlib dataclasses
 
 from .constants import (
     DEVICES,
+    DMA_BUF_DEPTH_TAPEOUT,
     HEAD_ADDRESS,
     HEAD_DEVICE,
     OPCODE_READ,
@@ -72,8 +75,10 @@ ADDR_MAX = PTR_MAX
 DEFAULT_FETCH_BUDGET = 64
 DEFAULT_TXN_BUDGET = 4096
 
-# V1 tapeout configuration; the oracle accepts the 1/2/4/8 sweep depths too.
-DEFAULT_DMA_BUF_DEPTH = 1
+# V1 tapeout on-chip scratch depth N (DMA_BUF_DEPTH). Overlap chunking uses
+# this default; pass dma_buf_depth=1 explicitly for the per-byte N=1 image.
+# The oracle still accepts the 1/2/4/8 sweep depths.
+DEFAULT_DMA_BUF_DEPTH = DMA_BUF_DEPTH_TAPEOUT
 
 
 class MemoryRangeError(ReferenceModelError):
