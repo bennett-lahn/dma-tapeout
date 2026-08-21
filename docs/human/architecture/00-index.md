@@ -9,7 +9,7 @@ Verbose agent context: `../../llm/03-architecture.md`, `../../llm/04-tcd-and-dat
 1. [`overview.md`](overview.md) - product idea, topology, non-goals
 2. [`limitations.md`](limitations.md) - tile / DFF / I/O / PSRAM hard limits
 3. [`system.md`](system.md) - I/O map, modes, memory/TCD, block map, MCU flow, open items
-4. [`firmware.md`](firmware.md) - MicroPython demoboard firmware (D30): bus ownership, PIO SPI / `tCEM` chunking, TCD install, debug helpers, `firmware/tests`, M7 readiness; verbose twin [`../../llm/12-firmware.md`](../../llm/12-firmware.md)
+4. [`firmware.md`](firmware.md) - MicroPython demoboard firmware (D30): bus ownership, QPI install/dump after Enter Quad, `tCEM` chunking, TCD tools + one demo, `firmware/tests`, M7 readiness; verbose twin [`../../llm/12-firmware.md`](../../llm/12-firmware.md)
 5. [`blocks/`](blocks/) - per-block detail (expand as design hardens)
 6. [`timing.md`](timing.md) - post-RTL timing checklist (Phase 3; PSRAM QSPI AC)
 7. [`hardening.md`](hardening.md) - local LibreLane / Nix harden runbook + first area audits

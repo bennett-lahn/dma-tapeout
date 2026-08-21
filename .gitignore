@@ -7,6 +7,9 @@ tinytapeout-sky-26c/
 # TT Repo template
 ttihp-verilog-template/
 
+# Tiny Tapeout MicroPython SDK clone (supporting; not vendored into firmware/)
+tt-micropython-firmware/
+
 # Prior-art dump (keep locally; do not publish)
 docs/llm/prior-art/
 
@@ -23,6 +26,7 @@ Thumbs.db
 # Python
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .venv/
 venv/
 dma-venv/

@@ -81,7 +81,7 @@ machine.freq(150_000_000)
 | Idle CS | All three CS pins driven high when idle; only one CE# low per transaction |
 | SD2/SD3 in 1-bit mode | Inputs with pull-ups so flash is not write-protected / held |
 
-**Implication for this project's V1 firmware:** reuse `PIOSPI` + ETR pin constants for MCU PSRAM (and optional flash) under D26 drive windows. Do not treat SoftSPI or HW `machine.SPI` as primary. Do **not** require flash QE programming (D30). MCU-side APS6404L Enter Quad (`0x35`) remains a project requirement (D17); the guide's PSRAM test stays in SPI mode and does not issue Enter Quad.
+**Implication for this project's V1 firmware:** reuse `PIOSPI` + ETR pin constants for MCU PSRAM (and optional flash) under D26 drive windows. Do not treat SoftSPI or HW `machine.SPI` as primary. Do **not** require flash QE programming (D30). MCU-side APS6404L Enter Quad (`0x35`) remains a project requirement (D17); after enter, MCU install/dump is QPI `0xEB`/`0x02`. The guide's PSRAM test stays in SPI mode and does not issue Enter Quad.
 
 ## Bus / ASIC interaction in the guide
 
@@ -234,7 +234,7 @@ flash_hold = Pin(PIN_SD3, Pin.IN, Pin.PULL_UP)
 
 ### 5. Flash quad-read PIO (`qspi_read`) - reference only
 
-The guide includes a second PIO program `qspi_read` that bit-packs flash continuous-mode quad reads (nibble packing on SD0..3, dynamic `pindirs`). **Project firmware does not need MCU flash QSPI or MCU PSRAM QPI.** Keep this as a reference if MCU quad flash tooling is useful; do not confuse it with APS6404L Enter Quad (`0x35`) for DMA.
+The guide includes a second PIO program `qspi_read` that bit-packs flash continuous-mode quad reads (nibble packing on SD0..3, dynamic `pindirs`). Project firmware does **not** need MCU flash QSPI. For PSRAM, `firmware/psram.py` adapts this nibble-packing as the 4-bit QPI starting point (`0xEB`/`0x02` after Enter Quad). Do not confuse flash QE with APS6404L Enter Quad (`0x35`).
 
 ### 6. Script entry / serial bridge (ETR)
 
@@ -246,12 +246,12 @@ Same logical nets on GPIO21..28. Same `PIOSPI` / PSRAM / flash patterns with har
 
 ## Project mapping checklist
 
-When implementing `firmware/psram_spi.py` on ETR:
+When implementing `firmware/psram.py` on ETR:
 
 1. Copy / adapt `PIOSPI` + `spi_cpha0` and the ETR `QSPI_BASE` constants above.
 2. Hold flash + RAM A + RAM B CS high when idle.
-3. Use basic SPI `0x02`/`0x03` for staging; add project `0x66`/`0x99`/`0x35`/`0xF5` for APS6404L mode control (D17).
+3. SPI `0x66`/`0x99` then `0x35` for bring-up; QPI `0xEB`/`0x02` for install/dump; QPI `0xF5` to exit (D17/D30).
 4. Do **not** make flash QE activation part of normal bring-up (D30; first-party ships QE set).
-5. Chunk long transfers for `tCEM` ([`../../llm/05-qspi-psram.md`](../../llm/05-qspi-psram.md)).
+5. Chunk long transfers for `tCEM` ([`../../llm/12-firmware.md`](../../llm/12-firmware.md)).
 6. Respect D22/D26 drive windows (`BUS_GNT` or `rst_n=0`); release-before-seize with ASIC.
 7. Prefer guide patterns over inventing SoftSPI/`machine.SPI` as the first path.
