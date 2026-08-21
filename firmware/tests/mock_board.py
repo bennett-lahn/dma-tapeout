@@ -48,7 +48,7 @@ class MockShuttle:
 class MockDemoBoard:
     """Integer ui_in / uo_out / uio_oe_pico plus grant and optional START ACK."""
 
-    def __init__(self, auto_ack_start=False):
+    def __init__(self, auto_ack_start=False, instant_complete=False):
         self.ui_in = BitPort(0, self._on_ui)
         self.uo_out = BitPort(0x01)  # DONE=1, BUS_GNT=0
         self.uio_oe_pico = BitPort(0, self._on_oe)
@@ -56,6 +56,7 @@ class MockDemoBoard:
         self.clock_hz = None
         self._in_reset = False
         self.auto_ack_start = auto_ack_start
+        self.instant_complete = instant_complete
         self.dma_hook = None
         self.events = []
         self._start_seen = False
@@ -87,10 +88,15 @@ class MockDemoBoard:
         elif self._start_seen and not start:
             self._start_seen = False
             if self.auto_ack_start:
-                self.uo_out[0] = 0
                 if self.dma_hook is not None:
                     self.dma_hook()
-                self._complete_dma = True
+                if self.instant_complete:
+                    # Chain finished before firmware could sample DONE low.
+                    self.uo_out[0] = 1
+                    self._complete_dma = False
+                else:
+                    self.uo_out[0] = 0
+                    self._complete_dma = True
 
     def poll_tick(self):
         """Raise DONE after wait_busy has observed the low (runner tests)."""

@@ -34,7 +34,7 @@ def test_req_refused_until_done_falls():
     host, tt = _host()
     host.pulse_start()
     assert tt.uo_out[0] == 1
-    with pytest.raises(HostError, match="DONE falls"):
+    with pytest.raises(HostError, match="idle after START"):
         host.request_bus()
     tt.uo_out[0] = 0
     host.wait_busy()
@@ -77,3 +77,25 @@ def test_drive_refused_without_grant_or_reset():
     host.kill_dma()
     host.enable_drive()
     assert int(tt.uio_oe_pico) == OE_QPI
+
+
+def test_missed_done_low_is_fast_completion_not_timeout():
+    tt = MockDemoBoard(auto_ack_start=True, instant_complete=True)
+    host, _ = _host(tt)
+    host.pulse_start()
+    assert host.done is True
+    host.wait_idle_after_start()
+    host.request_bus()
+    assert host.bus_gnt is True
+    assert not any(ev[0] == "reset" for ev in tt.events)
+
+
+def test_wait_idle_after_observed_busy():
+    tt = MockDemoBoard(auto_ack_start=True)
+    host = Host(tt, sleep_us=lambda us: tt.poll_tick())
+    host.pulse_start()
+    assert host.done is False
+    host.wait_idle_after_start()
+    assert host.done is True
+    host.request_bus()
+    assert host.bus_gnt is True

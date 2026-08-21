@@ -15,7 +15,7 @@ Files of interest:
 
 | File | Contents |
 |---|---|
-| `Project/Zero-Overhead Scatter-Gather DMA Engine.md` | Working architecture notes, FSM, registers, QSPI init questions |
+| `Project/Zero-Overhead Scatter-Gather DMA Engine.md` | Obsidian notes for **TinyDMA** (Obsidian file formerly titled *Zero-Overhead Scatter-Gather DMA Engine*; path unchanged); FSM, registers, QSPI init questions |
 | `Specifications.md` | Tile/DFF heuristics, PSRAM warnings, clock notes |
 | `Useful Links.md` | TT PCB, demoboard firmware, QSPI PMOD links |
 | `Ideas.md` | Early brainstorming and constraint reminders |
@@ -55,7 +55,7 @@ Rules when using it:
 - Do not present as this project's frozen design
 - Do not copy RTL / microarchitecture
 
-High-level contrast only: static 2-channel SPI PSRAM DMA that barely fits 1x2; this repo targets original descriptor-based scatter-gather DMA instead.
+High-level contrast only: static 2-channel SPI PSRAM DMA that barely fits 1x2; this repo is **TinyDMA** instead.
 
 ## Planning conversation sources
 

@@ -9,6 +9,7 @@ from firmware.psram import (
     CMD_QPI_WRITE,
     CMD_RESET,
     CMD_RESET_ENABLE,
+    TPU_US,
     Psram,
     PsramError,
     enter_qpi_frame,
@@ -19,6 +20,7 @@ from firmware.psram import (
     qpi_write_frame,
     rp2,
     spi_reset_frames,
+    wait_at_least_us,
 )
 
 from mock_transport import MockTransport
@@ -95,3 +97,14 @@ def test_cpython_import_has_no_rp2_and_board_transport_refuses():
     assert rp2 is None
     with pytest.raises(PsramError, match="rp2"):
         make_board_transport()
+
+
+def test_wait_at_least_us_uses_elapsed_time_not_one_short_sleep():
+    calls = []
+
+    def short_sleep(us):
+        calls.append(us)
+
+    wait_at_least_us(TPU_US, sleep=short_sleep)
+    assert calls
+    assert calls[0] == TPU_US

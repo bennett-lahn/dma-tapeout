@@ -1,17 +1,17 @@
 # Architecture Overview
 
-Status: Architecture frozen and implemented in `src/`; simulation exits M0–M5 accepted (M5: 2026-08-16). Freezes: QSPI on `uio`, `ui_in[0]=START`, `ui_in[2]=BUS_REQ`, `uo_out[0]=DONE` (= idle), `uo_out[1]=BUS_GNT`, idle/START (D14/D18), kill via **`rst_n`** (D23/D34), pass-through request/grant (D22), **24-bit** address pointers with device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24) + **`QUIT`** end-of-chain (D19/D23: quit → IDLE; next START from fixed head), fixed head at `0x000000`/PSRAM0 (D18), **11-byte** TCD (D19), **QPI data path** `0xEB`/`0x02` (D15/D17), MCU-owned enter/exit QPI (D17), **66 MHz** `clk` + **SCK=clk/2** + rising-edge RX (D16), **5-byte** on-chip scratch buffer (**`DMA_BUF_DEPTH=5`** tapeout; depth-agnostic correctness per D20), FSM↔QSPI pulse-start handshake (D21), **dual PSRAM** DMA (incl. cross-device), **ASIC flash unsupported** (MCU pass-through only). Shipped RTL is this feature set only (no ALU / cond-stop / ring / ASIC flash). Formal M4 (`FP-*`) is not a V1 freeze gate (D33). Host pin packing and error model closed (D34): unused `ui_in[1]`, `ui_in[7:3]`, `uo_out[7:2]` tied 0; no ERROR logic.
+Status: Architecture frozen and implemented in `src/`; simulation exits M0–M5 accepted (M5: 2026-08-16). Freezes: QSPI on `uio`, `ui_in[0]=START`, `ui_in[2]=BUS_REQ`, `uo_out[0]=DONE` (= idle), `uo_out[1]=BUS_GNT`, idle/START (D14/D18), kill via **`rst_n`** (D23/D34), pass-through request/grant (D22), **24-bit** address pointers with device selects in **`CTRL_FLAGS`** (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`; D24) + **`QUIT`** end-of-chain (D19/D23: quit → IDLE; next START from fixed head), fixed head at `0x000000`/PSRAM0 (D18), **11-byte** TCD (D19), **QPI data path** `0xEB`/`0x02` (D15/D17), MCU-owned enter/exit QPI (D17), **66 MHz** `clk` + **SCK=clk/2** + rising-edge RX (D16), **5-byte** on-chip scratch buffer (**`DMA_BUF_DEPTH=5`** tapeout; depth-agnostic correctness per D20), FSM↔QSPI pulse-start handshake (D21), **dual-PSRAM** DMA (incl. cross-device), **ASIC flash unsupported** (MCU pass-through only). Shipped RTL is this feature set only (no ALU / cond-stop / ring / ASIC flash). Formal M4 (`FP-*`) is not a V1 freeze gate (D33). Host pin packing and error model closed (D34): unused `ui_in[1]`, `ui_in[7:3]`, `uo_out[7:2]` tied 0; no ERROR logic.
 
 ## Product framing
 
-Working title: **Zero-Overhead Scatter-Gather DMA Engine**.
+Project: **TinyDMA**.
 
 Target: an **isolated descriptor DMA / bulk mover** between the two QSPI PSRAM devices on the TT PMOD - learning vehicle and resume artifact. ADC / live telemetry integration is out of scope.
 
 Core ideas:
 
 - Memory-management coprocessor for **bulk byte moves**
-- **Zero overhead:** TCDs embedded in RAM, not a multi-channel on-chip register file
+- **External descriptors / low on-chip configuration overhead:** TCDs embedded in RAM, not a multi-channel on-chip register file
 - **Scatter-gather:** TCD -> next TCD linked lists tolerate arbitrary fragmentation
 - **Dual-device:** same-device and cross-device (A↔B) copies on a shared QSPI bus
 

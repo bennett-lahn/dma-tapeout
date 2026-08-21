@@ -2,7 +2,10 @@
 
 Unused `ui_in` bits stay 0 (D34). MCU QSPI `uio_oe_pico` is Hi-Z unless
 `BUS_GNT=1` or `rst_n=0`. After pulsing START, do not raise BUS_REQ until
-DONE falls (START-accept ACK across the two-flop sync).
+the ASIC is idle again. DONE low is the START-accept ACK, but a short chain
+can return to DONE=1 before firmware samples; that is treated as already idle,
+not a missed ACK. Do not use a 1 us sleep as the capture or ACK mechanism:
+GPIO write duration already covers the two-flop synchronizer.
 
 Takes a `tt` object so REPL can pass `DemoBoard.get()` and tests can inject a
 mock with integer `ui_in` / `uo_out` / `uio_oe_pico`.
@@ -26,7 +29,11 @@ OE_SPI = (
 )
 OE_QPI = 0xFF
 
-START_HOLD_US = 1  # >> two 66 MHz clocks of the input synchronizer
+# Optional extra START high time. Capture does not depend on this: two GPIO
+# writes already last much longer than two 66 MHz synchronizer clocks.
+START_HOLD_US = 0
+# Tight samples looking for DONE low. Not a timed wait; Python loops only.
+BUSY_SAMPLE_TRIES = 8
 
 
 class HostError(Exception):
@@ -86,6 +93,7 @@ class Host:
         self._sleep_us = sleep_us if sleep_us is not None else _default_sleep_us
         self._poll_us = poll_us
         self._awaiting_done_fall = False
+        self._saw_busy = False
 
     def _now_ms(self):
         import time
@@ -162,6 +170,7 @@ class Host:
         _set_port(self.tt, "ui_in", 0)
         self.hiz()
         self._awaiting_done_fall = False
+        self._saw_busy = False
 
     def reset_asic(self, asserted=True):
         """Drive rst_n. While held (asserted=True), MCU QSPI drive is legal without grant."""
@@ -172,6 +181,7 @@ class Host:
         if asserted:
             self.hiz()
             self._awaiting_done_fall = False
+            self._saw_busy = False
 
     def kill_dma(self):
         """Assert rst_n; leave MCU OE Hi-Z. Re-enter QPI after deassert before START."""
@@ -190,7 +200,7 @@ class Host:
 
     def request_bus(self, timeout_ms=1000, oe=OE_QPI):
         if self._awaiting_done_fall and self.done:
-            raise HostError("BUS_REQ refused until DONE falls after START")
+            raise HostError("BUS_REQ refused until idle after START")
         _bit_set(self.tt, "ui_in", BUS_REQ_BIT, 1)
         self._wait(lambda: self.bus_gnt, timeout_ms, "BUS_GNT")
         if oe:
@@ -201,8 +211,20 @@ class Host:
         _bit_set(self.tt, "ui_in", BUS_REQ_BIT, 0)
         self._wait(lambda: not self.bus_gnt, timeout_ms, "BUS_GNT low")
 
+    def _sample_busy(self, tries=BUSY_SAMPLE_TRIES):
+        """Return True if DONE is observed low. Tight polls; not a timed wait."""
+        for _ in range(tries):
+            if not self.done:
+                return True
+        return False
+
     def pulse_start(self, hold_us=START_HOLD_US):
-        """Require DONE=1 and BUS_REQ=0; hold START across the two-flop sync."""
+        """Require DONE=1 and BUS_REQ=0, then pulse START.
+
+        *hold_us* is optional padding only. Two GPIO writes already hold the
+        pad longer than the two-flop synchronizer; logic must not depend on
+        the sleep being 1 us or any other short delay.
+        """
         self.hiz()
         if self.bus_req:
             raise HostError("START refused while BUS_REQ is high")
@@ -211,15 +233,46 @@ class Host:
         if not self.done:
             raise HostError("START requires DONE=1")
         _bit_set(self.tt, "ui_in", START_BIT, 1)
-        self._sleep_us(hold_us)
+        if hold_us:
+            self._sleep_us(hold_us)
+        saw = self._sample_busy()
         _bit_set(self.tt, "ui_in", START_BIT, 0)
-        self._awaiting_done_fall = True
+        if not saw:
+            saw = self._sample_busy()
+        self._saw_busy = saw
+        self._awaiting_done_fall = not saw
 
-    def wait_busy(self, timeout_ms=1000):
-        """Wait until DONE falls (START accepted)."""
-        self._wait(lambda: not self.done, timeout_ms, "DONE low")
+    def wait_busy(self, tries=BUSY_SAMPLE_TRIES):
+        """Return True if DONE is observed low (START accepted, chain in flight).
+
+        If DONE stays high, the chain may already have finished (QUIT-only is
+        about 1.2 us). That is not a timeout: return False and treat idle.
+        Does not call kill_dma.
+        """
+        saw = self._saw_busy or self._sample_busy(tries)
+        if saw:
+            self._saw_busy = True
+            self._awaiting_done_fall = False
+            return True
         self._awaiting_done_fall = False
+        self._saw_busy = False
+        return False
 
     def wait_done(self, timeout_ms=1000):
-        """Wait until DONE rises (chain finished / idle)."""
+        """Wait until DONE rises (chain finished / idle). Sticky; timeout kills."""
         self._wait(lambda: self.done, timeout_ms, "DONE high")
+        self._awaiting_done_fall = False
+        self._saw_busy = False
+
+    def wait_idle_after_start(self, timeout_ms=5000):
+        """After pulse_start, block until the ASIC is idle.
+
+        If DONE is observed low, wait for it to rise (runaway still kill_dma).
+        If DONE is never observed low, treat as fast completion and return.
+        Dump/compare is the backstop if START was ignored.
+        """
+        if self.wait_busy():
+            self.wait_done(timeout_ms)
+            return
+        self._awaiting_done_fall = False
+        self._saw_busy = False

@@ -1,6 +1,6 @@
 # Agent Guide
 
-This repository implements a **descriptor-based scatter-gather DMA** for Tiny Tapeout on the **IHP SG13G2** shuttle (**TTIHP26b**, **1x1** / one-tile budget) targeting **dual** QSPI PSRAM as a **bulk mover** (cross-device OK). Flash on the PMOD is MCU pass-through only. Shipped RTL is this V1 feature set only (no ALU / cond-stop / ring / ASIC flash).
+This repository implements **TinyDMA** for Tiny Tapeout on the **IHP SG13G2** shuttle (**TTIHP26b**, **1x1** / one-tile budget). **TinyDMA** targets **dual** QSPI PSRAM as a bulk mover (cross-device OK). Flash on the PMOD is MCU pass-through only. Shipped RTL is this V1 feature set only (no ALU / cond-stop / ring / ASIC flash).
 
 ## Context sources
 

@@ -1,6 +1,6 @@
 # Firmware Architecture
 
-MicroPython firmware for the Tiny Tapeout demoboard (RP2 MCU) that programs this DMA: bus ownership, PSRAM reset + Enter/Exit Quad, QPI TCD install/dump on both devices, debug helpers, and one canned demo. Decision: **D30** (MCU data path is QPI after enter; `0xF5` exit supported; no `test/` imports; no per-ID catalog). Verbose twin: [`../../llm/12-firmware.md`](../../llm/12-firmware.md). TCD field detail: [`blocks/tcd.md`](blocks/tcd.md). Pin-level host protocol: [`blocks/host-interface.md`](blocks/host-interface.md).
+MicroPython firmware for the Tiny Tapeout demoboard (RP2 MCU) that programs TinyDMA: bus ownership, PSRAM reset + Enter/Exit Quad, QPI TCD install/dump on both devices, debug helpers, and one canned demo. Decision: **D30** (MCU data path is QPI after enter; `0xF5` exit supported; no `test/` imports; no per-ID catalog). Verbose twin: [`../../llm/12-firmware.md`](../../llm/12-firmware.md). TCD field detail: [`blocks/tcd.md`](blocks/tcd.md). Pin-level host protocol: [`blocks/host-interface.md`](blocks/host-interface.md).
 
 ## Purpose / scope
 
@@ -36,7 +36,7 @@ IHP clones (`ttihp-verilog-template/`, `IHP-Open-PDK/`) are not MCU architecture
 
 | Plane | Pins | Firmware use |
 |---|---|
-| Inputs (`ui_in`) | `[0]=START`, `[2]=BUS_REQ`; `[1]` and `[7:3]` unused (drive 0; D34) | Assert levels; hold START long enough for the ASIC input synchronizer |
+| Inputs (`ui_in`) | `[0]=START`, `[2]=BUS_REQ`; `[1]` and `[7:3]` unused (drive 0; D34) | Assert levels; GPIO write duration covers the ASIC input synchronizer |
 | Outputs (`uo_out`) | `[0]=DONE`, `[1]=BUS_GNT`; `[7:2]` unused (tied 0; D34) | Poll idle and grant only |
 | Bidirectional (`uio`) | QSPI PMOD: flash CS, SIO0..3, SCK, RAM A/B CS (see [`system.md`](system.md)) | Drive while `BUS_GNT=1` or `rst_n=0` (D26) |
 
@@ -52,7 +52,7 @@ Ordered demoboard sequence (ASIC or M7 FPGA stand-in):
 2. Set project clock to **66 MHz** (D16) via `tt.clock_project_PWM(66e6)` or `config.ini`.
 3. Deassert `rst_n`; confirm `DONE=1` and `BUS_GNT=0` (ASIC parks CS high / SCK low - D26). Unused `ui_in` bits stay 0.
 4. Park MCU QSPI OE Hi-Z while `rst_n=1` and `~BUS_GNT`.
-5. Grant bus, SPI reset + Enter Quad on both PSRAMs, QPI-install the `MemoryImage`, release, pulse START, wait DONE, grant, QPI-dump dest, compare `interpret_chain` `final_memory`.
+5. Grant bus, SPI reset + Enter Quad on both PSRAMs, QPI-install the `MemoryImage`, release, pulse START, wait idle (or treat a missed DONE-low as already idle), grant, QPI-dump dest, compare `interpret_chain` `final_memory`.
 
 REPL: `import firmware.demo as demo; demo.main()`. Or build a custom chain with `firmware.build` and `firmware.runner.run_chain`.
 
@@ -62,12 +62,12 @@ REPL: `import firmware.demo as demo; demo.main()`. Or build a custom chain with 
 2. To access either PSRAM or flash while this design is live, assert `BUS_REQ`, wait for `BUS_GNT=1`, then enable the MCU QSPI drivers. While `rst_n=0` (including another design selected on the TT mux), MCU drive is also legal without `BUS_GNT`.
 3. Before releasing the bus, finish the current transaction, drive every CE# high, make the MCU QSPI pins high-Z, then deassert `BUS_REQ`. Wait for `BUS_GNT=0` before asserting `START`.
 4. Initialize both PSRAMs and leave them in QPI mode before `START`. The ASIC does not issue reset, Enter Quad, or Exit Quad commands (D17). MCU firmware still issues `0x35` / `0xF5` / `0x66` / `0x99`.
-5. Assert `START` only while `DONE=1` and `BUS_REQ=0`. Hold it long enough to cross the two-flop input synchronizer, then deassert it. A START edge while busy or while `BUS_REQ=1` is ignored and not queued.
-6. After pulsing `START`, do **not** assert `BUS_REQ` again until `DONE` has fallen. `DONE` falling is the firmware ACK that START was accepted.
+5. Assert `START` only while `DONE=1` and `BUS_REQ=0`. GPIO writes hold the pad across the two-flop synchronizer; do not insert a 1 us (or ns) sleep as the capture mechanism. A START edge while busy or while `BUS_REQ=1` is ignored and not queued.
+6. After pulsing `START`, call `wait_idle_after_start` before `BUS_REQ`. If `DONE` is observed low, wait until it is high again. If `DONE` stays high (a short chain can finish before firmware samples, about 1.2 us for a head `QUIT` fetch), treat that as already idle, not a timeout. Dump/compare is the backstop if START was ignored. Do not overlap `BUS_REQ` with the START pulse before the ASIC has left idle: IDLE plus `BUS_REQ` can discard START.
 7. `DONE=1` means the ASIC is idle. It does not grant MCU ownership of `uio`.
 8. A mid-run `BUS_REQ` pauses the DMA only after its current QPI transaction. To stop a runaway chain, assert `rst_n`; V1 has no soft abort (D23).
 
-Helpers live in `firmware/asic.py`: `enable_project`, `reset_asic` / `kill_dma`, `request_bus` / `release_bus`, `pulse_start`, `wait_busy` / `wait_done`.
+Helpers live in `firmware/asic.py`: `enable_project`, `reset_asic` / `kill_dma`, `request_bus` / `release_bus`, `pulse_start`, `wait_idle_after_start` (`wait_busy` / `wait_done` underneath). Sticky waits (`BUS_GNT`, `DONE` high) may poll with a sleep; correctness does not depend on that sleep being a specific short duration. `wait_done` / `request_bus` / `release_bus` timeouts still `kill_dma`. Missing `DONE` low does not.
 
 ### ASIC bus keeper (D26)
 
@@ -79,7 +79,7 @@ The QSPI PMOD path has a **10 kΩ pull-up on each CS**. Backup only; do not rely
 
 ## PSRAM QPI driver
 
-Bring-up per device (under grant): CE# high `tPU` (>=150 us), SPI `0x66` then immediate `0x99`, wait `tRST`, SPI Enter Quad `0x35`. After that, MCU install/dump is **QPI** (`0xEB` read / `0x02` write). `SIO[3]` is the MSB of each nibble. Flash CS stays high. No flash QE programming (D30).
+Bring-up per device (under grant): CE# high `tPU` (>=150 us, elapsed-time wait so a short sleep cannot under-wait), SPI `0x66` then immediate `0x99`, then Enter Quad `0x35` (Python/GPIO between those commands covers `tRST` min 50 ns). After that, MCU install/dump is **QPI** (`0xEB` read / `0x02` write). `SIO[3]` is the MSB of each nibble. Flash CS stays high. No flash QE programming (D30).
 
 **Exit:** `exit_qpi` issues QPI `0xF5` (4-bit opcode, 2 SCK). After exit, MCU SPI is valid again; call enter before the next DMA START. Dump during a QPI session uses `0xEB` (no need to exit first).
 
@@ -95,7 +95,7 @@ Transport (`firmware/psram.py`): ETR `PIOSPI` for 1-bit reset/enter; 4-bit PIO f
 
 ## tCEM / chunking
 
-APS6404L needs CE# high often enough for refresh. Every MCU QPI burst must **chunk** so each CE# low pulse stays under device `tCEM` (max CE# low; default **4 us** extended grade, 25% unused margin). Raise CE# between chunks (`tCPH` min CE# high 18 ns). Never ship an unchunked multi-kilobyte dump.
+APS6404L needs CE# high often enough for refresh. Every MCU QPI burst must **chunk** so each CE# low pulse stays under device `tCEM` (max CE# low; default **4 us** extended grade, 25% unused margin). Raise CE# between chunks (`tCPH` min CE# high 18 ns). The CS GPIO gap between PIO transactions already exceeds 18 ns; firmware does not insert a 1 us sleep as the `tCPH` mechanism. Never ship an unchunked multi-kilobyte dump.
 
 | Constant | Default |
 |---|---|
@@ -134,7 +134,7 @@ Each device is `A[22:0]` (`0x000000..0x7FFFFF`). `ptr[23]` is don't-care (D35). 
 2. `bring_up_both` or `enter_qpi` on both devices.
 3. QPI-write the `MemoryImage` (chunked).
 4. Hi-Z, drop `BUS_REQ`, wait `BUS_GNT=0`.
-5. `pulse_start` while `DONE=1`; do not raise `BUS_REQ` until `DONE` falls; then wait `DONE` high.
+5. `pulse_start` while `DONE=1`; `wait_idle_after_start` (observed `DONE` low then high, or missed low treated as already idle); then `BUS_REQ`.
 6. Grant, QPI-dump dest extents, compare. Optional `exit_qpi`.
 
 ## Debug helpers
@@ -150,8 +150,8 @@ Each device is `A[22:0]` (`0x000000..0x7FFFFF`). `ptr[23]` is don't-care (D35). 
 | `firmware/_compat.py` | Dataclass shim if the UF2 lacks `dataclasses` |
 | `firmware/build.py` | Thin helpers to assemble arbitrary chains |
 | `firmware/psram.py` | Reset, enter/exit, QPI `0xEB`/`0x02`, `tCEM` chunking, PIO behind `rp2` guard |
-| `firmware/asic.py` | `DemoBoard` host protocol |
-| `firmware/runner.py` | Grant, install, START, wait DONE, dump, compare |
+| `firmware/asic.py` | `DemoBoard` host protocol (idle-after-START, not a 1 us hold) |
+| `firmware/runner.py` | Grant, install, START, wait idle, dump, compare |
 | `firmware/debug.py` | Dump / peek / poke / decode |
 | `firmware/demo.py` | One pre-built PSRAM0-to-PSRAM0 copy + `QUIT` |
 | `firmware/tests/` | Host pytest (D30); no `test/` imports |
@@ -160,7 +160,7 @@ No `firmware/cases.py`. No `demo_min.py`.
 
 ## Firmware logic testbench
 
-PC **pytest** under `firmware/tests/` (D30): pack/`QUIT`/`TC_TCD_BE_BYTES`, `build.py` + `interpret_chain`, `tCEM` planner, enter/exit frames, mock `DemoBoard` START/REQ/OE, mock runner golden compare. Run `cd firmware && python -m pytest -q`. Not a substitute for Phase 3 / M7 HIL.
+PC **pytest** under `firmware/tests/` (D30): pack/`QUIT`/`TC_TCD_BE_BYTES`, `build.py` + `interpret_chain`, `tCEM` planner, enter/exit frames, mock `DemoBoard` START/REQ/OE, missed-DONE-low fast completion, mock runner golden compare. Run `cd firmware && python -m pytest -q`. Not a substitute for Phase 3 / M7 HIL.
 
 ## Demos / M7
 

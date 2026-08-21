@@ -19,7 +19,7 @@ Chronological distillation of the idea -> proposal -> selection process. Verbose
 
 ## D2 - DMA vs Hash final selection
 
-**Decision:** Proceed with **Scatter-Gather DMA** as the main project.
+**Decision:** Proceed with **TinyDMA** as the main project.
 
 **Why DMA won:**
 
@@ -50,7 +50,7 @@ Chronological distillation of the idea -> proposal -> selection process. Verbose
 - Its static 2-channel register programming model is exactly what this project intends to replace with external TCDs.
 - Starting from scratch avoids IP/ethical issues and forces original architecture work.
 
-## D4 - Descriptor-based "zero-overhead" configuration
+## D4 - External-descriptor / low on-chip configuration overhead
 
 **Decision:** Store TCDs in PSRAM; on-chip retain only active working set (**88 DFFs** TCD metadata at 24-bit pointers + `CTRL_FLAGS` byte + engine overhead; see D13).
 
@@ -122,7 +122,7 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 **Decision (current, updated by D18 / D19 / D24):** **24-bit** internal pointers in TCD / working regs (no head register). QSPI address phase uses device `A[22:0]` from `ptr[22:0]`. ~~Device select in `CTRL_FLAGS` (D13/D18).~~ ~~**Superseded by D19:** `ptr[23]` selects device.~~ **Superseded by D24:** device selects back in `CTRL_FLAGS` (`SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`); `ptr[23]` unused. ~~`0x000000` reserved null.~~ **Superseded by D18:** address 0 is valid (fixed head on PSRAM 0). ~~End-of-chain = both-devices stop.~~ **Superseded by D19:** `CTRL_FLAGS.QUIT`.
 
-## D11 - Dual PSRAM in scope; flash out of ASIC V1
+## D11 - Dual-PSRAM in scope; flash out of ASIC V1
 
 **Decision:**
 
@@ -134,7 +134,7 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 **Why:**
 
-- Dual PSRAM is already on the TT QSPI PMOD and costs little in gates (CS mux + a couple of TCD device-select bits) while unlocking a clear demoboard story (copy / ping-pong between devices).
+- Dual-PSRAM is already on the TT QSPI PMOD and costs little in gates (CS mux + a couple of TCD device-select bits) while unlocking a clear demoboard story (copy / ping-pong between devices).
 - Flash read/write on-ASIC fights the 2-tile / schedule cut; MCU pass-through already covers flash without silicon risk.
 - Keeps the product framing as a **PSRAM memory orchestrator**, not a NOR programmer.
 
@@ -430,7 +430,7 @@ Detail: `02-constraints.md`, `11-timing-analysis.md`, human `architecture/limita
 
 **Decision:**
 
-1. Add **M7 - FPGA hardware validation** to the verification ladder (`verification/01-strategy.md`): before RTL is frozen for the shuttle, load the synthesizable RTL onto an FPGA that occupies the ASIC's position on the same carrier board and MCU the eventual demoboard will use, with real dual PSRAM devices.
+1. Add **M7 - FPGA hardware validation** to the verification ladder (`verification/01-strategy.md`): before RTL is frozen for the shuttle, load the synthesizable RTL onto an FPGA that occupies the ASIC's position on the same carrier board and MCU the eventual demoboard will use, with real dual-PSRAM devices.
 2. M7 exercises a high-value `TC-*` hardware regression subset (same-device copies, both cross-device directions, chaining, `QUIT`, zero length, bus handoff, and reset recovery) driven by real MCU firmware rather than cocotb.
 3. M7 may require adapting existing testbench-derived stimulus and writing new MCU firmware test code outside the cocotb `test/` tree; that firmware is retained and tied to the RTL revision it validated.
 4. M7 gates shuttle freeze alongside M6. It does not replace M6 (which requires the actual synthesized ASIC netlist) and closes no `T-*` row, since FPGA I/O electrical characteristics differ from IHP pads.

@@ -26,7 +26,7 @@ Stable selectors are `LEVEL=engine`, `LEVEL=top`, and `LEVEL=gl`.
 | Milestone | Exit focus |
 |---|---|
 | **M0** | Toolchain and one reproducible L1 same-device smoke |
-| **M1** | Dual PSRAM model, protocol policing, and behavioral `Q-*` |
+| **M1** | dual-PSRAM model, protocol policing, and behavioral `Q-*` |
 | **M2** | Independent reference model, dual-axis scoreboard, directed `TC-*`, and always-on `CHK-*` |
 | **M3** | Runtime delay layer, setup and hold sweeps, `Q-LAUNCH`, and `Q-RXEDGE` |
 | **M4** | Required `FP-*` safety proofs, helper invariants, covers, and bounded deadlock checks (deferred, D33; not a V1 freeze gate; do not claim pass) |

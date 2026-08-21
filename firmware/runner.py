@@ -1,8 +1,9 @@
-"""Grant, enter QPI, install a MemoryImage, START, wait DONE, dump, compare.
+"""Grant, enter QPI, install a MemoryImage, START, wait idle, dump, compare.
 
 Golden expected memory is `interpret_chain(initial_memory).final_memory`.
 Install/dump use chunked QPI (`psram.Psram.write` / `read`); never a single
-unchunked CE# dump.
+unchunked CE# dump. After START, `wait_idle_after_start` treats a missed DONE
+low pulse as already idle (fast completion), not a timeout.
 """
 
 from .chain import interpret_chain
@@ -90,8 +91,7 @@ def run_chain(host, psram, mem, exit_qpi=False, timeout_ms=5000, bring_up=True):
     install_image(psram, mem)
     host.release_bus()
     host.pulse_start()
-    host.wait_busy(timeout_ms)
-    host.wait_done(timeout_ms)
+    host.wait_idle_after_start(timeout_ms)
     host.request_bus()
     extents = dest_extents(result)
     dumped = dump_extents(psram, extents)

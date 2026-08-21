@@ -6,7 +6,7 @@ Block-level map of the chip. Per-block detail lives under [`blocks/`](blocks/).
 
 Tiny Tapeout exposes **10 inputs**, **8 bidirectional**, and **8 outputs** to each design:
 
-| Group | Count | TT ports | This project |
+| Group | Count | TT ports | TinyDMA |
 |---|---|---|---|
 | Inputs | 10 | `clk`, `rst_n`, `ui_in[7:0]` | Clock, reset, host control (incl. **START**) |
 | Bidirectional | 8 | `uio[7:0]` (`uio_in` / `uio_out` / `uio_oe`) | QSPI to PSRAM PMOD (shared with MCU) |

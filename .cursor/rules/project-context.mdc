@@ -1,11 +1,11 @@
 ---
-description: Load DMA tapeout project context and planning constraints
+description: Load TinyDMA project context and planning constraints
 alwaysApply: true
 ---
 
-# DMA Tapeout Project Context
+# TinyDMA Project Context
 
-This repo is a Tiny Tapeout scatter-gather DMA project in **Phase 2** (V1 feature RTL under `src/`; cocotb M0–M5 accepted; manual IHP LibreLane harden closed 1x1 @ 66 MHz), targeting **IHP SG13G2 / TTIHP26b** (D27).
+This repo is **TinyDMA** for Tiny Tapeout in **Phase 2** (V1 feature RTL under `src/`; cocotb M0–M5 accepted; manual IHP LibreLane harden closed 1x1 @ 66 MHz), targeting **IHP SG13G2 / TTIHP26b** (D27).
 
 ## Before nontrivial work
 

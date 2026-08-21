@@ -74,4 +74,4 @@ Firmware programming contract (MicroPython / SPI / TCD install): [`12-firmware.m
 
 ## Interview framing
 
-> This is a descriptor-based dual-PSRAM DMA for Tiny Tapeout. Descriptors live in PSRAM so the on-chip budget goes to QSPI mastering and host bus arbitration. The demoboard story is bulk scatter-gather copies across both devices, including cross-device moves, without the MCU SPI-bitbanging every byte.
+> **TinyDMA** for Tiny Tapeout. Descriptors live in PSRAM so the on-chip budget goes to QSPI mastering and host bus arbitration. The demoboard story is bulk scatter-gather copies across both devices, including cross-device moves, without the MCU SPI-bitbanging every byte.

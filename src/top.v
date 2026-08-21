@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2026 Zero-Overhead Scatter-Gather DMA
+ * SPDX-FileCopyrightText: 2026 TinyDMA
  * SPDX-License-Identifier: Apache-2.0
  *
  * Tiny Tapeout user module wrapper (TTIHP26b, ihp-sg13g2 PDK).

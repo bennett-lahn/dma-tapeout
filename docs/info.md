@@ -1,6 +1,8 @@
+# TinyDMA: A Descriptor-Based Dual-PSRAM Bulk Mover
+
 ## How it works
 
-This is a descriptor-driven scatter-gather DMA for Tiny Tapeout IHP (TTIHP26b). After the host pulses **START**, the ASIC masters the shared QSPI bus and copies bytes between two APS6404L-class PSRAM devices using 11-byte in-memory transfer control descriptors (TCDs).
+**TinyDMA** for Tiny Tapeout IHP (**TTIHP26b**). After the host pulses **START**, the ASIC masters the shared QSPI bus and copies bytes between two APS6404L-class PSRAM devices using 11-byte in-memory transfer control descriptors (TCDs).
 
 Each TCD names a source pointer, destination pointer, length, next-TCD pointer, and flags (which device is src/dest/next, and **QUIT** to end the chain). The first TCD is always at address 0 on PSRAM 0. Same-device and cross-device copies are supported. The ASIC does not talk to the PMOD flash; that stays MCU pass-through.
 

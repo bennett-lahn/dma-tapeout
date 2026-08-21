@@ -2,10 +2,11 @@
 [![docs](https://github.com/bennett-lahn/dma-tapeout/actions/workflows/docs.yaml/badge.svg)](https://github.com/bennett-lahn/dma-tapeout/actions/workflows/docs.yaml)
 [![test](https://github.com/bennett-lahn/dma-tapeout/actions/workflows/test.yaml/badge.svg)](https://github.com/bennett-lahn/dma-tapeout/actions/workflows/test.yaml)
 [![timing](https://github.com/bennett-lahn/dma-tapeout/actions/workflows/timing.yaml/badge.svg)](https://github.com/bennett-lahn/dma-tapeout/actions/workflows/timing.yaml)
+[![fpga](https://img.shields.io/badge/fpga-no%20status-lightgrey)]()
 
-# Zero-Overhead Scatter-Gather DMA
+# TinyDMA: A Descriptor-Based Dual-PSRAM Bulk Mover
 
-A **1x1** Tiny Tapeout ASIC (**TTIHP26b** / IHP SG13G2) that copies bytes between two QSPI PSRAM devices using descriptors stored in memory.
+**TinyDMA** is a **1x1** Tiny Tapeout ASIC (**TTIHP26b** / IHP SG13G2) that copies bytes between two QSPI PSRAM devices using descriptors stored in memory.
 
 Shuttle datasheet: [docs/info.md](docs/info.md).
 

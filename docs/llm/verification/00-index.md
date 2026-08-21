@@ -35,7 +35,7 @@ The detailed boundary is in `01-strategy.md`. A simulation pass does not replace
 | Level  | DUT boundary                                           | Primary purpose                                                                             |
 | ------ | ------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
 | **L0** | `qspi_engine` plus one selected timed PSRAM model      | QPI transaction, edge, nibble, CE#, and handshake behavior                                  |
-| **L1** | `tt_um_lahnb_sgdma` plus dual PSRAM models             | Host arbitration, descriptor chains, same-device and cross-device copies, and scoreboarding |
+| **L1** | `tt_um_lahnb_sgdma` plus dual-PSRAM models             | Host arbitration, descriptor chains, same-device and cross-device copies, and scoreboarding |
 | **L2** | Gate-level `tt_um_lahnb_sgdma` plus the L1 environment | Selected sign-off regressions, reset behavior, X hunting, and optional SDF                  |
 
 

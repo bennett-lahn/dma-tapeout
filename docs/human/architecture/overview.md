@@ -2,14 +2,14 @@
 
 ## Idea
 
-**Zero-Overhead Scatter-Gather DMA Engine** for Tiny Tapeout.
+**TinyDMA** for Tiny Tapeout.
 
 V1 is an **isolated descriptor DMA / bulk mover** across the two QSPI PSRAM devices on the demoboard PMOD - a learning and resume vehicle. Live ADC telemetry is not in scope.
 
 Framing:
 
 - Memory-management coprocessor for bulk byte moves
-- **Zero overhead:** transfer instructions (TCDs) live in external RAM, not a fat on-chip channel register file
+- **Descriptor-based:** transfer instructions (TCDs) live in external RAM, not a fat on-chip channel register file
 - **Scatter-gather:** each TCD can point to the next TCD, so arbitrary fragmentation is OK
 - **Dual-device:** same-device and cross-device (A↔B) copies
 
@@ -51,7 +51,7 @@ Shipped RTL is this V1 feature set only. Historical cut decisions live in [`../.
 
 ## Inspiration boundary
 
-Per TinyDMA-2C prior art (Andrew Kim, TT 296), a 2-channel byte DMA over SPI PSRAM can fit in 1x2 tiles with aggressive width cuts. That is a feasibility existence proof only. This project intentionally uses descriptor-based scatter-gather and must not inherit that codebase's internal structure.
+Per TinyDMA-2C prior art (Andrew Kim, TT 296), a 2-channel byte DMA over SPI PSRAM can fit in 1x2 tiles with aggressive width cuts. That is a feasibility existence proof only. TinyDMA intentionally uses descriptor-based scatter-gather and must not inherit that codebase's internal structure.
 
 ## See also
 

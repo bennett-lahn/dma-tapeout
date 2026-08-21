@@ -1,6 +1,6 @@
 # Architecture (Human)
 
-Human architecture docs for the Zero-Overhead Scatter-Gather DMA. **Phase 2:** V1 feature RTL is in `src/`; cocotb M0–M5 accepted. Shuttle / PDK: **TTIHP26b / ihp-sg13g2** (D27). V1 tile budget is **1x1 only** (D36); `1x2` is out of budget. V1 freezes START/DONE/BUS_REQ/BUS_GNT (D14/D18/D22), idle/pass-through, kill via `rst_n` (D23), unused host bits tied 0 (D34), `ptr[23]` don't-care and self-pointing TCD allowed (D35), QSPI `uio` map, fixed head, 11-byte TCD, QPI data, MCU enter/exit QPI, 66 MHz / SCK=clk/2, FSM↔QSPI handshake (D21). Shipped RTL is this V1 feature set only.
+Human architecture docs for **TinyDMA**. **Phase 2:** V1 feature RTL is in `src/`; cocotb M0–M5 accepted. Shuttle / PDK: **TTIHP26b / ihp-sg13g2** (D27). V1 tile budget is **1x1 only** (D36); `1x2` is out of budget. V1 freezes START/DONE/BUS_REQ/BUS_GNT (D14/D18/D22), idle/pass-through, kill via `rst_n` (D23), unused host bits tied 0 (D34), `ptr[23]` don't-care and self-pointing TCD allowed (D35), QSPI `uio` map, fixed head, 11-byte TCD, QPI data, MCU enter/exit QPI, 66 MHz / SCK=clk/2, FSM↔QSPI handshake (D21). Shipped RTL is this V1 feature set only.
 
 Verbose agent context: `../../llm/03-architecture.md`, `../../llm/04-tcd-and-datapath.md`, `../../llm/05-qspi-psram.md`, `../../llm/12-firmware.md`.
 

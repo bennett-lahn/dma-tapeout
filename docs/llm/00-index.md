@@ -4,7 +4,7 @@ This directory is the canonical, verbose project context for AI agents working a
 
 ## Reading order (new conversation)
 
-1. `01-project-brief.md` - what we are building and why
+1. `01-project-brief.md` - **TinyDMA** project brief (what we are building and why)
 2. `02-constraints.md` - hard limits (tiles, DFFs, I/O, shuttle)
 3. `03-architecture.md` - block-level system architecture
 4. `04-tcd-and-datapath.md` - descriptors / FSM (11-byte TCD; device flags in `CTRL_FLAGS`; `QUIT` flag)

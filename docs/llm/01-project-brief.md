@@ -1,18 +1,20 @@
 # Project Brief
 
-## Name / working title
+## Name
 
-**Zero-Overhead Scatter-Gather DMA Engine** (Tiny Tapeout ASIC)
+**TinyDMA: A Descriptor-Based Dual-PSRAM Bulk Mover** (Tiny Tapeout ASIC)
+
+Short form: **TinyDMA**
 
 ## One-sentence purpose
 
-A descriptor-driven DMA engine that bulk-moves bytes across dual external QSPI PSRAM with almost no host babysitting after START - a learning / resume vehicle and demoboard bulk mover.
+**TinyDMA** moves bytes across two external QSPI PSRAM devices with almost no host babysitting after START - a learning / resume vehicle and demoboard demo.
 
 ## Goals
 
 Primary goals (in priority order):
 
-1. **Ship a working Tiny Tapeout design** within a **1x1** (one-tile) budget that can be demonstrated on the demoboard with real dual PSRAM.
+1. **Ship a working Tiny Tapeout design** within a **1x1** (one-tile) budget that can be demonstrated on the demoboard with real dual-PSRAM.
 2. **Learn industrially useful skills**: SPI/QSPI controllers, bus mastering, CDC-adjacent timing discipline, descriptor engines, Cocotb BFMs, CI-backed verification, post-synthesis / GDS awareness.
 3. **Produce a resume / interview artifact** that demonstrates systems-level hardware (memory hierarchies, firmware boundary, concurrency), not just an isolated math block.
 
@@ -64,4 +66,4 @@ A successful project can claim all of the following:
 
 ## Interview narrative (target)
 
-> I built a Tiny Tapeout scatter-gather DMA that treats external QSPI PSRAM as the configuration store. The ASIC only keeps the active descriptor working set on-chip, so the gate budget goes into the QSPI master, arbitration with the host, and the transfer FSM. On the demoboard it bulk-moves data across both PSRAM devices - including cross-device copies - from a linked list of descriptors the MCU installs through shared-bus pass-through.
+> I built **TinyDMA**, a Tiny Tapeout design that treats external QSPI PSRAM as the configuration store. The ASIC only keeps the active descriptor working set on-chip, so the gate budget goes into the QSPI master, arbitration with the host, and the transfer FSM. On the demoboard it bulk-moves data across both PSRAM devices - including cross-device copies - from a linked list of descriptors the MCU installs through shared-bus pass-through.

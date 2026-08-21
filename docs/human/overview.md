@@ -1,8 +1,8 @@
-# Scatter-Gather DMA for Tiny Tapeout
+# TinyDMA: A Descriptor-Based Dual-PSRAM Bulk Mover
 
 ## What this is
 
-A **1x1** Tiny Tapeout ASIC (**TTIHP26b / IHP SG13G2**) that DMA-moves bytes through external QSPI **PSRAM** (both devices on the flash+PSRAM PMOD) using **descriptors stored in memory**, not a pile of on-chip channel registers.
+**TinyDMA** is a **1x1** Tiny Tapeout ASIC (**TTIHP26b / IHP SG13G2**) that DMA-moves bytes through external QSPI **PSRAM** (both devices on the flash+PSRAM PMOD) using **descriptors stored in memory**, not a pile of on-chip channel registers.
 
 Target: **bulk mover** between PSRAM A and B (learning / resume demo). Shipped RTL is this feature set only.
 
@@ -10,12 +10,12 @@ Target: **bulk mover** between PSRAM A and B (learning / resume demo). Shipped R
 
 - Fits a severe area/I/O budget by keeping only the active descriptor on-chip
 - Demonstrates real systems work: bus mastership, QSPI, firmware/hardware split, verification with memory models
-- Stronger resume story than an isolated hash pipeline for this project's goals
+- Stronger resume story than an isolated hash pipeline for TinyDMA's goals
 
 ## Main capabilities
 
 1. **Scatter-gather** via linked Transfer Control Descriptors (TCDs) in PSRAM
-2. **Dual PSRAM** (RAM A + RAM B): read/write either device, including cross-device copies
+2. **Dual-PSRAM** (RAM A + RAM B): read/write either device, including cross-device copies
 3. **Host pass-through** (`BUS_REQ`/`BUS_GNT`; ASIC releases `uio_oe` while granted, parks CS/SCK while not) so the MCU can program both PSRAMs **and** flash; START hands execution to the ASIC
 4. **`rst_n` kill** path (D23; no soft-abort pin) so a bad/long run returns the ASIC to idle and releases shared OE
 

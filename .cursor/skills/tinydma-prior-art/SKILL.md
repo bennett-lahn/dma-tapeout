@@ -31,7 +31,7 @@ Bad:
 
 - Do not copy TinyDMA-2C RTL, module structure, or microarchitecture into this repo
 - Treat the prior-art file as a separate context from `docs/llm/01` through `09`
-- Prefer contrasting with this project's descriptor-based plan rather than adopting TinyDMA-2C as the default architecture
+- Prefer contrasting with **TinyDMA** rather than adopting TinyDMA-2C as the default architecture
 
 ## Source file
 

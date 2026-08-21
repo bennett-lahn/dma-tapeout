@@ -1,9 +1,9 @@
 # Tiny Tapeout project information
 project:
-  title:        "Zero-Overhead Scatter-Gather DMA"      # Project title
+  title:        "TinyDMA: A Descriptor-Based Dual-PSRAM Bulk Mover"      # Project title
   author:       "bennett_lahn"      # Your name
   discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
-  description:  "Descriptor DMA that bulk-copies between dual QSPI PSRAM"      # One line description of what your project does
+  description:  "TinyDMA bulk-copies between dual QSPI PSRAM via in-memory descriptors"      # One line description of what your project does
   language:     "SystemVerilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
   clock_hz:     66000000       # Clock frequency in Hz (or 0 if not applicable)
 

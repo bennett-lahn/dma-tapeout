@@ -1,6 +1,6 @@
-# Project Documentation
+# TinyDMA Documentation
 
-Split into two audiences:
+Documentation for **TinyDMA**. Split into two audiences:
 
 | Tree | Audience | Style |
 |---|---|---|

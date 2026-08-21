@@ -46,8 +46,8 @@ TCEM_US_DEFAULT = 4.0
 TCEM_MARGIN_DEFAULT = 0.25
 SCK_HZ_DEFAULT = 20_000_000
 TPU_US = 150
-TRST_US = 1  # tRST >= 50 ns; 1 us is enough on the MCU
-TCPH_US = 1  # tCPH min CE# high 18 ns; 1 us between chunks
+# tRST min 50 ns and tCPH min 18 ns. MCU Python/GPIO between commands already
+# exceeds both; do not insert a 1 us sleep as if it were the timing element.
 QPI_DUMMY_CYCLES = 6
 EB_OVERHEAD_SCK = 14  # 2 cmd + 6 addr + 6 dummy
 WR_OVERHEAD_SCK = 8  # 2 cmd + 6 addr
@@ -79,6 +79,40 @@ def sleep_us(us):
     import time
 
     time.sleep(us / 1_000_000.0)
+
+
+def wait_at_least_us(us, sleep=None):
+    """Block until at least *us* have elapsed. Longer is OK.
+
+    Uses wall/tick time so a short or skipped sleep cannot under-wait *us*.
+    *sleep* is only a hint to yield; elapsed time is the contract.
+    """
+    import time
+
+    us = int(us)
+    if us <= 0:
+        return
+    nap = sleep if sleep is not None else sleep_us
+    if hasattr(time, "ticks_us") and hasattr(time, "ticks_diff"):
+        start = time.ticks_us()
+        nap(us)
+        while time.ticks_diff(time.ticks_us(), start) < us:
+            nap(1)
+        return
+    if hasattr(time, "ticks_ms") and hasattr(time, "ticks_diff"):
+        start = time.ticks_ms()
+        need_ms = (us + 999) // 1000
+        nap(us)
+        while time.ticks_diff(time.ticks_ms(), start) < need_ms:
+            nap(1)
+        return
+    deadline = time.time() + (us / 1_000_000.0)
+    nap(us)
+    while time.time() < deadline:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        time.sleep(remaining)
 
 
 def be24(addr):
@@ -159,13 +193,12 @@ class Psram:
         self.wr_chunk = qpi_chunk_bytes(CMD_QPI_WRITE, sck_hz, tcem_us, margin)
 
     def wait_tpu(self):
-        self.transport.sleep_us(TPU_US)
+        wait_at_least_us(TPU_US, sleep=self.transport.sleep_us)
 
     def spi_reset(self, cs):
         enable, reset = spi_reset_frames()
         self.transport.spi_write(cs, enable)
         self.transport.spi_write(cs, reset)
-        self.transport.sleep_us(TRST_US)
 
     def enter_qpi(self, cs):
         self.transport.spi_write(cs, enter_qpi_frame())
@@ -198,7 +231,6 @@ class Psram:
                 cs, qpi_write_frame(addr + offset, payload[offset : offset + n])
             )
             offset += n
-            self.transport.sleep_us(TCPH_US)
 
     def read(self, cs, addr, n):
         out = bytearray()
@@ -219,7 +251,6 @@ class Psram:
             out.extend(chunk)
             offset += k
             remaining -= k
-            self.transport.sleep_us(TCPH_US)
         return bytes(out)
 
 

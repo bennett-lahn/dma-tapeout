@@ -49,3 +49,30 @@ def test_mock_runner_matches_golden_dest():
     assert len(exits) == 2
     assert host.bus_req is False
     assert int(tt.uio_oe_pico) == 0
+
+
+def test_runner_fast_complete_without_done_low():
+    tt = MockDemoBoard(auto_ack_start=True, instant_complete=True)
+    transport = MockTransport()
+    attach_mock_dma(tt, transport)
+    host = Host(tt, sleep_us=lambda us: None)
+    mem = new_image()
+    pattern = b"WXYZ"
+    add_copy(
+        mem,
+        0,
+        0,
+        src_ptr=0x100,
+        dest_ptr=0x200,
+        length=len(pattern),
+        next_tcd=0x0B,
+        next_device=0,
+    )
+    add_quit(mem, 0, 0x0B)
+    place_bytes(mem, 0, 0x100, pattern)
+
+    ok, result, mismatches = run_chain(host, Psram(transport), mem)
+    assert ok is True
+    assert mismatches == []
+    assert result.final_memory.read(0, 0x200, 4) == pattern
+    assert not any(ev[0] == "reset" for ev in tt.events)

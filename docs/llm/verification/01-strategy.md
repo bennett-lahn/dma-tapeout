@@ -296,7 +296,7 @@ Out of M3 (residuals, do not reopen the M3 gate):
 
 - the RTL synthesizes for the selected FPGA target and fits the carrier board's connector and voltage requirements in the ASIC's pin position
 - MCU firmware drives START, TCD installation, and DONE handshaking against the FPGA exactly as it will drive the ASIC
-- the selected high-value hardware regression subset passes with real dual PSRAM devices: same-device copies, both cross-device directions, chaining, `QUIT`, zero length, bus handoff, and reset recovery
+- the selected high-value hardware regression subset passes with real dual-PSRAM devices: same-device copies, both cross-device directions, chaining, `QUIT`, zero length, bus handoff, and reset recovery
 - any divergence from simulation is triaged as a firmware, board, FPGA-only artifact, or RTL defect before it is dismissed
 - the firmware and hardware test scripts used are retained and tied to the RTL revision they validated
 
