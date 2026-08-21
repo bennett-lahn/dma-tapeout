@@ -2,6 +2,7 @@
 
 from firmware.build import add_copy, add_quit, new_image, place_bytes
 from firmware.debug import decode_chain, dump, peek, poke
+from firmware.demo import DEMO_DEST, DEMO_QUIT, DEMO_SRC
 from firmware.psram import Psram
 from firmware.runner import install_image
 
@@ -23,13 +24,13 @@ def test_peek_poke_dump_decode(capsys):
         mem,
         0,
         0,
-        src_ptr=0x100,
-        dest_ptr=0x200,
+        src_ptr=DEMO_SRC,
+        dest_ptr=DEMO_DEST,
         length=2,
-        next_tcd=0x0B,
+        next_tcd=DEMO_QUIT,
     )
-    add_quit(mem, 0, 0x0B)
-    place_bytes(mem, 0, 0x100, b"AB")
+    add_quit(mem, 0, DEMO_QUIT)
+    place_bytes(mem, 0, DEMO_SRC, b"AB")
     install_image(psram, mem)
     seen = decode_chain(psram)
     assert seen[0][3].quit is False

@@ -357,6 +357,7 @@ Host pins stay on `Host` (`request_bus`, `pulse_start`, `wait_idle_after_start`,
 
 | Path | Role | Depends on `ttboard`? |
 |---|---|---|
+| `firmware/constants.py` | MCU + architecture numbers used in 2+ firmware modules | No |
 | `firmware/tcd.py` | Copied pack / unpack / validate | No |
 | `firmware/chain.py` | Copied `MemoryImage`, `interpret_chain`, `ChainResult` | No |
 | `firmware/_compat.py` | Dataclass shim if the UF2 lacks `dataclasses` | No |
@@ -433,6 +434,34 @@ Unused host bits tied 0 (D34). START capture is the GPIO write duration, not a 1
 
 Shared **intent** only: grant before drive, big-endian TCD, fixed head, `QUIT`, `rst_n` kill. Separate implementations; firmware must not import `test/`.
 
+## Planned housekeeping
+
+Not a shuttle freeze gate. Condensed: [`../human/architecture/firmware.md`](../human/architecture/firmware.md), [`../human/roadmap.md`](../human/roadmap.md). Testbench twin: [`verification/02-platform.md`](verification/02-platform.md).
+
+### Centralize constants
+
+Numbers used in 2+ firmware modules, or that encode architecture, live in [`firmware/constants.py`](../../firmware/constants.py). `tcd.py`, `psram.py`, `asic.py`, and `chain.py` import from it (domain modules may re-export so `from firmware.tcd import TCD_BYTES` still works). Demo addresses stay in `firmware/demo.py`. Firmware still must not import `test/` (D30).
+
+Overlapping TCD / opcode / dummy / head / buffer names are a **mechanical copy** of [`test/reference/constants.py`](../../test/reference/constants.py) (copies of `src/types.svh` and `04-tcd-and-datapath.md`, never parsed from SystemVerilog). When a shared number changes, edit both files.
+
+| Domain | Home |
+|---|---|
+| TCD layout, `CTRL_FLAGS` bits, pointer widths, opcodes, dummy/nibble counts, head, buffer depth | `firmware/constants.py` (overlapping names match `test/reference/constants.py`) |
+| MCU SPI opcodes, ETR GPIO map, `tCEM` (`tCEM`: max CE# low time) / `tPU` (`tPU`: CE# high after power before the first command) / SCK planner, host pin **indices**, OE masks, 66 MHz clock | `firmware/constants.py` (firmware-only section) |
+| Demo-only addresses / pattern | `firmware/demo.py` |
+
+Local values that are truly test-only (a single pytest fixture address, a mock pattern, the independent `MANDATORY_BYTES` restatement of `TC-TCD-BE`) stay local. `firmware/asic.py` `DONE_BIT` is a `uo_out` **index**; the testbench `DONE_MASK` is a **mask**. Do not unify them.
+
+### Complete function comments and a repo commenting standard
+
+Planned as one change, applied first to `firmware/` (and the matching testbench work in `verification/02-platform.md`):
+
+1. **Write the standard** in docs (human condensed in [`../human/roadmap.md`](../human/roadmap.md); llm examples here and in the platform doc). Cover Python first. SystemVerilog and shell follow the same intent on later edits: every function or module entry point states purpose, inputs, outputs, and side effects; no unexplained magic numbers once constants are centralized.
+2. **Apply it to firmware source:** every function (public and internal) gets a complete comment. Module files keep a top-of-file purpose note.
+3. **Review and update this document and the human twin** so every public helper (`Host.*`, `Psram.*`, `build.py`, `runner.py`, `debug.py`, pack/unpack/validate, `interpret_chain`) has a complete description matching the source comments. Docs stay condensed on the human side; this file holds the API sketches.
+
+Do not treat a one-line name restatement as complete. A complete comment says what the function guarantees, what it refuses, and which frozen rule it implements (D-number or protocol symbol) when that is not obvious from the name.
+
 ## Non-goals (V1 firmware)
 
 - No `firmware/cases.py`, no one function per `TC-*` ID, no second demo script
@@ -444,6 +473,8 @@ Shared **intent** only: grant before drive, big-endian TCD, fixed head, `QUIT`, 
 ## See also
 
 - Human twin: [`../human/architecture/firmware.md`](../human/architecture/firmware.md)
+- Planned housekeeping checklist: [`../human/roadmap.md`](../human/roadmap.md)
+- Testbench housekeeping twin: [`verification/02-platform.md`](verification/02-platform.md)
 - System / MCU setup: [`../human/architecture/system.md`](../human/architecture/system.md)
 - Host interface: [`../human/architecture/blocks/host-interface.md`](../human/architecture/blocks/host-interface.md)
 - PSRAM opcodes / `tCEM`: [`05-qspi-psram.md`](05-qspi-psram.md)

@@ -15,18 +15,16 @@ conditions before driving. This is not a sim-only exception.
 
 from cocotb.triggers import RisingEdge, Timer
 
-from models.psram import ADDR_NIBBLES, CMD_NIBBLES, SIO_UIO_BITS
-
-START_BIT = 0
-BUS_REQ_BIT = 2
-
-# Resolved ``uio`` bit map (src/top.v). SIO bits come from models.psram so
-# the master and the device models share one pin map.
-UIO_FLASH_CS_BIT = 0
-UIO_SCK_BIT = 3
-UIO_PSRAM_CE_BITS = (6, 7)
-
-SCK_PERIOD_NS = 30.0  # D16: SCK = clk/2 at the 66 MHz clk target
+from common.constants import (
+    BUS_REQ_BIT,
+    SCK_PERIOD_NS,
+    SIO_UIO_BITS,
+    START_BIT,
+    UIO_FLASH_CS_BIT,
+    UIO_PSRAM_CE_BITS,
+    UIO_SCK_BIT,
+)
+from reference.constants import ADDR_NIBBLES, CMD_NIBBLES
 
 
 async def pulse_start(dut, hold_cycles: int = 2) -> None:

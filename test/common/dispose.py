@@ -59,15 +59,15 @@ from monitors.qspi import (
 )
 from monitors.timing import CeTimingMonitor
 
-RESULT_PASS = "pass"
-RESULT_FAIL = "fail"
-RESULT_NA = "na"
-RESULT_BLOCKED = "blocked"
-
-# RESET-TRUNCATED policy for one dispose call.
-FORBID = "forbid"  # any truncated finding is an unreviewed surprise -> fail
-REVIEW = "review"  # log each; zero is acceptable
-REQUIRE = "require"  # log each; at least one must exist (reset was exercised)
+from common.constants import (
+    FORBID,
+    REQUIRE,
+    RESULT_BLOCKED,
+    RESULT_FAIL,
+    RESULT_NA,
+    RESULT_PASS,
+    REVIEW,
+)
 
 _RESET_POLICIES = (FORBID, REVIEW, REQUIRE)
 

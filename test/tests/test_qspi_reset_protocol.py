@@ -19,22 +19,23 @@ from cocotb.triggers import SimTimeoutError
 
 from common.bringup import bring_up_engine, bring_up_top
 from common.config import parse_run_config
+from common.constants import (
+    DONE_MASK,
+    DONE_TIMEOUT_NS,
+    DST_ADDR,
+    DST_SENTINEL,
+    FILL,
+    NEXT_TCD_ADDR,
+    SRC_ADDR,
+    SRC_BYTE,
+    TCD_HEAD_ADDR,
+)
 from common.dispose import REQUIRE, dispose_run
 from common.host import pulse_start
 from models.psram import QSPI_CMD_WRITE
 from monitors.qspi import sck_is_parked
 from reference.tcd import Tcd, encode_tcd
 
-FILL = 0x00
-DONE_BIT = 0x1
-DONE_TIMEOUT_NS = 100_000
-
-TCD_HEAD_ADDR = 0x000000
-NEXT_TCD_ADDR = 0x000020
-SRC_ADDR = 0x000100
-DST_ADDR = 0x000200
-SRC_BYTE = 0xA5
-DST_SENTINEL = 0x00
 POST_SRC_BYTE = 0x5A
 
 _MID_TXN_TIMEOUT_CYCLES = 256
@@ -100,9 +101,9 @@ def _load_smoke_chain(psram0, *, src_byte: int) -> None:
 
 
 async def _wait_for_done_pulse(dut) -> None:
-    while int(dut.uo_out.value) & DONE_BIT:
+    while int(dut.uo_out.value) & DONE_MASK:
         await RisingEdge(dut.clk)
-    while not (int(dut.uo_out.value) & DONE_BIT):
+    while not (int(dut.uo_out.value) & DONE_MASK):
         await RisingEdge(dut.clk)
 
 
@@ -110,7 +111,7 @@ async def _await_mid_txn_top(dut, *, repro: str) -> None:
     """Reach an in-flight ASIC CE# select with shared OE driven."""
     for _ in range(_MID_TXN_TIMEOUT_CYCLES):
         await RisingEdge(dut.clk)
-        if not (int(dut.uo_out.value) & DONE_BIT):
+        if not (int(dut.uo_out.value) & DONE_MASK):
             break
     else:
         raise AssertionError(f"DONE never dropped after START. {repro}")
@@ -142,7 +143,7 @@ async def _assert_sampled_reset_status_top(dut, *, test: str, cycles: int = 5) -
         await ReadOnly()
         assert _level(dut.rst_n) == 0, f"{test}: rst_n not held low across sampled edge"
         status = int(dut.uo_out.value)
-        assert status & DONE_BIT, (
+        assert status & DONE_MASK, (
             f"{test}: DONE not 1 after sampled reset (uo_out=0x{status:02X})"
         )
         assert not ((status >> 1) & 1), (

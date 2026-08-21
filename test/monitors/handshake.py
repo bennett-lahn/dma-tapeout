@@ -93,6 +93,22 @@ from cocotb.simtime import get_sim_time
 from cocotb.triggers import ReadOnly, RisingEdge
 
 from common.config import parse_run_config
+from common.constants import (
+    RESULT_BLOCKED,
+    RESULT_FAIL,
+    RESULT_NA,
+    RESULT_PASS,
+    SYS_CONTROL_FETCH,
+    SYS_CONTROL_IDLE,
+    SYS_CONTROL_NEW_FETCH,
+    SYS_CONTROL_NEW_OP,
+    SYS_CONTROL_READ,
+    SYS_CONTROL_STALL,
+    SYS_CONTROL_STATES,
+    SYS_CONTROL_UPDATE,
+    SYS_CONTROL_WRITE,
+    QSPI_ENGINE_STATES,
+)
 from common.lifecycle import (
     PendingLedger,
     REASON_RESET,
@@ -111,6 +127,13 @@ from monitors.qspi import (
     FAULT_REFRAME,
     FAULT_RESET,
     READ_DUMMY_CYCLES,
+)
+from reference.constants import (
+    DIR_READ,
+    DIR_WRITE,
+    QSPI_CMD_FAST_READ,
+    QSPI_CMD_WRITE,
+    TCD_BYTES,
 )
 
 CHK_HS_TXN_START = "CHK-HS-TXN-START"
@@ -156,60 +179,13 @@ NO_PIN_EVIDENCE_REASON = (
     "pin protocol decoder (06-checkers.md)"
 )
 
-QSPI_CMD_FAST_READ = 0xEB
-QSPI_CMD_WRITE = 0x02
-
-# sys_control_pkg::sys_control_state_t (src/types.svh). All eight encodings
-# of the 3-bit enum are members, so CHK-CTRL-STATE-VALID reduces to resolution
-# plus membership.
-SYS_CONTROL_IDLE = 0
-SYS_CONTROL_NEW_FETCH = 1
-SYS_CONTROL_FETCH = 2
-SYS_CONTROL_NEW_OP = 3
-SYS_CONTROL_READ = 4
-SYS_CONTROL_WRITE = 5
-SYS_CONTROL_UPDATE = 6
-SYS_CONTROL_STALL = 7
-
-SYS_CONTROL_STATES = {
-    SYS_CONTROL_IDLE: "SYS_CTRL_IDLE",
-    SYS_CONTROL_NEW_FETCH: "NEW_FETCH",
-    SYS_CONTROL_FETCH: "FETCH",
-    SYS_CONTROL_NEW_OP: "NEW_OP",
-    SYS_CONTROL_READ: "READ",
-    SYS_CONTROL_WRITE: "WRITE",
-    SYS_CONTROL_UPDATE: "UPDATE",
-    SYS_CONTROL_STALL: "STALL",
-}
-
-# qspi_pkg::qspi_state_t (src/types.svh); 4-bit encoding, 10 members.
-QSPI_ENGINE_STATES = {
-    0: "QSPI_IDLE",
-    1: "CS_ON",
-    2: "SEND_CMD_1",
-    3: "SEND_CMD_2",
-    4: "SEND_ADDR",
-    5: "WAIT",
-    6: "READ_DATA",
-    7: "WRITE_DATA",
-    8: "SCLK_OFF",
-    9: "CS_OFF",
-}
+TCD_NIBBLES = 2 * TCD_BYTES
 
 FETCH_STATES = (SYS_CONTROL_NEW_FETCH, SYS_CONTROL_FETCH)
 
 # qspi_pkg::QPI_TCD_BYTES and sys_control_pkg::TCD_LEN.
-TCD_BYTES = 11
-TCD_NIBBLES = 2 * TCD_BYTES
 
-DIR_READ = "read"
-DIR_WRITE = "write"
 DIR_UNKNOWN = "unknown"
-
-RESULT_PASS = "pass"
-RESULT_FAIL = "fail"
-RESULT_NA = "na"
-RESULT_BLOCKED = "blocked"
 
 # Handles HandshakeMonitor needs; a missing name blocks every row it owns.
 REQUIRED_SIGNALS = (

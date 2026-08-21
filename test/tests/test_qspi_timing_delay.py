@@ -44,16 +44,10 @@ from cocotb.triggers import RisingEdge, Timer
 
 from common.bringup import bring_up_top
 from common.config import parse_run_config
+from common.constants import FILL, LEGAL_GAP_NS
 from common.dispose import dispose_run, expect
 from common.host import UIO_PSRAM_CE_BITS, UIO_SCK_BIT, QpiPassthroughMaster, assert_bus_req
 from monitors.timing import Q_CHD, Q_CSP, Q_TERM, start_ce_timing_monitor
-
-FILL = 0x00
-
-# Comfortably above the resolved nominal tCSP/tCHD (2.5/3.0 ns) and above the
-# monitor's fixed 18 ns tCPH default, so the two-device baseline phase and
-# the inter-phase gaps never draw an undeclared Q-CPH surprise.
-LEGAL_GAP_NS = 25.0
 
 
 async def _await_bus_gnt(dut, *, cycles: int = 32) -> None:

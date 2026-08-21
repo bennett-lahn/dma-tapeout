@@ -34,6 +34,7 @@ from cocotb.triggers import RisingEdge, Timer
 
 from common.bringup import bring_up_top
 from common.config import parse_run_config
+from common.constants import FILL
 from common.dispose import dispose_run, expect
 from common.host import QpiPassthroughMaster, assert_bus_req
 from models.psram import (
@@ -54,7 +55,6 @@ from monitors.qspi import CHK_PIN_KNOWN
 
 QSPI_CMD_QUAD_WRITE = 0x38  # device-supported, outside the frozen V1 allowlist
 
-FILL = 0x00
 TOP_ADDR = PSRAM_ADDR_MASK  # 0x7FFFFF
 _BUS_GNT_BIT = 1
 

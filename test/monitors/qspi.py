@@ -72,12 +72,27 @@ from common.lifecycle import (
     SEV_DIAGNOSTIC,
     SEV_FAIL,
 )
+from common.constants import (
+    RESULT_BLOCKED,
+    RESULT_FAIL,
+    RESULT_NA,
+    RESULT_PASS,
+)
 from reference.chain import (
     OBSERVED_READ,
     OBSERVED_WRITE,
     OPCODE_READ,
     OPCODE_WRITE,
     transaction,
+)
+from reference.constants import (
+    ADDR_NIBBLES,
+    CMD_NIBBLES,
+    DIR_READ,
+    DIR_WRITE,
+    PTR_BIT23,
+    Q_PHASE,
+    READ_DUMMY_CYCLES,
 )
 
 CHK_PIN_CS_MUTEX = "CHK-PIN-CS-MUTEX"
@@ -121,11 +136,6 @@ TIMING_ID = {
 DRIVER_ASIC = "asic"
 DRIVER_DEVICE = "device"
 DRIVER_MCU = "mcu"
-
-RESULT_PASS = "pass"
-RESULT_FAIL = "fail"
-RESULT_NA = "na"
-RESULT_BLOCKED = "blocked"
 
 _KNOWN_LEVEL = {"0": 0, "1": 1}
 
@@ -738,10 +748,7 @@ def assert_model_pin_disposition(
 
 # -- Independent pin decode (QspiPinMonitor) -------------------------------
 
-CMD_NIBBLES = 2
-ADDR_NIBBLES = 6
-READ_DUMMY_CYCLES = 6
-ADDR23_BIT = 1 << 23
+ADDR23_BIT = PTR_BIT23
 
 PIN_PHASE_IDLE = "IDLE"
 PIN_PHASE_CMD = "CMD"
@@ -750,8 +757,6 @@ PIN_PHASE_DUMMY = "DUMMY"
 PIN_PHASE_DATA = "DATA"
 PIN_PHASE_IGNORE = "IGNORE"
 
-DIR_READ = "read"
-DIR_WRITE = "write"
 DIR_UNKNOWN = "unknown"
 
 # Decode faults. They keep an interval out of the normal transaction log; the
@@ -766,7 +771,6 @@ FAULT_ADDR23 = "addr23-set"  # historical; no longer raised (D35)
 FAULT_SIO_X = "sio-unresolved"
 FAULT_RESET = "reset-aborted"
 FAULT_REFRAME = "ce-refell-while-active"
-Q_PHASE = "Q-PHASE"
 
 # Wrapper aliases the decoder needs; a missing name blocks both owned rows.
 REQUIRED_PIN_SIGNALS = ("bus_sck", "bus_ram_a_cs_n", "bus_ram_b_cs_n", "bus_sio")

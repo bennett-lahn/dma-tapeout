@@ -40,11 +40,10 @@ from cocotb.triggers import NextTimeStep, ReadOnly, RisingEdge, Timer
 
 from common.bringup import bring_up_engine
 from common.config import parse_run_config
+from common.constants import FILL
 from common.dispose import dispose_run, expect
 from common.engine_bfm import bytes_to_nibbles, engine_qpi_read, engine_qpi_write
 from monitors import timing
-
-FILL = 0x00
 _LAUNCH_ADDRESS = 0x000680
 _RX_ADDRESS = 0x0006C0
 _RX_PAYLOAD = bytes((0x91, 0x2E, 0x47))

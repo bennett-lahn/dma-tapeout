@@ -32,6 +32,7 @@ sized for M2 directed corners plus deterministic small random chains.
 
 from dataclasses import dataclass
 
+from common.constants import FILL
 from common.seeds import child_random
 from reference.chain import (
     ADDR_MAX,
@@ -43,6 +44,7 @@ from reference.chain import (
     interpret_chain,
 )
 from reference.scoreboard import Region, guard_region
+from reference.constants import PAGE_SIZE
 from reference.tcd import (
     TCD_BYTES,
     TRANSFER_LEN_MAX,
@@ -91,11 +93,10 @@ LAYOUT_EQUAL = "equal"
 LAYOUT_OVERLAP_FORWARD = "overlap_forward"
 LAYOUT_OVERLAP_BACKWARD = "overlap_backward"
 
-PAGE_SIZE = 1024
 DEFAULT_REGION_START = 0x000100
 DEFAULT_REGION_GAP = 0x10
 DEFAULT_GUARD_BYTES = 2
-DEFAULT_FILL = 0x00
+DEFAULT_FILL = FILL
 DEST_SENTINEL = 0x5A
 GUARD_VALUE = 0xC3
 

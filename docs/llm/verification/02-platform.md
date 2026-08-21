@@ -61,6 +61,7 @@ test/
     directed.py
     engine_bfm.py
     config.py
+    constants.py
     clocks.py
     host.py
     seeds.py
@@ -71,6 +72,7 @@ test/
     psram_timing.py
   reference/
     __init__.py
+    constants.py
     tcd.py
     chain.py
     generator.py
@@ -91,13 +93,60 @@ Responsibilities:
 
 - `tb/` contains only HDL wrappers, shared-bus resolution, dump setup, and visibility needed by a DUT level.
 - `tests/` contains cocotb test entry points. Test names carry `TC-*` IDs in docstrings or metadata, not in Python identifiers. L0 CE#/SCK idle self-check lives inside `bring_up_engine` (former `test_engine_attach` deleted).
-- `common/` contains host actions, clock/reset helpers, shared bring-up / dispose / directed plumbing, the pending-item lifecycle (`lifecycle.py`: `PendingLedger` / `finalize_all`), the blessed write BFM, run configuration, deterministic random support, and artifact naming. Cleanup contract detail: `06-checkers.md`.
+- `common/` contains host actions, clock/reset helpers, shared bring-up / dispose / directed plumbing, the pending-item lifecycle (`lifecycle.py`: `PendingLedger` / `finalize_all`), the blessed write BFM, run configuration, sim-only shared constants (`constants.py`), deterministic random support, and artifact naming. Cleanup contract detail: `06-checkers.md`.
 - `models/` contains the two independent APS6404L instances and delay layer.
-- `reference/` contains the pure-Python TCD encoder/decoder, chain interpreter, the modularized legal-chain generator class described in `08-stimulus-and-coverage.md`, and scoreboards. None of these may call DUT internals, and the generator is kept in its own module (`generator.py`) separate from the golden interpreter (`chain.py`) it depends on, since generating stimulus and interpreting it are distinct responsibilities that must stay separately testable.
+- `reference/` contains architecture constants (`constants.py`; mechanical twin of `firmware/constants.py`), the pure-Python TCD encoder/decoder, chain interpreter, the modularized legal-chain generator class described in `08-stimulus-and-coverage.md`, and scoreboards. None of these may call DUT internals, and the generator is kept in its own module (`generator.py`) separate from the golden interpreter (`chain.py`) it depends on, since generating stimulus and interpreting it are distinct responsibilities that must stay separately testable.
 - `monitors/` contains passive protocol decoders and always-on `CHK-*` checks.
 - `formal/` contains `.sby` jobs, harnesses, and bind files. It shares RTL sources and constants conceptually, but does not import cocotb code.
 
 Do not make one monolithic `test.py`. Model, monitor, reference, and stimulus code must remain independently testable and reusable across levels.
+
+## Planned housekeeping
+
+Not a shuttle freeze gate. Condensed: [`../../human/roadmap.md`](../../human/roadmap.md), [`../../human/verification/00-index.md`](../../human/verification/00-index.md). Firmware twin: [`../12-firmware.md`](../12-firmware.md).
+
+### Centralize constants
+
+Three leaf modules (no imports of `tcd` / `psram` / models / monitors / cocotb). Firmware still must not import `test/` (D30). Shared numeric truth stays a **mechanical copy** between `firmware/constants.py` and `test/reference/constants.py`, not a cross-import. When a shared architecture number changes, edit both files. Python remains a commented copy of RTL (`src/types.svh`); do not parse SystemVerilog.
+
+| File | Role |
+|---|---|
+| `firmware/constants.py` | MCU + architecture numbers used in 2+ firmware modules |
+| `test/reference/constants.py` | Mechanical twin of the overlapping architecture subset (TCD, opcodes, dummy/nibble counts, head, buffer depth) |
+| `test/common/constants.py` | Sim-only shared numbers (DONE **mask**, timeouts, `FILL`, dispose strings, RTL FSM encodings, host pin indices) |
+
+Pin-monitor independence (`05-reference-model.md`) is about not reading the PSRAM model's access log. Sharing opcode and dummy-cycle numbers from `test/reference/constants.py` is allowed; `test/monitors/qspi.py` must still not import `test/models/psram.py`.
+
+`test/common/config.py` stays the run-configuration parser (`LEVEL`, `SIM`, `SEED`, `DMA_BUF_DEPTH`, `TIMING_PROFILE`). It imports tapeout depth from `test/reference/constants.py` instead of hard-coding `5`.
+
+Local values that are truly one-test (a directed negative opcode such as `0x38`, a single fixture address, the independent `MANDATORY_BYTES` restatement of `TC-TCD-BE`) stay local. `CHK-*` / most `Q-*` / `COV-*` ID strings stay in their catalog owner. `Q-*` IDs are simulation-provable QSPI protocol and edge checks; `CHK-*` IDs are always-on cocotb runtime monitors; `COV-*` IDs are functional coverage points.
+
+Firmware `asic.py` `DONE_BIT` is a `uo_out` **index**. Test `DONE_MASK` (`0x1`) is a **mask**. Do not unify them with `test_qspi_negative.py` `_BUS_GNT_BIT` (UIO **index**).
+
+### Complete function comments and a repo commenting standard
+
+Planned as one change, applied first to `test/` (and the matching firmware work in `../12-firmware.md`):
+
+1. **Write the standard** in docs (human condensed in [`../../human/roadmap.md`](../../human/roadmap.md); llm examples here and in the firmware doc). Cover Python first. SystemVerilog (`src/`, `test/tb/`) and shell (`test/scripts/`) follow the same intent on later edits: every function or module entry point states purpose, inputs, outputs, and side effects.
+2. **Apply it to testbench source:** every function in `test/common/`, `test/models/`, `test/reference/`, `test/monitors/`, and `test/tests/` gets a complete comment. Cocotb tests keep `TC-*` IDs in the docstring or metadata (IDs name required behavior, not Python identifiers).
+3. **Review and update verification docs** so public helpers (bring-up, host, dispose, lifecycle, BFM, reference pack/unpack/`interpret_chain`, scoreboard, monitors) have complete descriptions matching the source comments. Catalogs (`TC-*`, `CHK-*`, `Q-*`, `COV-*`) stay ID-owned; function comments must not invent a parallel ID scheme.
+
+Do not treat a one-line name restatement as complete. A complete comment says what the function guarantees, what it refuses, and which frozen rule or verification ID it implements when that is not obvious from the name.
+
+### Centralize testbench interaction and make output easier to read
+
+Planned as one change in `test/` (not a shuttle freeze gate). Firmware REPL / `print` paths are out of scope.
+
+Today each cocotb module repeats the same conversation with the bench: a local `_repro()` string (often `make` in one file and `run_test.sh` in another), `dut._log.info` of that string, then `bring_up_*` / host pulses / `dispose_run`. `dispose_run` `_log_report` then prints one `DISPOSE test=... id=... result=... count=...` INFO line per catalog ID (`CHK-*` always-on monitors and `Q-*` simulation-provable QSPI protocol/edge checks). Passing tests often log another pipe-joined `report.summary()` on the same stream as Make banners, toolchain versions, and Icarus `sorry:` notes.
+
+Planned:
+
+1. **One reproduction helper** in `test/common/` that builds the copy-paste `REPRO:` line from `parse_run_config()` plus module / `TEST_FILTER`. Tests stop copying the template. Keep both `make test ...` and `test/scripts/run_test.sh ...` forms if both remain supported; generate them in one place.
+2. **One run-log helper** (thin, next to bring-up / dispose, not a new monitor) owns the human-facing lines: config and `SEED` at start, compact pass banner at end. Tests still call `dispose_run` for the pass/fail contract; they stop formatting the narrative themselves.
+3. **Readable pass output.** A clean pass collapses per-ID `DISPOSE` lines into one compact summary (pass / `na` / `blocked` counts, and any non-pass IDs). Per-ID lines remain on fail, when any row is `fail` / `blocked`, or when a verbosity override is set. The contract "every applicable ID is disposed, never a silent skip" stays; what changes is how a clean pass is printed.
+4. **Do not** fold models, pin monitors, or the scoreboard into the logger. **Do not** change dispose semantics (`expect_fail`, `RESET-TRUNCATED` review/require, pin vs model `via=`). **Do not** treat quieter Make/Icarus compiler noise as this change; `run.log` isolation already exists.
+
+Local per-test messages that name a unique directed fault (for example which SIO bit was X) may stay in the test. Anything every suite repeats (`REPRO`, SEED/config, "passed: N transactions", the all-pass ID dump) moves.
 
 ## DUT-level selection
 
@@ -378,3 +427,5 @@ Hook scripts under `test/scripts/` should be git `+x`, but CI must not depend on
 - RTL architecture and top name: `../03-architecture.md`
 - QPI constants and timing: `../05-qspi-psram.md`
 - Gate-level and physical timing checklist: `../11-timing-analysis.md`
+- Firmware housekeeping twin: `../12-firmware.md`
+- Human checklist: `../../human/roadmap.md`

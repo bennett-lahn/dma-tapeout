@@ -29,11 +29,8 @@ from reference.chain import (
     memory_from_snapshot,
     transaction,
 )
+from common.constants import DST_ADDR, QUIT_ADDR, SRC_ADDR
 from reference.tcd import TCD_BYTES, Tcd, TcdError, encode_tcd
-
-QUIT_ADDR = 0x000020
-SRC_ADDR = 0x000100
-DST_ADDR = 0x000200
 
 
 def image(fill: int = 0x00) -> MemoryImage:

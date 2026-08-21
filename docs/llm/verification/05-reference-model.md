@@ -300,7 +300,7 @@ Use a distinct `reference` axis for invalid TCD encoding, out-of-range access, u
 
 ## Independence and review rules
 
-- Keep TCD constants in the reference package as architecture constants with comments pointing to `../04-tcd-and-datapath.md`. Do not import or parse SystemVerilog.
+- Keep TCD constants in [`test/reference/constants.py`](../../../test/reference/constants.py) as architecture constants with comments pointing to `../04-tcd-and-datapath.md` (mechanical twin of `firmware/constants.py`). Do not import or parse SystemVerilog.
 - Unit-test encode/decode, fixed head, quit priority, zero length, both cross-device directions, overlapping ranges, descriptor overwrite before fetch, bounds, and budget exhaustion before connecting the model to cocotb.
 - Use independently written pin decoding for observed transactions. The expected model must not consume the PSRAM model's internal access log as its observed axis.
 - The PSRAM model's final storage may supply observed memory, but the reference interpreter always starts from a separate clone.

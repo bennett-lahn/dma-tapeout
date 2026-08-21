@@ -25,6 +25,7 @@ Architecture and verification are parallel documentation sets under both `human/
 - Agent: [`llm/00-index.md`](llm/00-index.md)
 - Agent verification: [`llm/verification/00-index.md`](llm/verification/00-index.md)
 - Local LibreLane harden: [`human/architecture/hardening.md`](human/architecture/hardening.md) / [`llm/13-hardening-librelane.md`](llm/13-hardening-librelane.md)
+- 2026-08-21 read-only review catalog: [`review-passthrough-2026-08-21/00-index.md`](review-passthrough-2026-08-21/00-index.md)
 
 ## Prior art (separate)
 

@@ -34,38 +34,32 @@ try:
 except ImportError:
     _mp_sleep_us = None
 
-
-CMD_RESET_ENABLE = 0x66
-CMD_RESET = 0x99
-CMD_ENTER_QPI = 0x35
-CMD_EXIT_QPI = 0xF5
-CMD_QPI_READ = 0xEB
-CMD_QPI_WRITE = 0x02
-
-TCEM_US_DEFAULT = 4.0
-TCEM_MARGIN_DEFAULT = 0.25
-SCK_HZ_DEFAULT = 20_000_000
-TPU_US = 150
-# tRST min 50 ns and tCPH min 18 ns. MCU Python/GPIO between commands already
-# exceeds both; do not insert a 1 us sleep as if it were the timing element.
-QPI_DUMMY_CYCLES = 6
-EB_OVERHEAD_SCK = 14  # 2 cmd + 6 addr + 6 dummy
-WR_OVERHEAD_SCK = 8  # 2 cmd + 6 addr
-SCK_PER_BYTE_QPI = 2  # 8 bits / 4 bits per SCK
-
-# ETR uio[0..7] -> GPIO25..32 (Rohan Verma / TT QSPI guide).
-QSPI_BASE = 25
-PIN_FLASH_CS = QSPI_BASE + 0
-PIN_MOSI = QSPI_BASE + 1
-PIN_MISO = QSPI_BASE + 2
-PIN_SCK = QSPI_BASE + 3
-PIN_SD2 = QSPI_BASE + 4
-PIN_SD3 = QSPI_BASE + 5
-PIN_RAM_A_CS = QSPI_BASE + 6
-PIN_RAM_B_CS = QSPI_BASE + 7
-
-CS_PSRAM0 = 0
-CS_PSRAM1 = 1
+from .constants import (
+    CMD_ENTER_QPI,
+    CMD_EXIT_QPI,
+    CMD_QPI_READ,
+    CMD_QPI_WRITE,
+    CMD_RESET,
+    CMD_RESET_ENABLE,
+    CS_PSRAM0,
+    CS_PSRAM1,
+    EB_OVERHEAD_SCK,
+    PIN_FLASH_CS,
+    PIN_MISO,
+    PIN_MOSI,
+    PIN_RAM_A_CS,
+    PIN_RAM_B_CS,
+    PIN_SCK,
+    PIN_SD2,
+    PIN_SD3,
+    QPI_DUMMY_CYCLES,
+    SCK_HZ_DEFAULT,
+    SCK_PER_BYTE_QPI,
+    TCEM_MARGIN_DEFAULT,
+    TCEM_US_DEFAULT,
+    TPU_US,
+    WR_OVERHEAD_SCK,
+)
 
 
 class PsramError(Exception):

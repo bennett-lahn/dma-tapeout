@@ -34,8 +34,13 @@ from cocotb.triggers import (
 
 from common.bringup import bring_up
 from common.config import parse_run_config
+from common.constants import (
+    BUS_GNT_MASK,
+    GRANT_TIMEOUT_CYCLES,
+    STATE_TIMEOUT_CYCLES,
+)
 from common.directed import (
-    DONE_BIT,
+    DONE_MASK,
     auto_timeout_ns,
     compare_and_dispose,
     install_chain,
@@ -45,15 +50,12 @@ from common.directed import (
 from common.dispose import REVIEW, dispose_run
 from common.host import assert_bus_req, pulse_start
 from reference.chain import DATA_READ, DATA_WRITE, FETCH_READ, HEAD_ADDRESS, HEAD_DEVICE
+from reference.constants import DMA_BUF_DEPTH_TAPEOUT
 from reference.generator import PATTERN_INCREMENT, TcdSpec, build_directed_chain
 from reference.tcd import TCD_BYTES, TC_TCD_BE_BYTES, TC_TCD_BE_TCD, decode_tcd, encode_tcd
 
-BUS_GNT_BIT = 0x2
-_GRANT_TIMEOUT_CYCLES = 2_000
-_STATE_TIMEOUT_CYCLES = 50_000
 _RESET_SETTLE_CYCLES = 5
 _POST_RELEASE_IDLE_CYCLES = 10
-_L2_DEPTH = 5
 
 
 def _repro(config: dict, test_filter: str) -> str:
@@ -70,9 +72,9 @@ def _require_l2(config: dict, *, repro: str) -> None:
             f"(got level={config['level']} dut_level={config['dut_level']}). "
             + repro
         )
-    if config["dma_buf_depth"] != _L2_DEPTH:
+    if config["dma_buf_depth"] != DMA_BUF_DEPTH_TAPEOUT:
         raise AssertionError(
-            f"L2 netlist is flattened at DMA_BUF_DEPTH={_L2_DEPTH} "
+            f"L2 netlist is flattened at DMA_BUF_DEPTH={DMA_BUF_DEPTH_TAPEOUT} "
             f"(got {config['dma_buf_depth']}). " + repro
         )
 
@@ -113,7 +115,7 @@ def _known_int(handle, *, name: str, window: str, repro: str) -> int:
 
 
 def _done(dut, *, window: str, repro: str) -> int:
-    return _known_int(dut.uo_out, name="uo_out", window=window, repro=repro) & DONE_BIT
+    return _known_int(dut.uo_out, name="uo_out", window=window, repro=repro) & DONE_MASK
 
 
 def _bus_gnt(dut, *, window: str, repro: str) -> int:
@@ -121,7 +123,7 @@ def _bus_gnt(dut, *, window: str, repro: str) -> int:
         1
         if (
             _known_int(dut.uo_out, name="uo_out", window=window, repro=repro)
-            & BUS_GNT_BIT
+            & BUS_GNT_MASK
         )
         else 0
     )
@@ -190,7 +192,7 @@ async def _release_reset(dut) -> None:
     await RisingEdge(dut.clk)
 
 
-async def _wait_done_low(dut, *, window: str, repro: str, timeout_cycles: int = _STATE_TIMEOUT_CYCLES) -> None:
+async def _wait_done_low(dut, *, window: str, repro: str, timeout_cycles: int = STATE_TIMEOUT_CYCLES) -> None:
     for _ in range(timeout_cycles):
         await RisingEdge(dut.clk)
         if _done(dut, window=window, repro=repro) == 0:
@@ -198,7 +200,7 @@ async def _wait_done_low(dut, *, window: str, repro: str, timeout_cycles: int = 
     raise AssertionError(f"{window}: DONE never dropped after START. {repro}")
 
 
-async def _wait_ce_low(dut, *, window: str, repro: str, timeout_cycles: int = _STATE_TIMEOUT_CYCLES) -> None:
+async def _wait_ce_low(dut, *, window: str, repro: str, timeout_cycles: int = STATE_TIMEOUT_CYCLES) -> None:
     for _ in range(timeout_cycles):
         await RisingEdge(dut.clk)
         ce0, ce1 = _ce_levels(dut, window=window, repro=repro)
@@ -208,7 +210,7 @@ async def _wait_ce_low(dut, *, window: str, repro: str, timeout_cycles: int = _S
 
 
 async def _wait_both_ce_high(
-    dut, *, window: str, repro: str, timeout_cycles: int = _STATE_TIMEOUT_CYCLES
+    dut, *, window: str, repro: str, timeout_cycles: int = STATE_TIMEOUT_CYCLES
 ) -> None:
     for _ in range(timeout_cycles):
         await RisingEdge(dut.clk)
@@ -219,7 +221,7 @@ async def _wait_both_ce_high(
 
 
 async def _wait_bus_gnt(dut, *, want: int, window: str, repro: str) -> None:
-    for _ in range(_GRANT_TIMEOUT_CYCLES):
+    for _ in range(GRANT_TIMEOUT_CYCLES):
         await RisingEdge(dut.clk)
         if _bus_gnt(dut, window=window, repro=repro) == want:
             return
@@ -236,7 +238,7 @@ async def _pin_bus_req_cycle(dut, *, window: str, repro: str, wait_ce: bool = Tr
     if wait_ce:
         await _wait_ce_low(dut, window=window, repro=repro)
     await assert_bus_req(dut, hold=True)
-    for _ in range(_GRANT_TIMEOUT_CYCLES):
+    for _ in range(GRANT_TIMEOUT_CYCLES):
         await RisingEdge(dut.clk)
         await ReadOnly()
         gnt = _bus_gnt(dut, window=window, repro=repro)

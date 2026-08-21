@@ -81,6 +81,14 @@ Keep these out of the next milestones; details in the verification execution pla
 4. **Agents run only `test/scripts/*.sh`** - avoid brittle one-liners and `/tmp` logs.
 5. **Wipe `test/sim_build/`** after Icarus/wrapper changes.
 
+## Planned housekeeping (not a shuttle freeze gate)
+
+Engineering hygiene. Does not reopen M0–M5, grow RTL, or block shuttle freeze by itself. Detail: [`architecture/firmware.md`](architecture/firmware.md), [`../llm/12-firmware.md`](../llm/12-firmware.md), [`../llm/verification/02-platform.md`](../llm/verification/02-platform.md).
+
+- [x] **Centralize constants.** Duplicated locals in the cocotb testbench (`test/`) and demoboard firmware (`firmware/`) live in three leaf modules: `firmware/constants.py`, `test/reference/constants.py` (mechanical twin of the overlapping architecture subset), and `test/common/constants.py` (sim-only). Firmware still must not import `test/` (D30).
+- [ ] **Complete function comments, plus a repo commenting standard.** Review and update testbench and firmware docs and source so every function has a complete comment. As part of that same change, write a commenting standard for the rest of the repo (Python first; SystemVerilog and shell follow the same intent on later edits).
+- [ ] **Centralize testbench interaction and make output easier to read.** One shared helper for `REPRO` / run banners; tests stop each formatting `dut._log` and copying `_repro()`. Passing dispose output collapses to a compact summary; a fail still prints every catalog ID. Does not change checker semantics.
+
 ## Open questions
 
 Tracked in detail at `../llm/08-open-questions.md`. Remaining V1 lean:

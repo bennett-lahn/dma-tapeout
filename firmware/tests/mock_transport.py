@@ -1,6 +1,12 @@
 """Mock SPI/QPI master with optional sparse PSRAM contents (no rp2)."""
 
-from firmware.psram import CMD_ENTER_QPI, CMD_EXIT_QPI, CMD_QPI_READ, CMD_QPI_WRITE
+from firmware.psram import (
+    CMD_ENTER_QPI,
+    CMD_EXIT_QPI,
+    CMD_QPI_READ,
+    CMD_QPI_WRITE,
+    CMD_RESET,
+)
 
 
 class MockTransport:
@@ -19,7 +25,7 @@ class MockTransport:
         self.log.append(("spi", cs, payload))
         if payload == bytes([CMD_ENTER_QPI]):
             self.qpi[cs] = True
-        elif payload == bytes([0x99]):
+        elif payload == bytes([CMD_RESET]):
             self.qpi[cs] = False
 
     def qpi_write(self, cs, data):

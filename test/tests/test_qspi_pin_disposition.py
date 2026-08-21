@@ -23,6 +23,7 @@ from cocotb.triggers import Timer
 
 from common.bringup import bring_up_top
 from common.config import parse_run_config
+from common.constants import FILL
 from common.host import QpiPassthroughMaster
 from models.psram import (
     Q_SIO_X,
@@ -36,9 +37,6 @@ from monitors.qspi import (
     MODEL_DISPOSE_VIA,
     assert_model_pin_disposition,
 )
-
-FILL = 0x00
-
 
 async def _bring_up(dut):
     """Shared L1 attach/clock/reset, then hold ASIC reset for MCU pass-through."""

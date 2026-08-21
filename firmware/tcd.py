@@ -2,8 +2,8 @@
 
 Pure Python only; no cocotb imports. See ``docs/llm/verification/05-reference-model.md``.
 
-Architecture constants (byte offsets, ``CTRL_FLAGS`` bit positions, pointer
-width) are declared here as verification-side copies of ``../04-tcd-and-datapath.md``.
+Architecture numbers (byte offsets, ``CTRL_FLAGS`` bit positions, pointer
+width) live in ``constants.py`` as copies of ``../04-tcd-and-datapath.md``.
 Packed ``tcd_t`` in ``types.svh`` is the layout: RTL is 88 bits and latches
 ``reserved`` as the packed LSB nibble. This dataclass keeps ``reserved`` as the last field so
 encode/decode can round-trip the 11-byte memory record
@@ -29,26 +29,24 @@ try:
 except ImportError:  # MicroPython UF2 without stdlib dataclasses
     from ._compat import dataclass
 
-TCD_BYTES = 11
-
-PTR_BITS = 23
-PTR_MAX = (1 << PTR_BITS) - 1  # 0x7FFFFF, APS6404L A[22:0] address space
-PTR_BIT23 = 1 << PTR_BITS  # don't-care MSB (D35); not device select
-PTR_FIELD_MAX = (1 << 24) - 1  # 0xFFFFFF, full 24-bit TCD pointer field
-TRANSFER_LEN_MAX = 0xFF
-RESERVED_MAX = 0xF
-
-OFFSET_SRC_PTR = 0
-OFFSET_DEST_PTR = 3
-OFFSET_TRANSFER_LEN = 6
-OFFSET_NEXT_TCD = 7
-OFFSET_CTRL_FLAGS = 10
-
-CTRL_QUIT_BIT = 4
-CTRL_SRC_DEVICE_BIT = 5
-CTRL_DEST_DEVICE_BIT = 6
-CTRL_NEXT_DEVICE_BIT = 7
-CTRL_RESERVED_SHIFT = 0
+from .constants import (
+    CTRL_DEST_DEVICE_BIT,
+    CTRL_NEXT_DEVICE_BIT,
+    CTRL_QUIT_BIT,
+    CTRL_RESERVED_SHIFT,
+    CTRL_SRC_DEVICE_BIT,
+    OFFSET_CTRL_FLAGS,
+    OFFSET_DEST_PTR,
+    OFFSET_NEXT_TCD,
+    OFFSET_SRC_PTR,
+    OFFSET_TRANSFER_LEN,
+    PTR_BIT23,
+    PTR_FIELD_MAX,
+    PTR_MAX,
+    RESERVED_MAX,
+    TCD_BYTES,
+    TRANSFER_LEN_MAX,
+)
 
 POINTER_FIELDS = ("src_ptr", "dest_ptr", "next_tcd")
 DEVICE_FIELDS = ("src_device", "dest_device", "next_device")

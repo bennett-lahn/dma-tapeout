@@ -117,14 +117,13 @@ def test_coverage_module_does_not_import_cocotb():
     _assert_no_cocotb_import()
 
 
-def test_l1_adapter_source_imports_handshake_tables_without_this_test_importing_it():
-    """The adapter must use handshake name tables; this test only reads the file."""
+def test_l1_adapter_source_imports_shared_fsm_tables_without_this_test_importing_it():
+    """The adapter must use the shared FSM name tables; this test only reads the file."""
     path = Path(__file__).resolve().parents[1] / "common" / "coverage_l1.py"
     text = path.read_text(encoding="utf-8")
-    assert "from monitors.handshake import" in text
+    assert "from common.constants import" in text
     assert "QSPI_ENGINE_STATES" in text
     assert "SYS_CONTROL_STATES" in text
-    assert "Do not rewrite" in text or "do not rewrite" in text.lower()
     _assert_no_cocotb_import()
 
 

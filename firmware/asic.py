@@ -11,29 +11,19 @@ Takes a `tt` object so REPL can pass `DemoBoard.get()` and tests can inject a
 mock with integer `ui_in` / `uo_out` / `uio_oe_pico`.
 """
 
-from .psram import sleep_us as _default_sleep_us
-
-START_BIT = 0
-BUS_REQ_BIT = 2
-DONE_BIT = 0
-BUS_GNT_BIT = 1
-
-PROJECT_CLOCK_HZ = 66_000_000
-DEFAULT_PROJECT = "tt_um_lahnb_sgdma"
-
-# uio bit: 0 flash CS, 1 SIO0, 2 SIO1, 3 SCK, 4 SIO2, 5 SIO3, 6 RAM A CS, 7 RAM B CS.
-# SDK: bits set to 1 are driven by the RP2.
-OE_HIZ = 0
-OE_SPI = (
-    (1 << 0) | (1 << 1) | (1 << 3) | (1 << 6) | (1 << 7)
+from .constants import (
+    BUS_GNT_BIT,
+    BUS_REQ_BIT,
+    BUSY_SAMPLE_TRIES,
+    DEFAULT_PROJECT,
+    DONE_BIT,
+    OE_HIZ,
+    OE_QPI,
+    PROJECT_CLOCK_HZ,
+    START_BIT,
+    START_HOLD_US,
 )
-OE_QPI = 0xFF
-
-# Optional extra START high time. Capture does not depend on this: two GPIO
-# writes already last much longer than two 66 MHz synchronizer clocks.
-START_HOLD_US = 0
-# Tight samples looking for DONE low. Not a timed wait; Python loops only.
-BUSY_SAMPLE_TRIES = 8
+from .psram import sleep_us as _default_sleep_us
 
 
 class HostError(Exception):

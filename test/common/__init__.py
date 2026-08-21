@@ -5,6 +5,7 @@ See ``docs/llm/verification/02-platform.md`` for package responsibilities.
 
 __all__ = [
     "config",
+    "constants",
     "clocks",
     "host",
     "seeds",

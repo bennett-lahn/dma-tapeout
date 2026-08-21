@@ -70,8 +70,12 @@ import cocotb
 from cocotb.simtime import get_sim_time
 from cocotb.triggers import First, ReadOnly, RisingEdge
 
-from monitors.handshake import (
+from common.constants import (
     QSPI_ENGINE_STATES,
+    RESULT_BLOCKED,
+    RESULT_FAIL,
+    RESULT_NA,
+    RESULT_PASS,
     SYS_CONTROL_IDLE,
     SYS_CONTROL_STATES,
 )
@@ -107,11 +111,6 @@ L1_ONLY_CHECK_IDS = (
 
 # Rows that read named RTL signals; `na` at L2 per 06-checkers.md.
 HIERARCHY_CHECK_IDS = (CHK_ARB_GNT_NOT_BUSY, CHK_RST_INTERNAL)
-
-RESULT_PASS = "pass"
-RESULT_FAIL = "fail"
-RESULT_NA = "na"
-RESULT_BLOCKED = "blocked"
 
 UIO_WIDTH = 8
 ALL_OE_ENABLED = (1 << UIO_WIDTH) - 1

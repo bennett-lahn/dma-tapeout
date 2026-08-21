@@ -30,6 +30,7 @@ from common.lifecycle import (
     REASON_STOP,
     SEV_FAIL,
 )
+from common.constants import RESULT_FAIL, RESULT_PASS
 
 Q_CEM = "Q-CEM"
 Q_CPH = "Q-CPH"
@@ -50,9 +51,6 @@ PSRAM_TCHD_NS = 3.0
 PSRAM_TACLK_NS = 5.5
 PSRAM_TSP_NS = 2.0
 PSRAM_THD_NS = 2.0
-
-RESULT_PASS = "pass"
-RESULT_FAIL = "fail"
 
 _KNOWN_LEVEL = {"0": 0, "1": 1}
 

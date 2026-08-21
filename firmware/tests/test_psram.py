@@ -9,6 +9,8 @@ from firmware.psram import (
     CMD_QPI_WRITE,
     CMD_RESET,
     CMD_RESET_ENABLE,
+    QPI_DUMMY_CYCLES,
+    SCK_HZ_DEFAULT,
     TPU_US,
     Psram,
     PsramError,
@@ -34,8 +36,8 @@ def test_illegal_sck_rejected():
 
 
 def test_chunk_sizes_at_default_20mhz():
-    assert qpi_chunk_bytes(CMD_QPI_READ, 20_000_000) == 23
-    assert qpi_chunk_bytes(CMD_QPI_WRITE, 20_000_000) == 26
+    assert qpi_chunk_bytes(CMD_QPI_READ, SCK_HZ_DEFAULT) == 23
+    assert qpi_chunk_bytes(CMD_QPI_WRITE, SCK_HZ_DEFAULT) == 26
 
 
 def test_enter_then_qpi_write_and_exit_is_two_sck():
@@ -83,7 +85,7 @@ def test_qpi_read_chunks_and_dummy_cycles():
     reads = [row for row in transport.log if row[0] == "qpi_read"]
     assert len(reads) == 2
     assert reads[0][2][0] == CMD_QPI_READ
-    assert reads[0][3] == 6
+    assert reads[0][3] == QPI_DUMMY_CYCLES
     assert reads[0][4] == 23
     assert reads[1][4] == 17
 

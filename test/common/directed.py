@@ -13,14 +13,12 @@ from dataclasses import replace
 from cocotb.triggers import RisingEdge, SimTimeoutError, with_timeout
 
 from common.coverage_l1 import L1CoverageAdapter
+from common.constants import DONE_MASK, DONE_TIMEOUT_NS
 from common.dispose import dispose_run
 from common.host import pulse_start
 from reference.coverage import FRAGMENT_FILENAME, CoverageSampler
 from reference.scoreboard import RunContext, Scoreboard
 from reference.tcd import TCD_BYTES
-
-DONE_BIT = 0x1
-DONE_TIMEOUT_NS = 100_000
 
 # One sampler per RUN_DIR so successive directed windows merge into coverage.json.
 _coverage_samplers: "dict[str, CoverageSampler]" = {}
@@ -93,15 +91,15 @@ def auto_timeout_ns(chain) -> int:
 
 async def wait_for_done_pulse(dut) -> None:
     """DONE (uo_out[0]) is high in IDLE; wait for it to drop then return high."""
-    while int(dut.uo_out.value) & DONE_BIT:
+    while int(dut.uo_out.value) & DONE_MASK:
         await RisingEdge(dut.clk)
-    while not (int(dut.uo_out.value) & DONE_BIT):
+    while not (int(dut.uo_out.value) & DONE_MASK):
         await RisingEdge(dut.clk)
 
 
 async def wait_until_done(dut) -> None:
     """Wait until DONE is high (no-op if already idle after an overlapped window)."""
-    while (int(dut.uo_out.value) & DONE_BIT) != 1:
+    while (int(dut.uo_out.value) & DONE_MASK) != 1:
         await RisingEdge(dut.clk)
 
 

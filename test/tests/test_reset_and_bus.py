@@ -46,7 +46,7 @@ from cocotb.triggers import (
 from common.bringup import bring_up_top
 from common.config import parse_run_config
 from common.directed import (
-    DONE_BIT,
+    DONE_MASK,
     auto_timeout_ns as _auto_timeout_ns,
     commit_l1_window as _commit_l1_window,
     compare_and_dispose as _compare_and_dispose,
@@ -56,6 +56,7 @@ from common.directed import (
     wait_for_done_pulse as _wait_for_done_pulse,
     wait_until_done as _wait_until_done,
 )
+from common.constants import BUS_GNT_MASK, GRANT_TIMEOUT_CYCLES, STATE_TIMEOUT_CYCLES
 from common.dispose import REVIEW, dispose_run
 from common.host import BUS_REQ_BIT, START_BIT, assert_bus_req, pulse_start
 from common.injection import (
@@ -83,10 +84,6 @@ from monitors.handshake import (
 from reference.generator import PATTERN_INCREMENT, TcdSpec, build_directed_chain
 from reference.scoreboard import Scoreboard
 
-BUS_GNT_BIT = 0x2
-
-_STATE_TIMEOUT_CYCLES = 50_000
-_GRANT_TIMEOUT_CYCLES = 2_000
 _RESET_SETTLE_CYCLES = 5
 _POST_RELEASE_IDLE_CYCLES = 10
 
@@ -177,11 +174,11 @@ def _level(handle) -> "int | None":
 
 
 def _done(dut) -> int:
-    return int(dut.uo_out.value) & DONE_BIT
+    return int(dut.uo_out.value) & DONE_MASK
 
 
 def _bus_gnt(dut) -> int:
-    return 1 if (int(dut.uo_out.value) & BUS_GNT_BIT) else 0
+    return 1 if (int(dut.uo_out.value) & BUS_GNT_MASK) else 0
 
 
 def _controller(dut):
@@ -198,7 +195,7 @@ def _engine(dut):
 
 
 async def _await_controller_state(
-    dut, targets, *, timeout_cycles: int = _STATE_TIMEOUT_CYCLES, repro: str = ""
+    dut, targets, *, timeout_cycles: int = STATE_TIMEOUT_CYCLES, repro: str = ""
 ) -> int:
     """Poll ``sys_controller.curr_state`` until it is in *targets*.
 
@@ -222,7 +219,7 @@ async def _await_controller_state(
 
 
 async def _await_engine_state(
-    dut, targets, *, timeout_cycles: int = _STATE_TIMEOUT_CYCLES, repro: str = ""
+    dut, targets, *, timeout_cycles: int = STATE_TIMEOUT_CYCLES, repro: str = ""
 ) -> int:
     """Poll ``qspi_engine.curr_state`` until it is in *targets* (see above)."""
     engine = _engine(dut)
@@ -328,7 +325,7 @@ async def _bus_req_cycle(
 
     await _await_controller_state(dut, (SYS_CONTROL_STALL,), repro=repro)
 
-    for _ in range(_GRANT_TIMEOUT_CYCLES):
+    for _ in range(GRANT_TIMEOUT_CYCLES):
         await RisingEdge(dut.clk)
         await ReadOnly()
         if _bus_gnt(dut) == 1:
@@ -348,7 +345,7 @@ async def _bus_req_cycle(
     assert int(dut.uio_oe.value) == 0, f"uio_oe not clear under BUS_GNT. {repro}"
 
     await assert_bus_req(dut, hold=False)
-    for _ in range(_GRANT_TIMEOUT_CYCLES):
+    for _ in range(GRANT_TIMEOUT_CYCLES):
         await RisingEdge(dut.clk)
         if _bus_gnt(dut) == 0:
             break
@@ -386,7 +383,7 @@ async def _bus_req_targeted(
     assert _bus_gnt(dut) == 1, f"BUS_GNT never asserted after targeted BUS_REQ. {repro}"
     assert int(dut.uio_oe.value) == 0, f"uio_oe not clear under BUS_GNT. {repro}"
     await assert_bus_req(dut, hold=False)
-    for _ in range(_GRANT_TIMEOUT_CYCLES):
+    for _ in range(GRANT_TIMEOUT_CYCLES):
         await RisingEdge(dut.clk)
         if _bus_gnt(dut) == 0:
             break
@@ -815,7 +812,7 @@ async def bus_req_from_idle(dut):
     await assert_bus_req(dut, hold=True)
     await _record_bus_after_sync(dut, adapter, observed_state=SYS_CONTROL_IDLE)
     await _await_controller_state(dut, (SYS_CONTROL_STALL,), repro=repro)
-    for _ in range(_GRANT_TIMEOUT_CYCLES):
+    for _ in range(GRANT_TIMEOUT_CYCLES):
         await RisingEdge(dut.clk)
         if _bus_gnt(dut) == 1:
             break
@@ -835,7 +832,7 @@ async def bus_req_from_idle(dut):
     )
 
     await assert_bus_req(dut, hold=False)
-    for _ in range(_GRANT_TIMEOUT_CYCLES):
+    for _ in range(GRANT_TIMEOUT_CYCLES):
         await RisingEdge(dut.clk)
         if _bus_gnt(dut) == 0:
             break
@@ -1123,7 +1120,7 @@ async def reset_from_idle(dut):
     # -- sub-case 2: reset while BUS_GNT is active --------------------------
     bringup2 = await bring_up_top(dut)
     await assert_bus_req(dut, hold=True)
-    for _ in range(_GRANT_TIMEOUT_CYCLES):
+    for _ in range(GRANT_TIMEOUT_CYCLES):
         await RisingEdge(dut.clk)
         if _bus_gnt(dut) == 1:
             break

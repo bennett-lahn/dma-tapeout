@@ -41,3 +41,4 @@ Target: **bulk mover** between PSRAM A and B (learning / resume demo). Shipped R
 - Architecture: [`architecture/00-index.md`](architecture/00-index.md)
 - Roadmap / open issues: `roadmap.md`
 - Deep agent context: `../llm/`
+- 2026-08-21 read-only review (RTL / testbench / firmware, not a sign-off rewrite): [`../review-passthrough-2026-08-21/00-index.md`](../review-passthrough-2026-08-21/00-index.md)

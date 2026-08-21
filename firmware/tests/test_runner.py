@@ -2,7 +2,8 @@
 
 from firmware.asic import Host
 from firmware.build import add_copy, add_quit, new_image, place_bytes
-from firmware.psram import Psram
+from firmware.demo import DEMO_DEST, DEMO_QUIT, DEMO_SRC
+from firmware.psram import CMD_EXIT_QPI, Psram
 from firmware.runner import dest_extents, run_chain
 
 from mock_board import MockDemoBoard
@@ -26,25 +27,25 @@ def test_mock_runner_matches_golden_dest():
         mem,
         0,
         0,
-        src_ptr=0x100,
-        dest_ptr=0x200,
+        src_ptr=DEMO_SRC,
+        dest_ptr=DEMO_DEST,
         length=len(pattern),
-        next_tcd=0x0B,
+        next_tcd=DEMO_QUIT,
         next_device=0,
     )
-    add_quit(mem, 0, 0x0B)
-    place_bytes(mem, 0, 0x100, pattern)
+    add_quit(mem, 0, DEMO_QUIT)
+    place_bytes(mem, 0, DEMO_SRC, pattern)
 
     ok, result, mismatches = run_chain(host, psram, mem, exit_qpi=True)
     assert ok is True
     assert mismatches == []
-    assert result.final_memory.read(0, 0x200, 4) == pattern
-    assert transport.mem[0][0x200] == ord("W")
-    assert dest_extents(result) == ((0, 0x200, 4),)
+    assert result.final_memory.read(0, DEMO_DEST, 4) == pattern
+    assert transport.mem[0][DEMO_DEST] == ord("W")
+    assert dest_extents(result) == ((0, DEMO_DEST, 4),)
     exits = [
         row
         for row in transport.log
-        if row[0] == "qpi_write" and row[2] == bytes([0xF5])
+        if row[0] == "qpi_write" and row[2] == bytes([CMD_EXIT_QPI])
     ]
     assert len(exits) == 2
     assert host.bus_req is False
@@ -62,17 +63,17 @@ def test_runner_fast_complete_without_done_low():
         mem,
         0,
         0,
-        src_ptr=0x100,
-        dest_ptr=0x200,
+        src_ptr=DEMO_SRC,
+        dest_ptr=DEMO_DEST,
         length=len(pattern),
-        next_tcd=0x0B,
+        next_tcd=DEMO_QUIT,
         next_device=0,
     )
-    add_quit(mem, 0, 0x0B)
-    place_bytes(mem, 0, 0x100, pattern)
+    add_quit(mem, 0, DEMO_QUIT)
+    place_bytes(mem, 0, DEMO_SRC, pattern)
 
     ok, result, mismatches = run_chain(host, Psram(transport), mem)
     assert ok is True
     assert mismatches == []
-    assert result.final_memory.read(0, 0x200, 4) == pattern
+    assert result.final_memory.read(0, DEMO_DEST, 4) == pattern
     assert not any(ev[0] == "reset" for ev in tt.events)

@@ -47,6 +47,7 @@ from cocotb.triggers import RisingEdge
 
 from common.clocks import apply_engine_reset, apply_gl_reset, apply_reset, start_clock
 from common.config import parse_run_config, timing_env_overrides
+from common.constants import DEFAULT_CLOCK_PERIOD_NS, DEFAULT_RESET_CYCLES
 from common.lifecycle import REASON_CLEAR, REASON_STOP, finalize_all
 from models.psram import (
     PsramDevice,
@@ -74,8 +75,6 @@ LEVEL_L0 = "L0"
 LEVEL_L1 = "L1"
 LEVEL_L2 = "L2"
 
-DEFAULT_CLOCK_PERIOD_NS = 10
-DEFAULT_RESET_CYCLES = 5
 # Post-reset settle before the L0 idle self-check (former test_engine_attach).
 ENGINE_IDLE_SETTLE_CYCLES = 4
 

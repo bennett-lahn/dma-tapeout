@@ -38,6 +38,9 @@ from common.directed import (
 from common.dispose import REVIEW, dispose_run
 from common.injection import (
     CAPTURE_REQUIRED,
+    STREAM_BUS_REQ,
+    STREAM_RESET,
+    STREAM_START,
     InjectionPlanner,
     inject_bus_req,
     jitter_start,
@@ -50,12 +53,7 @@ from reference.generator import STREAMS, ChainGenerator
 from reference.scoreboard import Scoreboard
 from reference.tcd import TCD_BYTES, format_bytes, validate_tcd
 
-# Reserved Determinism streams. Wave 3 plans and drives these via the adapters.
-STREAM_START = "start"
-STREAM_BUS_REQ = "bus_req"
-STREAM_RESET = "reset"
 RESERVED_STREAMS = (STREAM_START, STREAM_BUS_REQ, STREAM_RESET)
-
 STIMULUS_FILENAME = "stimulus.json"
 STIMULUS_SCHEMA = "dma-tapeout.stimulus.v1"
 

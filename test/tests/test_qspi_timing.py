@@ -25,17 +25,15 @@ from cocotb.triggers import RisingEdge, Timer
 
 from common.bringup import bring_up_top
 from common.config import parse_run_config
+from common.constants import FILL, LEGAL_GAP_NS
 from common.dispose import dispose_run, expect
 from common.host import UIO_PSRAM_CE_BITS, QpiPassthroughMaster, assert_bus_req
 from monitors.timing import Q_CEM, Q_CPH, start_ce_timing_monitor
-
-FILL = 0x00
 
 # Directed-test thresholds: short enough to keep the module fast, still above
 # the master's half-SCK park gaps used by the legal baseline.
 DIRECTED_TCEM_NS = 100.0
 DIRECTED_TCPH_NS = 18.0
-LEGAL_GAP_NS = 25.0  # > tCPH
 SHORT_GAP_NS = 5.0  # < tCPH
 LONG_PULSE_NS = 150.0  # > directed tCEM
 

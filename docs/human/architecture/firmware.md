@@ -145,6 +145,7 @@ Each device is `A[22:0]` (`0x000000..0x7FFFFF`). `ptr[23]` is don't-care (D35). 
 
 | Path | Role |
 |---|---|
+| `firmware/constants.py` | MCU + architecture numbers used in 2+ firmware modules |
 | `firmware/tcd.py` | Copied pack / unpack / validate |
 | `firmware/chain.py` | Copied `MemoryImage`, `interpret_chain`, `ChainResult` |
 | `firmware/_compat.py` | Dataclass shim if the UF2 lacks `dataclasses` |
@@ -174,6 +175,13 @@ On DONE timeout or runaway chain: `kill_dma` (`rst_n`; D23), Hi-Z MCU, then unde
 ## Sim relationship
 
 Demoboard firmware is **not** [`../../../test/common/host.py`](../../../test/common/host.py). Shared intent only (grant, START, TCD rules). Do not import sim helpers from MCU code.
+
+## Planned housekeeping
+
+Not a shuttle freeze gate. Twin notes: [`../../llm/12-firmware.md`](../../llm/12-firmware.md) (firmware), [`../../llm/verification/02-platform.md`](../../llm/verification/02-platform.md) (testbench), [`../roadmap.md`](../roadmap.md).
+
+1. **Centralize constants.** Architecture and duplicated numbers live in `firmware/constants.py`. The overlapping TCD / opcode / dummy / head / buffer subset is a mechanical copy of `test/reference/constants.py` (not a `test/` import). Demo addresses stay in `firmware/demo.py`. Sim-only shared numbers live in `test/common/constants.py`.
+2. **Complete function comments, plus a repo commenting standard.** Review this doc and the verbose twin so every public function is described, and add a complete comment on every firmware function. Write the commenting standard in that same change; later RTL and scripts follow it.
 
 ## Non-goals (V1 firmware)
 

@@ -68,22 +68,24 @@ from common.lifecycle import (
     SEV_DIAGNOSTIC,
     SEV_FAIL,
 )
-
-PSRAM_ADDR_BITS = 23
-PSRAM_SIZE = 1 << PSRAM_ADDR_BITS  # APS6404L: 8 MiB, 23-bit address space
-PSRAM_ADDR_MASK = PSRAM_SIZE - 1
-PSRAM_PAGE_SIZE = 1024  # Linear Burst page, one crossing per CE# pulse
-
-QSPI_CMD_FAST_READ = 0xEB
-QSPI_CMD_WRITE = 0x02
-
-CMD_NIBBLES = 2
-ADDR_NIBBLES = 6
-FAST_READ_DUMMY_CYCLES = 6
+from common.constants import SIO_UIO_BITS
+from reference.constants import (
+    ADDR_NIBBLES,
+    CMD_NIBBLES,
+    DIR_READ,
+    DIR_WRITE,
+    FAST_READ_DUMMY_CYCLES,
+    PSRAM_ADDR_BITS,
+    PSRAM_ADDR_MASK,
+    PSRAM_PAGE_SIZE,
+    PSRAM_SIZE,
+    QSPI_CMD_FAST_READ,
+    QSPI_CMD_WRITE,
+    Q_PHASE,
+)
 
 # Stable violation IDs owned by this per-device model.
 Q_OPCODE = "Q-OPCODE"
-Q_PHASE = "Q-PHASE"
 Q_DUMMY = "Q-DUMMY"
 Q_NIBBLE_ODD = "Q-NIBBLE-ODD"
 Q_ADDR23 = "Q-ADDR23"
@@ -95,13 +97,7 @@ Q_SIO_X = "Q-SIO-X"
 CLASS_FAIL = "fail"
 CLASS_RESET_TRUNCATED = "RESET-TRUNCATED"
 
-# Resolved ``uio`` bit map, mirroring src/top.v and test/tb/tb_top.sv:
-# uio[0] flash CS, uio[1,2,4,5] SIO0..3, uio[3] SCK, uio[6:7] PSRAM0/1 CE#.
-SIO_UIO_BITS = (1, 2, 4, 5)
-
 DIR_NONE = "none"
-DIR_READ = "read"
-DIR_WRITE = "write"
 
 PHASE_IDLE = "IDLE"
 PHASE_CMD = "CMD"

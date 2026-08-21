@@ -26,9 +26,16 @@ Used by directed cases such as ``TC-SAME-*``, ``TC-CROSS-*``, ``TC-CHAIN``,
 
 from dataclasses import dataclass, field, replace
 
-from reference.tcd import (
+from reference.constants import (
+    DEVICES,
+    HEAD_ADDRESS,
+    HEAD_DEVICE,
+    OPCODE_READ,
+    OPCODE_WRITE,
     PTR_MAX,
     TCD_BYTES,
+)
+from reference.tcd import (
     ReferenceModelError,
     Tcd,
     TcdError,
@@ -47,9 +54,6 @@ DATA_WRITE = "DATA_WRITE"
 OBSERVED_READ = "READ"
 OBSERVED_WRITE = "WRITE"
 
-OPCODE_READ = 0xEB
-OPCODE_WRITE = 0x02
-
 KIND_OPCODE = {
     FETCH_READ: OPCODE_READ,
     DATA_READ: OPCODE_READ,
@@ -60,12 +64,7 @@ KIND_OPCODE = {
 READ_KINDS = (FETCH_READ, DATA_READ, OBSERVED_READ)
 WRITE_KINDS = (DATA_WRITE, OBSERVED_WRITE)
 
-# V1 fixed head: always PSRAM0, address 0x000000 (03-architecture.md).
-HEAD_DEVICE = 0
-HEAD_ADDRESS = 0x000000
-
 ADDR_MAX = PTR_MAX
-DEVICES = (0, 1)
 
 DEFAULT_FETCH_BUDGET = 64
 DEFAULT_TXN_BUDGET = 4096

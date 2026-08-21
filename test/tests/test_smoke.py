@@ -10,21 +10,21 @@ from cocotb.triggers import SimTimeoutError
 
 from common.bringup import bring_up_top
 from common.config import parse_run_config
+from common.constants import (
+    DONE_MASK,
+    DONE_TIMEOUT_NS,
+    DST_ADDR,
+    DST_SENTINEL,
+    NEXT_TCD_ADDR,
+    SRC_ADDR,
+    SRC_BYTE,
+    TCD_HEAD_ADDR,
+)
 from common.dispose import REVIEW, dispose_run
 from common.host import pulse_start
 from reference.chain import MemoryImage, interpret_chain
 from reference.scoreboard import RunContext, Scoreboard
 from reference.tcd import Tcd, encode_tcd
-
-TCD_HEAD_ADDR = 0x000000
-NEXT_TCD_ADDR = 0x000020
-SRC_ADDR = 0x000100
-DST_ADDR = 0x000200
-SRC_BYTE = 0xA5
-DST_SENTINEL = 0x00
-
-DONE_BIT = 0x1
-DONE_TIMEOUT_NS = 100_000
 
 
 def _repro(config: dict) -> str:
@@ -42,9 +42,9 @@ def _repro(config: dict) -> str:
 
 async def _wait_for_done_pulse(dut) -> None:
     """DONE (uo_out[0]) is high in IDLE; wait for it to drop then return high."""
-    while int(dut.uo_out.value) & DONE_BIT:
+    while int(dut.uo_out.value) & DONE_MASK:
         await RisingEdge(dut.clk)
-    while not (int(dut.uo_out.value) & DONE_BIT):
+    while not (int(dut.uo_out.value) & DONE_MASK):
         await RisingEdge(dut.clk)
 
 

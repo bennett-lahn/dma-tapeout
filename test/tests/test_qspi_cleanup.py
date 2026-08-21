@@ -7,13 +7,12 @@ from cocotb.triggers import RisingEdge, Timer
 
 from common.bringup import bring_up_top
 from common.config import parse_run_config
+from common.constants import FILL
 from common.dispose import dispose_run, expect
 from common.host import QpiPassthroughMaster, assert_bus_req
 from models.psram import QSPI_CMD_FAST_READ
 from monitors.handshake import CHK_CTRL_DATA_PAIR
 from monitors.qspi import DIR_READ
-
-FILL = 0x00
 
 
 def _repro(config: dict, test_filter: str) -> str:

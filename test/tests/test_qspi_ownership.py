@@ -34,6 +34,7 @@ from cocotb.triggers import RisingEdge, Timer
 from common.bringup import bring_up_top
 from common.clocks import apply_reset
 from common.config import parse_run_config
+from common.constants import FILL
 from common.dispose import dispose_run, expect
 from common.host import (
     UIO_FLASH_CS_BIT,
@@ -55,7 +56,6 @@ from monitors.qspi import (
     CHK_PIN_SIO_OWN,
 )
 
-FILL = 0x00
 EQUAL_SIO_NIBBLE = 0x1  # SIO0=1; equal-value dual drive on one bit
 
 # Real @cocotb.test function name; the only honest TEST_FILTER for this module.

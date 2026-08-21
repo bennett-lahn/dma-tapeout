@@ -39,10 +39,11 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from reference.chain import ADDR_MAX, ChainResult
+from reference.constants import DMA_BUF_DEPTH_MAX, PAGE_SIZE
 from reference.scoreboard import RunContext
 
-# Verification-side copy of ``qspi_pkg::DMA_BUF_DEPTH_MAX`` (types.svh). Not parsed from RTL.
-DMA_BUF_DEPTH_MAX = 8
+# Verification-side copy of ``qspi_pkg::DMA_BUF_DEPTH_MAX`` lives in
+# ``reference.constants`` (not parsed from RTL).
 DEPTH_BINS = tuple(range(1, DMA_BUF_DEPTH_MAX + 1))
 
 FRAGMENT_SCHEMA = "dma-tapeout.coverage.fragment.v1"
@@ -222,7 +223,6 @@ RESET_PHASE_BINS = (
 )
 
 BOUNDARY_64K = 0x010000
-PAGE_SIZE = 1024
 PAGE_EDGE_NEIGHBORHOOD = 16
 HIGHEST_WINDOW = 1024
 

@@ -21,11 +21,22 @@ import os
 import random
 
 from common.seeds import child_random
+from common.constants import (
+    BUS_GNT_MASK,
+    DEFAULT_CLOCK_PERIOD_NS,
+    DEFAULT_RESET_CYCLES,
+    FORBID,
+    GRANT_TIMEOUT_CYCLES,
+    QSPI_ENGINE_STATES,
+    REQUIRE,
+    REVIEW,
+    STATE_TIMEOUT_CYCLES,
+    STREAM_BUS_REQ,
+    STREAM_RESET,
+    STREAM_START,
+    SYS_CONTROL_STATES,
+)
 
-# Determinism child-stream names (08-stimulus-and-coverage.md).
-STREAM_START = "start"
-STREAM_BUS_REQ = "bus_req"
-STREAM_RESET = "reset"
 INJECTION_STREAMS = (STREAM_START, STREAM_BUS_REQ, STREAM_RESET)
 
 CAPTURE_REQUIRED = "capture_required"
@@ -54,17 +65,13 @@ BUS_LANDINGS = (LANDING_START, LANDING_MIDDLE, LANDING_FINAL)
 
 # reset_truncated policies (same strings as common.dispose). This helper never
 # defaults to FORBID: a forced rst_n=0 window must REVIEW or REQUIRE.
-REVIEW = "review"
-REQUIRE = "require"
-FORBID = "forbid"
 RESET_TRUNCATED_POLICIES = (REVIEW, REQUIRE)
 
-DEFAULT_CLK_PERIOD_NS = 10.0
-DEFAULT_RESET_HOLD_CYCLES = 5
+DEFAULT_CLK_PERIOD_NS = float(DEFAULT_CLOCK_PERIOD_NS)
+DEFAULT_RESET_HOLD_CYCLES = DEFAULT_RESET_CYCLES
 SYNC_LATENCY_CYCLES = 2
-STATE_TIMEOUT_CYCLES = 50_000
-GRANT_TIMEOUT_CYCLES = 2_000
-BUS_GNT_BIT = 0x2
+CTRL_STATE_BY_CODE = SYS_CONTROL_STATES
+QPI_STATE_BY_CODE = QSPI_ENGINE_STATES
 # Capture-uncertain raw width stays strictly under one clk so two sampling
 # edges are impossible even if deassert jitter is present on the record.
 UNCERTAIN_WIDTH_RATIO = 0.49
@@ -72,32 +79,6 @@ LANDING_CYCLES = {
     LANDING_START: 0,
     LANDING_MIDDLE: 2,
     LANDING_FINAL: 6,
-}
-
-# sys_control_pkg::sys_control_state_t / qspi_pkg::qspi_state_t encodings.
-# Must stay identical to monitors.handshake.SYS_CONTROL_STATES / QSPI_ENGINE_STATES;
-# DUT helpers verify the tables the first time they run.
-CTRL_STATE_BY_CODE = {
-    0: "SYS_CTRL_IDLE",
-    1: "NEW_FETCH",
-    2: "FETCH",
-    3: "NEW_OP",
-    4: "READ",
-    5: "WRITE",
-    6: "UPDATE",
-    7: "STALL",
-}
-QPI_STATE_BY_CODE = {
-    0: "QSPI_IDLE",
-    1: "CS_ON",
-    2: "SEND_CMD_1",
-    3: "SEND_CMD_2",
-    4: "SEND_ADDR",
-    5: "WAIT",
-    6: "READ_DATA",
-    7: "WRITE_DATA",
-    8: "SCLK_OFF",
-    9: "CS_OFF",
 }
 
 # Catalog / coverage aliases accepted by the targeted injectors.
@@ -140,9 +121,6 @@ BUS_REQ_EXCLUDED_STATES = frozenset({"STALL"})
 _HOST_HOLD_WEIGHTS = ((1, 40), (2, 25), (4, 20), (8, 10), (16, 5))
 _RESET_HOLD_WEIGHTS = ((3, 35), (4, 25), (5, 20), (6, 12), (8, 8))
 _LANDING_WEIGHTS = ((LANDING_START, 40), (LANDING_MIDDLE, 35), (LANDING_FINAL, 25))
-
-_handshake_checked = False
-
 
 class InjectionError(ValueError):
     """Illegal injection argument or drifted handshake table."""
@@ -636,26 +614,6 @@ def _resolve_reset_plan(
 # -- DUT drivers (lazy cocotb / host / handshake) --------------------------
 
 
-def _check_handshake_tables() -> None:
-    """Fail if local encodings drifted from :mod:`monitors.handshake`."""
-    global _handshake_checked
-    if _handshake_checked:
-        return
-    from monitors.handshake import QSPI_ENGINE_STATES, SYS_CONTROL_STATES
-
-    if dict(SYS_CONTROL_STATES) != CTRL_STATE_BY_CODE:
-        raise InjectionError(
-            "CTRL_STATE_BY_CODE drifted from handshake.SYS_CONTROL_STATES: "
-            f"injection={CTRL_STATE_BY_CODE} handshake={dict(SYS_CONTROL_STATES)}"
-        )
-    if dict(QSPI_ENGINE_STATES) != QPI_STATE_BY_CODE:
-        raise InjectionError(
-            "QPI_STATE_BY_CODE drifted from handshake.QSPI_ENGINE_STATES: "
-            f"injection={QPI_STATE_BY_CODE} handshake={dict(QSPI_ENGINE_STATES)}"
-        )
-    _handshake_checked = True
-
-
 def _now_ns() -> float:
     from cocotb.simtime import get_sim_time
 
@@ -695,7 +653,7 @@ def _engine(dut):
 
 
 def _bus_gnt(dut) -> int:
-    return 1 if (int(dut.uo_out.value) & BUS_GNT_BIT) else 0
+    return 1 if (int(dut.uo_out.value) & BUS_GNT_MASK) else 0
 
 
 def _release_host_uio(dut) -> None:
@@ -857,7 +815,6 @@ async def await_controller_state(
     """
     from cocotb.triggers import NextTimeStep, ReadOnly, RisingEdge
 
-    _check_handshake_tables()
     if isinstance(targets, (str, int)):
         codes = {resolve_ctrl_state(targets)}
     else:
@@ -885,7 +842,6 @@ async def await_engine_state(
     """Poll ``qspi_engine.curr_state`` until it is in *targets*."""
     from cocotb.triggers import NextTimeStep, ReadOnly, RisingEdge
 
-    _check_handshake_tables()
     if isinstance(targets, (str, int)):
         codes = set(resolve_qpi_phase(targets))
     else:
@@ -925,7 +881,6 @@ async def _await_targets(dut, record, *, timeout_cycles: int) -> None:
         raise InjectionError("sys_controller hierarchy is not visible on this DUT")
     if need_phase and engine is None:
         raise InjectionError("qspi_engine hierarchy is not visible on this DUT")
-    _check_handshake_tables()
     for _ in range(timeout_cycles):
         await RisingEdge(dut.clk)
         await ReadOnly()
@@ -1151,7 +1106,6 @@ async def inject_bus_req(
     """
     from common.host import BUS_REQ_BIT
 
-    _check_handshake_tables()
     period = resolve_clk_period_ns(
         plan.clk_period_ns if plan is not None else clk_period_ns
     )
@@ -1187,7 +1141,6 @@ async def inject_bus_req_at_new_fetch(
     from cocotb.triggers import RisingEdge
     from common.host import BUS_REQ_BIT, START_BIT
 
-    _check_handshake_tables()
     period = resolve_clk_period_ns(clk_period_ns)
     record = _resolve_bus_plan(
         None, planner, "NEW_FETCH", None, LANDING_START, period

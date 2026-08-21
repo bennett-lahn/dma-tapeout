@@ -9,6 +9,8 @@ platform default (``icarus``) when absent.
 
 import os
 
+from reference.constants import DMA_BUF_DEPTH_TAPEOUT
+
 
 _TIMING_ENV_NAMES = (
     "PSRAM_TACLK_NS",
@@ -58,7 +60,7 @@ def parse_run_config() -> dict:
         "level": os.environ.get("LEVEL", "top"),
         "dut_level": os.environ.get("DUT_LEVEL", "L1"),
         "sim": os.environ.get("SIM", "icarus"),
-        "dma_buf_depth": int(os.environ.get("DMA_BUF_DEPTH", "5")),
+        "dma_buf_depth": int(os.environ.get("DMA_BUF_DEPTH", str(DMA_BUF_DEPTH_TAPEOUT))),
         "timing_profile": os.environ.get("TIMING_PROFILE", "ideal"),
         "waves": os.environ.get("WAVES", "auto"),
         "run_dir": os.environ.get("RUN_DIR", ""),

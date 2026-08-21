@@ -1,8 +1,7 @@
 """Thin L1 adapter: hierarchy / host observations into :class:`CoverageSampler`.
 
 Imports ``SYS_CONTROL_STATES`` and ``QSPI_ENGINE_STATES`` from
-:mod:`monitors.handshake` (do not rewrite that module). This file imports
-cocotb transitively through handshake and is for L1 simulation only; unit
+:mod:`common.constants`. This file is for L1 simulation only; unit
 tests of the sampler must not import it.
 
 Points recorded here:
@@ -20,7 +19,7 @@ Points recorded here:
 Hits still wait for :meth:`reference.coverage.CoverageSampler.commit_window`.
 """
 
-from monitors.handshake import QSPI_ENGINE_STATES, SYS_CONTROL_STATES
+from common.constants import QSPI_ENGINE_STATES, SYS_CONTROL_STATES
 from reference.coverage import (
     BUS_RESUME_BINS,
     CTRL_STATE_BINS,

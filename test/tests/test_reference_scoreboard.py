@@ -31,11 +31,8 @@ from reference.scoreboard import (
     compare_epoch_logs,
     guard_region,
 )
+from common.constants import DST_ADDR, QUIT_ADDR, SRC_ADDR
 from reference.tcd import Tcd, encode_tcd
-
-QUIT_ADDR = 0x000020
-SRC_ADDR = 0x000100
-DST_ADDR = 0x000200
 PAYLOAD = b"\x11\x22"
 
 CONTEXT = RunContext(level="L1", sim="icarus", seed=1, depth=1, test="unit", repro="REPRO: unit")
