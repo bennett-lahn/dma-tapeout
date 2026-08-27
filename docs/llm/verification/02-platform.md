@@ -36,6 +36,7 @@ test/
     tb_engine.sv
     tb_top.sv
     tb_gl.sv
+    tb_uio_bus.svh       # shared L1/L2 physical uio plane + CS pull-ups
   tests/
     __init__.py
     test_smoke.py
@@ -91,7 +92,7 @@ test/
 
 Responsibilities:
 
-- `tb/` contains only HDL wrappers, shared-bus resolution, dump setup, and visibility needed by a DUT level.
+- `tb/` contains only HDL wrappers, shared-bus resolution, dump setup, and visibility needed by a DUT level. `tb_uio_bus.svh` resolves the physical `uio` plane for L1/L2 (Hi-Z SIO/SCK; CS pull-ups on bits 0/6/7 only). Top-level host `uio_oe` is ungated in SV (D26 pass-through negatives live in Python). L0 honors `WAVES_DISABLE` to skip VCD/FST dumps.
 - `tests/` contains cocotb test entry points. Test names carry `TC-*` IDs in docstrings or metadata, not in Python identifiers. L0 CE#/SCK idle self-check lives inside `bring_up_engine` (former `test_engine_attach` deleted).
 - `common/` contains host actions, clock/reset helpers, shared bring-up / dispose / directed plumbing, the pending-item lifecycle (`lifecycle.py`: `PendingLedger` / `finalize_all`), the blessed write BFM, run configuration, sim-only shared constants (`constants.py`), deterministic random support, and artifact naming. Cleanup contract detail: `06-checkers.md`.
 - `models/` contains the two independent APS6404L instances and delay layer.
@@ -215,7 +216,9 @@ Equivalent Make targets (after `source test/env.sh` and `cd test`):
 | `make doctor` | Toolchain health check (suite tools, python3, venv, cocotb) |
 | `make test` | Run the selected level, simulator, and test filter once |
 | `make smoke` | Run the M0 L1 same-device smoke with a fixed default seed |
-| `make directed` | Run M2 directed modules; default `TEST_FILTER` enumerates the 13 `tests.test_dma_directed` cases and excludes skipped `dma_buf_depth_sweep` |
+| `make directed` | Run M5 directed coverage modules (`tests.test_dma_directed`, `tests.test_reset_and_bus`, `tests.test_injection_dut`) |
+| `make injection` | Injection DUT proofs alone (also included in `make directed`) |
+| `make verilator_x` | L1 Verilator `--x-assign unique --x-initial unique` smoke under isolated `x-unique` `RUN_DIR`/`SIM_BUILD` (not four-state; M6 remains open) |
 | `make random` | Run constrained-random tests for one seed |
 | `make regression` | Run the configured seed list and simulator matrix |
 | `make formal` | Run the SymbiYosys jobs (`FP-*`; D33; not a V1 freeze gate) |
@@ -234,7 +237,7 @@ Equivalent Make targets (after `source test/env.sh` and `cd test`):
 | `GATES` | unset | TT-compatible gate-level selector; `yes` implies `LEVEL=gl` |
 | `SEED` | `1` | unsigned test seed printed at start and failure |
 | `TEST_FILTER` | empty | cocotb test-name regular expression |
-| `DMA_BUF_DEPTH` | `5` | L1 compile-time override (`-G` / `-Ptb_top.DMA_BUF_DEPTH=N`; any integer `1..DMA_BUF_DEPTH_MAX`). L2 must be 5 to match the flattened netlist; the Makefile does not pass `-Ptb_gl.DMA_BUF_DEPTH` (that cannot resynthesize the gate DUT) |
+| `DMA_BUF_DEPTH` | `5` | L1 compile-time override (`-G` / `-Ptb_top.DMA_BUF_DEPTH=N`; any integer `1..DMA_BUF_DEPTH_MAX`; `tb_top` default **5**). L2 must be 5 to match the flattened netlist; `tb_gl.sv` `$error`s if elaborated depth != 5. The Makefile does not pass `-Ptb_gl.DMA_BUF_DEPTH` (that cannot resynthesize the gate DUT) |
 | `TIMING_PROFILE` | `ideal` | named timing parameter set |
 | `WAVES` | `auto` | `auto`, `always`, or `never` |
 | `SDF` | unset | optional SDF path for L2 |
@@ -255,7 +258,7 @@ cd test && make random LEVEL=top SIM=verilator SEED=4231 TIMING_PROFILE=nominal
 
 The Makefile maps `TEST_FILTER` to cocotb 2.x `COCOTB_TEST_FILTER` and lists modules through `COCOTB_TEST_MODULES`. Do not use removed legacy environment names.
 
-`make directed` sets `COCOTB_TEST_MODULES=tests.test_smoke,tests.test_qspi,tests.test_dma_directed,tests.test_reset_and_bus` and, unless the caller overrides `TEST_FILTER`, applies a quoted regex of the 13 descriptor/data directed function names (not a bare substring `directed`, which would dishonestly miss or mis-select cases). `TC-DEPTH` / `dma_buf_depth_sweep` and `COV-DEPTH*` remain deferred until M5 harness wiring lands - do not claim those IDs pass yet. Ownership negatives use `TEST_FILTER=ownership_shared_bus_negatives` only; `TC-OWN-*` are sub-steps inside that one test.
+`make directed` sets `COCOTB_TEST_MODULES=tests.test_dma_directed,tests.test_reset_and_bus,tests.test_injection_dut`. `TC-DEPTH` / `dma_buf_depth_sweep` and `COV-DEPTH*` are M5-owned (`make depth` / `run_depth_sweep.sh`). QSPI modules stay on their own `COCOTB_TEST_MODULES`. Ownership negatives use `TEST_FILTER=ownership_shared_bus_negatives` only; `TC-OWN-*` are sub-steps inside that one test.
 
 ## Build and artifact isolation
 

@@ -93,21 +93,21 @@ For every `pass`, retain the simulator or formal engine, level, seed where appli
 | ------------------------ | ------------------------ | -------------- | --------------------------------------------------------------------------------- |
 | Platform / toolchain     | `env.sh`, doctor, hooks  | pass           | M0 (complete)                                                                     |
 | Platform smoke           | M0 exit / `TC-SMOKE`     | pass           | M0 (complete); CI job still open                                                  |
-| PSRAM behavioral model   | SCK/CE# agent + policing | pass           | M1 exit met; model-plane Z→0 idealization remains; see `03-psram-model.md`      |
+| PSRAM behavioral model   | SCK/CE# agent + policing | pass           | M1 exit met; physical SIO/SCK Z visible (no Z→0 overlay); see `03-psram-model.md` |
 | QPI protocol (M1 rows)   | `Q-CEM/CPH/MUX/SIO-OWN/RST/SCKIDLE` | pass | M1 under `ideal`; CEM/CPH/SIO-OWN delay rerun complete at M3 (2026-08-10) |
 | QPI protocol (M3 rows)   | `Q-LAUNCH`, `Q-RXEDGE`, `Q-CSP/CHD/TERM` | pass | M3 (complete 2026-08-10)                                              |
 | Directed behavior (M2)   | M2 `TC-*`, `CHK-*`, dual-axis scoreboard | pass | M2 complete (2026-08-08); `TC-DEPTH` deferred to M5, now **pass** N=1..8 (2026-08-16) |
 | Delay-annotated timing   | `Q-LAUNCH`, `Q-RXEDGE`   | pass           | M3 complete (2026-08-10); see `04-timing-in-sim.md` residuals         |
 | Formal                   | `FP-*`                   | todo           | M4 (deferred, D33)                                                              |
 | Random regression        | M5 random suite          | pass           | **Exit (2026-08-16):** **N=5** / `ideal` (zero TB placeholders); Icarus+Verilator seeds 1/2/3/5/8; seed-1 Icarus ≡ Verilator |
-| Random and coverage      | `COV-*`                  | pass           | M5; merge at `test/runs/m5_coverage_closure.json` `closed=true` (20 catalog IDs; 13 exclusions; reviewer `M5-close`, 2026-08-16) |
-| Buffer-depth sweep       | `TC-DEPTH`, `COV-DEPTH*` | pass           | `TC-DEPTH` **pass** N=1..8 (Icarus 13/13 per depth 2026-08-16); `COV-DEPTH*` bins in closed merge |
+| Random and coverage      | `COV-*`                  | pass           | M5 rematch 2026-08-25; merge `closed=true` (`missing={}`; reviewer `tb-closure-2026-08-25`) |
+| Buffer-depth sweep       | `TC-DEPTH`, `COV-DEPTH*` | pass           | `TC-DEPTH` **pass** N=1..8 (Icarus 15/15 per depth 2026-08-25, `run_depth_sweep-20260825-190207.log`); `COV-DEPTH*` bins in closed merge |
 | Gate-level and X         | M6 exit                  | todo           | M6                                                                                |
 | FPGA hardware validation | M7 exit                  | todo           | M7                                                                                |
 | Physical timing          | `T-*`                    | todo           | Post-M6/M7 closure                                                                |
 
 
-A 2026-08-21 read-only rematch of `test/runs/m5_coverage_closure.json` recorded `closed=false` (18 fragments; missing `COV-BUS-*` / `COV-START-*` / `COV-RESET-*` bins). That pass did not rewrite this sign-off table. Findings: [`../../review-passthrough-2026-08-21/00-index.md`](../../review-passthrough-2026-08-21/00-index.md).
+A 2026-08-21 read-only rematch recorded `closed=false`. The 2026-08-25 regenerated merge is `closed=true` (`missing={}`; reviewer `tb-closure-2026-08-25`). 2026-08-21 findings remain in [`../../review-passthrough-2026-08-21/00-index.md`](../../review-passthrough-2026-08-21/00-index.md).
 
 This table is a planning roll-up, not evidence of implementation. Update the owning catalog first, then this summary. M1 matrix evidence: `test/runs/m1_t10_icarus_matrix.log` and `test/runs/m1_t10_verilator_matrix.log` (Icarus ≡ Verilator; may be wiped by `make clean`). Detail in `04-timing-in-sim.md` (M1 behavioral evidence). M2 Acceptance evidence (2026-08-08): L1 Icarus smoke, `tests.test_dma_directed` (13 `TC-*` + skipped `TC-DEPTH`), `tests.test_reset_and_bus` (11/11), and migrated M1 modules (`test_qspi_negative`, `test_qspi_timing`, `test_qspi_reset_protocol`, `test_qspi_ownership`, `test_qspi_pin_disposition`). Detail in `01-strategy.md` (M2 acceptance status) and owning catalogs. M3 Acceptance evidence (2026-08-10): delay layer + launch/RX under `nominal`, Icarus ≡ Verilator on `test_qspi_timing`, `test_qspi_timing_delay`, `test_qspi_timing_launch_rx`, `test_qspi_ownership`; centralized `PendingLedger` / `finalize_all` cleanup; directed cleanup `TC-*`. Post-W4 residual waves closed the device-plane `Q-RXEDGE` race (`TC-RXEDGE-RACE-DEVICE-PLANE`) and documented `reset_truncated=REVIEW` / `asic_sck_oe` `Q-LAUNCH` gates without reopening M3. Detail in `01-strategy.md` (M3 acceptance status), `04-timing-in-sim.md`, and `06-checkers.md` (lifecycle contract).
 

@@ -19,7 +19,7 @@ Signoff requires reproducible evidence for the exact RTL or netlist revision and
 Current blockers to this gate (M0-M5 simulation exits green as of 2026-08-16):
 
 - M4 formal is deferred (D33); not a V1 freeze blocker.
-- M5 simulation exit **pass (2026-08-16):** random green at **N=5** / `ideal` (zero TB placeholders; Icarus+Verilator seeds 1/2/3/5/8; seed-1 cross-sim match). `TC-DEPTH` (directed suite at each compile-time `DMA_BUF_DEPTH`) **pass** N=1..8 (Icarus, 13/13 per depth). `COV-*` (functional coverage point IDs) merge at `test/runs/m5_coverage_closure.json`: `closed=true` (20 catalog IDs; 13 exclusions STALL + length-class collapse N=1/2; reviewer `M5-close`, 2026-08-16).
+- M5 simulation exit **pass**; coverage rematch **2026-08-25:** `test/runs/m5_coverage_closure.json` `closed=true` (`missing={}`; reviewer `tb-closure-2026-08-25`). `TC-DEPTH` **pass** N=1..8 (Icarus, 15/15 per depth). The 2026-08-16 `M5-close` stamp is retired.
 - V1 tapeout and default sim/Make `DMA_BUF_DEPTH` is **N=5** (elaboration `1..8` via Makefile).
 - CI L1 Icarus smoke job still open.
 - M3 follow-ups (not freeze blockers by themselves): margin-gate field presence / boundary ≈0; physical `T-*`. Delayed post-rise `Q-RXEDGE` under non-zero `D_OUT_*` is closed (`TC-RXEDGE-RACE-DEVICE-PLANE`).

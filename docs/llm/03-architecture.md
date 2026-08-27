@@ -132,8 +132,8 @@ This matrix is the V1 source of truth for who may drive each shared `uio` net. V
 2. MCU and ASIC must not both enable drivers on the same net with disagreeing levels. Brief overlap only on idle levels (CS high / SCK low) is the only benign MCU/ASIC exception; SIO has no such exception.
 3. RAM A CE# and RAM B CE# are never both low.
 4. ASIC never drives flash CS low.
-5. Unselected PSRAM never drives SIO (except its own bounded `tHZ` after its CE# rises).
-6. CS and SCK are never left floating while the ASIC is bus keeper (`rst_n=1`, `~BUS_GNT`). SIO is never left floating in park / IDLE / between-txn after the post-CE# `tHZ` window.
+5. Unselected PSRAM never drives SIO (except its own bounded `tHZ` (chip-disable to DQ high-Z, max 5.5 ns) after its CE# rises).
+6. CS and SCK are never left floating while the ASIC is bus keeper (`rst_n=1`, `~BUS_GNT`). SIO is never left floating in park / IDLE / between transactions. On **read** (`0xEB`) paths only, SIO may float through post-CE# until the engine leaves `CS_OFF` (one `clk` after CE# rise; see QPI sub-phases).
 
 #### Control-plane phases (all eight `uio` pins)
 
@@ -157,10 +157,11 @@ Applies only while ASIC is master (`~BUS_GNT`) and a RAM CE# is in its transacti
 | Write data (`0x02`) | **Drive** data nibbles | **Hi-Z** | **Hi-Z** | ASIC → device |
 | Dummy / wait (`0xEB`, 6 SCK) | **Hi-Z** (float) | **Hi-Z** (not yet sourcing) | **Hi-Z** | **Float** (listen window; no dual-drive) |
 | Read data (`0xEB`) | **Hi-Z** (float); sample `uio_in` | **Drive** data nibbles | **Hi-Z** | Device → ASIC |
-| Post-CE# turnaround | **Hi-Z** on SIO until modeled `tHZ` expires | May still **Drive** until `tHZ`, then **Hi-Z** | **Hi-Z** | **Float** or device-only; ASIC must not reclaim SIO OE early |
-| Between txns / IDLE park | After `tHZ`: return to **ASIC park** (SIO don't-care driven) | **Hi-Z** | **Hi-Z** | ASIC bus keeper |
+| Post-CE# turnaround (**read `0xEB` only**) | **Hi-Z** through `SCLK_OFF` / `CS_OFF` until `IDLE` reasserts SIO OE (**one `clk`** after CE# rise; ~15.2 ns @ 66 MHz vs `tHZ` max 5.5 ns) | May still **Drive** until `tHZ`, then **Hi-Z** | **Hi-Z** | Device may source briefly; ASIC stays floated one `clk` before park reclaim |
+| Post-CE# (**write `0x02` only**) | **Drive** (don't-care after last data nibble) through `SCLK_OFF` / `CS_OFF` into park | **Hi-Z** (never sourced SIO) | **Hi-Z** | ASIC keeps SIO driven; `tHZ` contention does not apply |
+| Between txns / IDLE park | **ASIC park** (SIO don't-care driven) | **Hi-Z** | **Hi-Z** | ASIC bus keeper |
 
-Write transactions have no dummy/read window: SIO stays ASIC-driven for command, address, and data, then enters the post-CE# turnaround rule before park reclaim.
+**Read** (`0xEB`): SIO floats for dummy, read data, and through post-CE# until the engine leaves `CS_OFF`. **Write** (`0x02`): no dummy/read window; SIO stays ASIC-driven through CE# rise into park (floating would violate "never float SIO in park").
 
 #### MCU-master phases (while `BUS_GNT=1` or `rst_n=0`)
 
@@ -181,7 +182,8 @@ ASIC `uio_oe` is all 0. Firmware is the only legal external master.
 | ASIC `uio_oe!=0` while `BUS_GNT=1` | Grant broken (`CHK-ARB-GNT-OE`) |
 | Both RAM CE# low | Shared SIO multiplex violation |
 | ASIC drives flash CS low | Flash is MCU pass-through only in V1 |
-| ASIC reclaim of SIO OE inside the selected device's `tHZ` after CE# rise | Turnaround contention (`T-HZ`) |
+| ASIC reclaim of SIO OE on a **read** before the engine completes `CS_OFF` (must wait one `clk` after CE# rise; still exceeds datasheet `tHZ` max 5.5 ns - tightest turnaround, not a sim bug) | Turnaround note for `T-HZ` |
+| ASIC floats SIO on a **write** post-CE# | Violates park contract; device never sourced SIO so `tHZ` does not apply |
 
 ### Mode A - MCU pass-through (programming)
 
@@ -192,7 +194,7 @@ ASIC `uio_oe` is all 0. Firmware is the only legal external master.
 ### Mode B - DMA master (execution)
 
 - MCU finishes any QSPI txn, high-Zs its QSPI GPIOs, drops **BUS_REQ**, waits for **BUS_GNT** low, then asserts START (`ui_in[0]`) while DONE is high.
-- ASIC leaves idle (DONE low): remains **bus keeper** while `~BUS_GNT` (D26) - parks all CS high and SCK low between txns; during a live txn drives SCK + CS mux (one RAM CE# low; flash CS stays high); SIO OE follows the ownership matrix (drive cmd/addr/write; float dummy/read and through post-CE# `tHZ`; park don't-care after `tHZ`).
+- ASIC leaves idle (DONE low): remains **bus keeper** while `~BUS_GNT` (D26) - parks all CS high and SCK low between txns; during a live txn drives SCK + CS mux (one RAM CE# low; flash CS stays high); SIO OE follows the ownership matrix (drive cmd/addr/write; float dummy/read and through post-CE# on reads only; park don't-care with SIO driven).
 - START ignored until idle returns. On quit TCD, return to idle: keep parking, assert DONE; next START fetches fixed head again (D14/D18/D19/D23). Kill mid-run with `rst_n` (D23; board CS pull-ups hold CE# during reset). Mid-run `BUS_REQ` pauses between atomic txns without forcing IDLE (D22).
 
 This boundary is as important as the internal FSM. Without a clean programming path, descriptor DMA is undemoable.
@@ -210,7 +212,7 @@ Responsibilities:
 - Feed only these CDC-qualified signals into the integrated host/descriptor controller (`sys_controller`)
 - Instantiate and wire the integrated system controller and QSPI engine; mux `uio_oe` / status onto TT ports
 
-MCU GPIOs are not guaranteed synchronous to the demoboard `clk`. Raw `ui_in` must not drive FSM / grant logic directly. `BUS_REQ` is synchronized and retained as a level. START is synchronized as a level and then rising-edge detected; `sys_controller` receives exactly one `clk` pulse per captured low-to-high transition. A pulse that occurs while DMA is active or `BUS_REQ` is high is ignored and not queued - firmware must drop REQ (if any), wait for `BUS_GNT` low, and issue a **new** START rising edge. After pulsing START, firmware must not raise `BUS_REQ` until **DONE falls** (START-accept ACK); overlapping REQ with the START hold window can discard the pulse in IDLE or accept-then-stall at `NEW_FETCH`. V1 does not latch a sticky pending START (DFF cost / restart hazards). Firmware must return START low before issuing another command and must hold each raw assertion long enough for the synchronizer to capture it.
+MCU GPIOs are not guaranteed synchronous to the demoboard `clk`. Raw `ui_in` must not drive FSM / grant logic directly. `BUS_REQ` is synchronized and retained as a level. START is synchronized as a level and then rising-edge detected; `sys_controller` receives exactly one `clk` pulse per captured low-to-high transition. The two-flop START sync plus rising-edge detect **resets to 0** on `rst_n` assert: if MCU holds `ui_in[0]` high through reset release, a START pulse fires ~3 `clk` cycles after deassert and a run begins. **Firmware contract:** hold START low across a `rst_n` kill / reset release; only assert after **DONE** is high and **`~BUS_REQ`**. A pulse that occurs while DMA is active or `BUS_REQ` is high is ignored and not queued - firmware must drop REQ (if any), wait for `BUS_GNT` low, and issue a **new** START rising edge. After pulsing START, firmware must not raise `BUS_REQ` until **DONE falls** (START-accept ACK); overlapping REQ with the START hold window can discard the pulse in IDLE or accept-then-stall at `NEW_FETCH`. V1 does not latch a sticky pending START (DFF cost / restart hazards). Firmware must return START low before issuing another command and must hold each raw assertion long enough for the synchronizer to capture it.
 
 **DFF / tile impact:** ~2 DFFs per synchronized bit plus one delayed-START flop for edge detection (≈5 DFFs for START/BUS_REQ); negligible within the 1x1 budget (D36). Human detail: `docs/human/architecture/blocks/host-interface.md`.
 
@@ -240,10 +242,10 @@ Only the **currently executing TCD** is resident on-chip. Planned fields:
 
 | Field | Width | Role |
 |---|---|---|
-| `SRC_PTR` | 24 | Source byte address (`[22:0]`; `[23]` unused) |
-| `DEST_PTR` | 24 | Dest byte address (`[22:0]`; `[23]` unused) |
+| `SRC_PTR` | 24 | Source byte address (`[22:0]` on wire; `[23]` don't-care; D35) |
+| `DEST_PTR` | 24 | Dest byte address (`[22:0]` on wire; `[23]` don't-care; D35) |
 | `TRANSFER_LEN` | 8 | Bytes remaining (0 = no-op) |
-| `NEXT_TCD` | 24 | Next descriptor byte address (`[22:0]`; `[23]` unused) |
+| `NEXT_TCD` | 24 | Next descriptor byte address (`[22:0]` on wire; `[23]` don't-care; D35) |
 | `QUIT` / device selects / reserved | 8 | Flattened last byte of hardware `tcd_t`: `next_tcd_device`, `dest_device`, `src_device`, `quit` (maps to `CTRL_FLAGS[7:4]`), then `reserved` (`CTRL_FLAGS[3:0]`, packed LSB). V1 control ignores reserved. |
 
 Approximate working metadata: **88 DFFs**, plus at least:
@@ -271,9 +273,11 @@ Notes from planning:
 - Data moves are QPI byte-oriented in V1 (D15). With `N=1`, each READ/WRITE raises CE# after one byte - no CE# refresh / page slicer required; revisit if `N` grows (D20).
 - Buffer depth **`N=5`** for V1 tapeout; do not bake `N` into correctness assumptions (D20).
 - Abort mid-run: use **`rst_n`** (D23); no soft-abort pin (D34).
-- **BUS_REQ (D22):** MCU priority; do not start a new QPI txn while REQ; finish in-flight txn atomically, assert `BUS_GNT`, resume when REQ drops (unless IDLE).
+- **BUS_REQ (D22):** MCU priority; do not start a new QPI txn while REQ; finish in-flight txn atomically, assert `BUS_GNT`, resume when REQ drops (unless IDLE). **Atomicity by construction:** STALL is entered only from `SYS_CTRL_IDLE`, `NEW_FETCH`, `NEW_OP`, or `UPDATE` (engine idle). `FETCH` / `READ` / `WRITE` ignore `bus_req` until `~qspi_busy`; not a software-only guarantee.
+- **Quit / fixed head:** on `NEW_OP` quit path, hardware zeros `next_tcd` and `next_tcd_device` to PSRAM0 so the next START fetches `0x000000` / PSRAM0 even if `BUS_REQ` stalls around quit.
+- **FETCH stability:** controller latches fetch target in `NEW_FETCH` as `active_fetch_addr` / `active_fetch_device` because the in-flight TCD shift would otherwise clobber `next_tcd` mid-fetch.
 - No `STATE_PROCESS` (no ALU / cond-stop).
-- **`uio_oe` arbitration (D26):** ASIC is bus keeper while `rst_n=1 && ~BUS_GNT` (park all CS high / SCK low; SIO per the bidirectional ownership matrix: drive don't-care in park; float only on dummy/read and through post-CE# `tHZ`). Force every shared output enable low while active-low reset is asserted (`rst_n=0`) or under `BUS_GNT`; MCU drive while `rst_n=0` is legal. Do not float CS/SCK, or SIO in idle / between transactions outside reset and outside the `tHZ` window. Board 10 kΩ CS pull-ups cover reset / pre-enable when MCU is not driving CS.
+- **`uio_oe` arbitration (D26):** ASIC is bus keeper while `rst_n=1 && ~BUS_GNT` (park all CS high / SCK low; SIO per the bidirectional ownership matrix: drive don't-care in park; float only on dummy/read and through post-CE# on reads). In `top.v`, every shared `uio_oe` bit is **gated combinationally with `rst_n`** (D26): all shared OE drops while reset is asserted, async to `rst_n` edges; MCU drive is legal while `rst_n=0`. Do not describe OE as registered through reset. Force every shared output enable low under `BUS_GNT`. Do not float CS/SCK, or SIO in idle / between transactions. Board 10 kΩ CS pull-ups cover reset / pre-enable when MCU is not driving CS.
 
 ### 5. QSPI / SPI engine
 
@@ -309,14 +313,14 @@ The DMA FSM issues transaction requests and arbitrates `uio_oe` (bus keeper whil
 
 #### FSM ↔ QSPI engine handshake (D21)
 
-Request (not a TCD): `{cmd, addr, device_sel, byte_len}` via `qspi_pkg` (`qspi_cmd_t`, `qspi_addr_t`, `qspi_device_sel_t`, `QPI_BYTE_LEN_W` in `src/types.svh`). Engine ports for `cmd` and `device_sel` are packed `logic` of those enum widths so the Tiny Tapeout wrapper can stay package-free (yowasp port check) while LibreLane slang still type-checks the connection. `qspi_addr_t` is **24-bit** to match the QPI address phase; device uses `addr[22:0]` (`A[22:0]`); **`addr[23]` is don't-care** (may be any value; D35). `device_sel` selects PSRAM 0/1 from `SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE` as appropriate; pad CE#s remain `ram_a_cs_n` / `ram_b_cs_n`. `byte_len` is `logic [QPI_BYTE_LEN_W-1:0]` with `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)` and `QPI_MAX_BYTES = max(DMA_BUF_DEPTH_MAX, QPI_TCD_BYTES)` (`DMA_BUF_DEPTH` itself is a module parameter; V1 tapeout and default sim: **5**). Engine does **not** latch the request: FSM must keep it stable from `txn_valid` until `busy` low. Engine SCK is a registered toggle (**SCK = clk/2**); no `txn_ready` / no `wdone`.
+Request (not a TCD): `{cmd, addr, device_sel, byte_len}` via `qspi_pkg` (`qspi_cmd_t`, `qspi_addr_t`, `qspi_device_sel_t`, `QPI_BYTE_LEN_W` in `src/types.svh`). Engine ports for `cmd` and `device_sel` are packed `logic` of those enum widths so the Tiny Tapeout wrapper can stay package-free (yowasp port check) while LibreLane slang still type-checks the connection. `qspi_addr_t` is **24-bit** to match the QPI address phase; device uses `addr[22:0]` (`A[22:0]`); **`addr[23]` is don't-care** (may be any value; D35). Device select is `device_sel` / `CTRL_FLAGS`, not the pointer MSB. `device_sel` selects PSRAM 0/1 from `SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE` as appropriate; pad CE#s remain `ram_a_cs_n` / `ram_b_cs_n`. `byte_len` is `logic [QPI_BYTE_LEN_W-1:0]` with `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)` and `QPI_MAX_BYTES = max(DMA_BUF_DEPTH_MAX, QPI_TCD_BYTES)` (`DMA_BUF_DEPTH` itself is a module parameter; V1 tapeout and default sim: **5**). **Hard precondition:** every `txn_valid` must have **`byte_len >= 1`**. The engine has no zero-length path: `byte_len==0` still enters the data phase for one SCK and can emit a spurious write nibble or one `rdata_valid`. The controller never issues it (`transfer_len==0` skips `NEW_OP` data txns). Engine does **not** latch the request: FSM must keep it stable from `txn_valid` until `busy` low. Engine SCK is a registered toggle (**SCK = clk/2**); no `txn_ready` / no `wdone`.
 
 | Signal | Dir | Contract |
 |---|---|---|
 | `txn_valid` | FSM → eng | **1-cycle pulse** to start; only when `~busy` |
 | `busy` | eng → FSM | In-flight txn; also the start qualifier; OE reclaim / BUS_GNT wait for clear |
 | `rdata` / `rdata_valid` | eng → FSM | Held read nibble + **1-`clk` pulse** on rising SCK; exactly `2 * byte_len` pulses |
-| `wdata` / `wdata_next` | FSM ↔ eng | First nibble with `txn_valid`; `wdata_next` asserts on falling SCK iff another nibble is needed (`2 * byte_len - 1` pulses). On `wdata_next`, next nibble must be on `wdata` before the next `clk` (same-cycle) for SPI/SIO setup |
+| `wdata` / `wdata_next` | FSM ↔ eng | First nibble with `txn_valid`; exactly `2 * byte_len - 1` `wdata_next` pulses. Consumer muxes the **next** nibble combinationally on `wdata_next` because the buffer shift is NBA. On `wdata_next`, next nibble must be on `wdata` before the next `clk` (same-cycle) for SPI/SIO setup |
 | `sclk` | eng → pad | **clk/2** when enabled; 0 in pad/idle states |
 | `ram_*_cs_n`, `sio_*` | eng ↔ pad | Device mux + SIO drive/OE (FSM grants `uio_oe` at top) |
 

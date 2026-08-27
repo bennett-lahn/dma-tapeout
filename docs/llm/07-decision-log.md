@@ -73,7 +73,7 @@ Chronological distillation of the idea -> proposal -> selection process. Verbose
 **Implied V1 triage order (highest keep-priority first) - updated by D12:**
 
 1. Pass-through + START/DONE bus ownership (MCU can still reach flash + both PSRAMs when idle; ~~abort~~ revoked by D23 → use `rst_n`)
-2. QSPI engine with **RAM A/B CS mux** (V1: short CE# pulses from `N=1` / 11-byte fetch; no dedicated `tCEM` slicer)
+2. QSPI engine with **RAM A/B CS mux** (V1: short CE# pulses from tapeout **`N=5`** / 11-byte fetch; no dedicated `tCEM` slicer)
 3. Single TCD memmove (same-device)
 4. Cross-device PSRAM copy (A↔B)
 5. TCD chaining (scatter-gather)
@@ -271,29 +271,29 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 
 **DFF / tile impact:** still **11-byte** TCD / **88 DFFs** working metadata; CS mux keys off pointer MSBs instead of flag fields.
 
-## D20 - 1-byte data buffer; depth-agnostic correctness
+## D20 - Depth-agnostic buffer; tapeout N=5
 
 **Decision:**
 
-1. V1 on-chip RX→TX **data buffer depth is 1 byte** (`N=1`, 8 DFFs).
-2. Descriptor FSM and QSPI engine **must not depend on a specific `N` for correctness**. Treat buffer depth as module parameter `DMA_BUF_DEPTH` (default 1) on `tt_um_lahnb_sgdma` / `sys_controller`: each copy step moves `k = min(N, TRANSFER_LEN)` bytes, then advances SRC/DEST/`TRANSFER_LEN` by `k`. Package `DMA_BUF_DEPTH_MAX` sizes QPI interface widths for the verification sweep ceiling.
+1. V1 tapeout on-chip RX→TX **data buffer depth is 5 bytes** (`N=5`, `DMA_BUF_DEPTH=5`; ~40 DFFs for the scratch).
+2. Descriptor FSM and QSPI engine **must not depend on a specific `N` for correctness**. Treat buffer depth as module parameter `DMA_BUF_DEPTH` (**default 5**) on `tt_um_lahnb_sgdma` / `sys_controller`: each copy step moves `k = min(N, TRANSFER_LEN)` bytes, then advances SRC/DEST/`TRANSFER_LEN` by `k`. Package `DMA_BUF_DEPTH_MAX` sizes QPI interface widths for the verification sweep ceiling (8).
 3. Changing `N` later (deeper scratch for fewer cmd+addr reissues) is a **performance / DFF trade only** - no TCD format, host protocol, or cross-device CS rule changes.
-4. At V1 `N=1` (and 11-byte TCD fetch), `tCEM` and Linear Burst one-page-cross are **not binding** - no CE# refresh timer or page slicer. **Thresholds at 33 MHz SCK** if a later design holds CE# for a full `N`-byte payload: first `tCEM` (4 us extended) violation at **`N ≥ 60`** on `0xEB` read (**`N ≥ 63`** on `0x02` write); first possible two-page-cross at **`N ≥ 1026`**. Page limit is unreachable before `tCEM` fails. See human `descriptor-fsm.md`.
+4. At tapeout `N=5` (and at `N=1`, and 11-byte TCD fetch), `tCEM` and Linear Burst one-page-cross are **not binding** - no CE# refresh timer or page slicer. **Thresholds at 33 MHz SCK** if a later design holds CE# for a full `N`-byte payload: first `tCEM` (4 us extended) violation at **`N ≥ 60`** on `0xEB` read (**`N ≥ 63`** on `0x02` write); first possible two-page-cross at **`N ≥ 1026`**. Page limit is unreachable before `tCEM` fails. See human `descriptor-fsm.md`.
 
-**Why:** Keeps V1 DFF cost minimal while avoiding a byte-hardcoded datapath that would need a redesign to widen. Soft 2-tile budget (~500 DFFs) cannot host a `tCEM`-sized scratch (~59 B read budget at 33 MHz SCK) anyway; with `N=1`, refresh/page physics are satisfied by construction.
+**Why:** Depth-agnostic datapath lets verification sweep N=1..8 while tapeout closes at N=5. Soft 2-tile budget cannot host a `tCEM`-sized scratch (~59 B read budget at 33 MHz SCK) anyway; at N=5 refresh/page physics are still satisfied by construction.
 
-**DFF / tile impact:** **+8 DFFs** for the V1 hold (already assumed in working-reg notes). Larger `N` costs `~8*N` DFFs plus a small fill/count; not planned for V1.
+**DFF / tile impact:** **~40 DFFs** for the N=5 hold at tapeout. Larger `N` costs `~8*N` DFFs plus a small fill/count.
 
 ## D21 - Descriptor FSM ↔ QSPI engine handshake
 
 **Decision:**
 
-1. FSM issues a **transaction request** (not a TCD slice): `cmd`, `addr`, `device_sel`, exact `byte_len` (`qspi_pkg` types; `device_sel` ≠ pad CE#). `byte_len` width is `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)` with `QPI_MAX_BYTES = max(DMA_BUF_DEPTH_MAX, QPI_TCD_BYTES)`. Actual buffer depth `N` is module parameter `DMA_BUF_DEPTH` (default 1) on `tt_um_lahnb_sgdma` / `sys_controller`.
+1. FSM issues a **transaction request** (not a TCD slice): `cmd`, `addr`, `device_sel`, exact `byte_len` (`qspi_pkg` types; `device_sel` ≠ pad CE#). **`byte_len >= 1`** on every `txn_valid` (controller never issues 0). `byte_len` width is `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)` with `QPI_MAX_BYTES = max(DMA_BUF_DEPTH_MAX, QPI_TCD_BYTES)`. Actual buffer depth `N` is module parameter `DMA_BUF_DEPTH` (**default 5**) on `tt_um_lahnb_sgdma` / `sys_controller`.
 2. Start is a **1-cycle `txn_valid` pulse**, legal only when **`~busy`**. There is **no `txn_ready`** port (`busy` is the start qualifier; CE# pad + `tCPH` are folded into `busy` / idle sequencing).
 3. Engine does **not** latch the request; FSM must hold `{cmd, addr, device_sel, byte_len}` stable from `txn_valid` until `busy` low.
 4. Data path is nibble-wide (`rdata`/`wdata` `[3:0]`); two SCK beats per payload byte.
 5. Read: on each rising SCK in the data phase, engine captures `sio_in` → `rdata` and pulses **`rdata_valid`** one `clk`. FSM always sinks; engine transfers exactly `2 * byte_len` nibbles.
-6. Write: first nibble on `wdata` with `txn_valid`. Engine pulses **`wdata_next`** on **falling SCK** iff another nibble is required to finish the accepted transaction; FSM must place the next nibble on `wdata` **before the next `clk` cycle** (same-cycle response) so setup time into the SPI/SIO path is preserved for the following rising SCK. This produces exactly `2 * byte_len - 1` pulses and no extraneous pulse after the final nibble or outside the active write. **No `wdone`:** engine ends the write after `2 * byte_len` SCK beats, then end-pad / raise CE#.
+6. Write: first nibble on `wdata` with `txn_valid`. Engine pulses **`wdata_next`** on **falling SCK** iff another nibble is required to finish the accepted transaction; FSM muxes the **next** nibble combinationally on `wdata_next` (buffer shift is NBA) and must place it on `wdata` **before the next `clk` cycle** (same-cycle response) so setup time into the SPI/SIO path is preserved for the following rising SCK. This produces exactly `2 * byte_len - 1` pulses and no extraneous pulse after the final nibble or outside the active write. **No `wdone`:** engine ends the write after `2 * byte_len` SCK beats, then end-pad / raise CE#.
 7. Engine **never stalls** SCK/CE# for the FSM; owns CE# start (`CS_ON`) / end (`SCLK_OFF` then `CS_OFF`) pad and ≥2-`clk` `tCPH` (`CS_OFF` + `IDLE`).
 8. FSM grants `uio_oe` while `busy`; reclaims when `busy` clears.
 
@@ -389,8 +389,8 @@ Detail: `docs/human/architecture/blocks/host-interface.md`, `docs/llm/03-archite
 1. **ASIC is the shared-bus keeper whenever it is out of reset and has not granted the bus.** While `rst_n=1` and `~BUS_GNT`, the ASIC actively drives:
    - **Flash CS**, **RAM A CS**, and **RAM B CS** high (deselected)
    - **SCK** low
-   - **SIO0..3** according to QPI phase when a transaction is live: drive on cmd / addr / write; **float only on dummy/wait and read-data** (listen / sample `uio_in`). ~~Between transactions and in IDLE, SIO may float or drive a don't-care~~ **Resolved in RTL:** SIO drives a don't-care (`0`) between transactions and in IDLE rather than floating, so no shared `uio` pin is ever left undriven while the ASIC is bus keeper; CS and SCK stay driven throughout.
-2. **MCU-safe drive windows.** MCU may enable its QSPI drivers while **`BUS_GNT=1`** (D22) **or** while **`rst_n=0`**. While `rst_n=0`, ASIC shared OEs are forced off, and this **is** an MCU-safe drive window for the shared QSPI nets (alongside grant). Rationale: on the TT demoboard, `rst_n` is held low by default when this design is disconnected / another design is active on the mux, so the MCU must still be able to talk to PSRAM/flash on those nets. This is not a soft-abort and does not assert `BUS_GNT`.
+   - **SIO0..3** according to QPI phase when a transaction is live: drive on cmd / addr / write (through CE# rise); **float only on read dummy/wait and read-data**, and through `SCLK_OFF` / `CS_OFF` on reads (one `clk` after CE# rise). ~~Between transactions and in IDLE, SIO may float or drive a don't-care~~ **Resolved in RTL:** SIO drives a don't-care (`0`) between transactions and in IDLE rather than floating, so no shared `uio` pin is ever left undriven while the ASIC is bus keeper; CS and SCK stay driven throughout.
+2. **MCU-safe drive windows.** MCU may enable its QSPI drivers while **`BUS_GNT=1`** (D22) **or** while **`rst_n=0`**. While `rst_n=0`, ASIC shared OEs are forced off **combinationally with `rst_n`** in `top.v`, and this **is** an MCU-safe drive window for the shared QSPI nets (alongside grant). Rationale: on the TT demoboard, `rst_n` is held low by default when this design is disconnected / another design is active on the mux, so the MCU must still be able to talk to PSRAM/flash on those nets. This is not a soft-abort and does not assert `BUS_GNT`.
 3. **Release for grant or reset.** On `BUS_GNT`, ASIC forces **all** shared `uio_oe` bits off so the MCU can master the bus. While active-low reset is asserted (`rst_n=0`), the top level also forces every shared output enable low (MCU-safe window per item 2). Resume parking after grant falls or after `rst_n` deasserts when `~BUS_GNT`.
 4. **Flash never selected by ASIC.** Parking flash CS high is not flash DMA; the ASIC never drives flash CS low and emits no flash opcodes (D11 still binding for flash-out-of-V1).
 5. **Inter-transaction OE:** do **not** release CS/SCK between DMA transactions. That preserves CE# high and avoids floating selects without depending on firmware latency.
@@ -455,7 +455,7 @@ Detail: `02-constraints.md`, `11-timing-analysis.md`, human `architecture/limita
 
 **Decision:**
 
-1. Demoboard MCU software for this project lives under **`firmware/`** (MicroPython on the Tiny Tapeout **ETR** demoboard / RP2350B via the local [`tt-micropython-firmware/`](../../tt-micropython-firmware/) SDK / `DemoBoard`). It is not under cocotb `test/`. **`firmware/` (MCU modules and `firmware/tests/`) must not import `test/`, `test.reference`, or `test.common`.** TCD pack/unpack and `interpret_chain` are a one-time copy of those two pure files into `firmware/tcd.py` and `firmware/chain.py`.
+1. Demoboard MCU software for this project lives under **`firmware/`** (MicroPython on the Tiny Tapeout **ETR** demoboard / RP2350B via the local [`tt-micropython-firmware/`](../../tt-micropython-firmware/) SDK / `DemoBoard`). It is not under cocotb `test/`. **`firmware/` (MCU modules and `firmware/tests/`) must not import `test/`, `test.reference`, or `test.common`.** TCD pack/unpack and `interpret_chain` are a one-time copy of those two pure files into `firmware/tcd.py` and `firmware/chain.py`. The sim oracle (`test/reference/chain.py`) now rejects `dma_buf_depth` outside **1..8** and uses `DEFAULT_TXN_BUDGET=65536`; the firmware copy still has the older `>=1` depth check and 4096 budget. That hash drift is expected until a firmware recopy; do not import `test/` to close it.
 2. **MCU data path after Enter Quad is QPI:** install/dump use QPI Fast Read Quad **`0xEB`** (6 dummy cycles) and QPI write **`0x02`**, chunked under `tCEM` (max CE# low for PSRAM refresh). Bring-up is still 1-bit SPI: `0x66`/`0x99` then Enter Quad `0x35`. **Exit Quad `0xF5` is supported** (QPI opcode, 2 SCK) when firmware needs SPI again; DMA START requires both devices back in QPI first.
 3. **Transport** follows the Tiny Tapeout QSPI PMOD guide ([PDF](../datasheets/pdfs/Using_QSPI_TinyTapeout.pdf), [extracted notes + code catalog](../datasheets/md/Using_QSPI_TinyTapeout.md)): 1-bit **PIO SPI** (`PIOSPI` / `spi_cpha0`) for reset/enter, plus a 4-bit QPI PIO path adapted from the guide `qspi_read` starting point. ETR `uio` GPIOs **25..32**. SoftSPI and hardware `machine.SPI` are not primary. Attribute the catalog (Rohan Verma / TT guide) in code comments. Guard `rp2` so CPython pytest can import the module.
 4. **Flash Quad Enable:** the shipping **first-party** Tiny Tapeout QSPI Pmod already has the flash **QUAD ENABLE** bit set. V1 firmware and the ASIC do **not** need to enable or disable flash QSPI mode. The guide's QE activation script is for third-party / recovery only; do not make it part of the normal bring-up path. (APS6404L Enter Quad `0x35` remains separate and still MCU-owned per D17.) Flash CS stays high during PSRAM traffic.

@@ -66,7 +66,7 @@ Boot path is SDK `src/main.py` -> `DemoBoard.get()` (commonly bound as `tt` in t
 | `tt.clock_project_PWM(freq)` / config `clock_frequency` | Project `clk` (target 66 MHz, D16) |
 | `tt.reset_project(True/False)` | Drive `rst_n` (active-low; SDK naming may be `nRESET`-style - confirm against `demoboard.py` when coding) |
 
-`firmware/asic.py` `Host.enable_project` mux-selects `tt_um_lahnb_sgdma` (or an M7 bitstream name), clocks **66 MHz**, and forces unused `ui_in` bits to 0. Mode `ASIC_RP_CONTROL` is the expected `config.ini` setting.
+`firmware/asic.py` `Host.enable_project` holds `ui_in=0`, asserts `rst_n`, mux-selects `tt_um_lahnb_sgdma` (or an M7 bitstream name), clocks **66 MHz**, deasserts `rst_n`, and samples `DONE=1` / `BUS_GNT=0`. Mode `ASIC_RP_CONTROL` is the expected `config.ini` setting. `rst_n_low` uses Host-recorded `reset_project` state, not a DemoBoard `_in_reset` attribute.
 
 ### Modes (`config.ini`)
 
@@ -160,8 +160,8 @@ Full ordered sequence for a cold demoboard session (ASIC silicon or M7 FPGA):
 
 1. **Optional M7:** `mpremote fs cp build/design.bin :/bitstreams/tt_um_lahnb_sgdma.bin`.
 2. REPL: `tt = DemoBoard.get()` (or use the prebound `tt`).
-3. `Host(tt).enable_project()` (mux-select, 66 MHz, unused `ui_in` bits 0, OE Hi-Z).
-4. Ensure `rst_n` is asserted briefly, then deassert. Expect `DONE=1`, `BUS_GNT=0`.
+3. `Host(tt).enable_project()` (`ui_in=0`, reset assert, mux, 66 MHz, reset deassert, `DONE=1` / `GNT=0`).
+4. Confirm `DONE=1` and `BUS_GNT=0` after that sequence.
 5. Confirm MCU `uio_oe_pico = 0`. ASIC is bus keeper: CS high, SCK low (D26).
 6. `request_bus` (`ui_in[2]=1`), wait until `uo_out[1]==1`, then OE may go live.
 7. `Psram.bring_up_both()`: `tPU`, SPI `0x66`/`0x99`, Enter Quad `0x35` on both devices.
@@ -174,7 +174,11 @@ API-shaped restatement of the human contract (D22 / D23 / D26). Normative OE mat
 
 ```python
 def request_bus(self, timeout_ms=1000, oe=OE_QPI) -> None:
-    """Assert BUS_REQ; wait BUS_GNT; then enable MCU QSPI OE if requested."""
+    """Assert BUS_REQ; wait BUS_GNT; then enable MCU QSPI OE if requested.
+
+    Use ``OE_QPI`` for command/addr/write, ``OE_QPI_READ`` to float SIO during
+    QPI dummy/data, ``OE_SPI`` for 1-bit bring-up (HOLD#/WP# as inputs).
+    """
 
 def release_bus(self) -> None:
     """Hi-Z first, drop BUS_REQ, wait BUS_GNT=0."""
@@ -186,7 +190,7 @@ def wait_idle_after_start(self, timeout_ms=5000) -> None:
     """If DONE is observed low, wait until high. If never low, already idle."""
 
 def kill_dma(self) -> None:
-    """Assert rst_n; leave MCU OE Hi-Z; caller re-enters QPI after deassert."""
+    """Assert rst_n; clear ui_in (BUS_REQ/START=0); leave MCU OE Hi-Z."""
 ```
 
 ### Rules (binding)
@@ -195,14 +199,14 @@ def kill_dma(self) -> None:
 2. Access PSRAM/flash under grant while the design is live; while `rst_n=0` (deselected design / kill hold), MCU drive is also legal without `BUS_GNT`.
 3. Before release: finish txn, CE# high, Hi-Z, drop `BUS_REQ`, wait `BUS_GNT=0` before START.
 4. Both PSRAMs in QPI before START (MCU Enter Quad; ASIC emits no `0x35`/`0xF5`/`0x66`/`0x99` - D17).
-5. START only while `DONE=1` and `BUS_REQ=0`. GPIO writes cover the two-flop sync; do not use a 1 us sleep as capture. A START edge while busy or while `BUS_REQ=1` is **ignored and not queued**.
+5. START only while `DONE=1` and `BUS_REQ=0`. Hold START **low across `rst_n` kill / reset release**; assert only after DONE high and `~BUS_REQ`. GPIO writes cover the two-flop sync; do not use a 1 us sleep as capture. A START edge while busy or while `BUS_REQ=1` is **ignored and not queued**.
 6. After pulsing START, `wait_idle_after_start` before `BUS_REQ`. Observed `DONE` low is the START-accept ACK; then wait until `DONE` high. If `DONE` is never observed low, treat as fast completion (already idle), not `kill_dma`. Overlapping `BUS_REQ` with the START pulse before the ASIC leaves IDLE can discard START (IDLE priority) or accept START and stall at `NEW_FETCH`.
 7. `DONE` is not a drive permit.
 8. Mid-run `BUS_REQ` pauses after the current QPI txn; runaway kill = `rst_n` only (no soft abort).
 
 Board **10 kΩ** CS pull-ups cover reset / pre-enable when MCU is not driving CS; do not rely on them alone while the design is live (`rst_n=1`) and `~BUS_GNT`.
 
-Timeouts in `wait_done` / `request_bus` / `release_bus` call `kill_dma`. A missed `DONE` low after START does not.
+Timeouts in `wait_done` / `request_bus` / `release_bus` call `kill_dma` (also zeros `ui_in` so `BUS_REQ` cannot stick at 1). A missed `DONE` low after START does not.
 
 ## PSRAM QPI driver
 
@@ -248,7 +252,7 @@ For each of PSRAM A (device 0) and PSRAM B (device 1):
 3. Next command is `0x35` (Enter Quad). Python/GPIO between `0x99` and `0x35` covers `tRST` (min 50 ns); do not insert a 1 us sleep as that wait.
 4. Leave CE# high. Device is now QPI; further MCU SPI opcodes are invalid until Exit Quad or reset.
 
-`firmware/psram.py` helpers: `spi_reset`, `enter_qpi`, `exit_qpi`, `write` / `read` (always chunked), `bring_up_both`.
+`firmware/psram.py` helpers: `spi_reset`, `enter_qpi`, `exit_qpi`, `write` / `read` (always chunked; MCU path raises CE# between `MCU_QPI_PAYLOAD_MAX` payload bytes so `tCEM` is not held across a Python `put` loop), `bring_up_both`. `bring_up=False` on `run_chain` is QPI-only (no SPI Enter Quad `0x35`). After Exit Quad, SIO is restored to SPI-safe directions (MOSI out, MISO/SD2/SD3 in). QPI RX samples on rising SCK (**D16**). `PioTransport` claims pins in `arm()`, not `__init__`.
 
 ### REPL sketch
 
@@ -260,7 +264,7 @@ For each of PSRAM A (device 0) and PSRAM B (device 1):
 >>> host = Host(tt); host.enable_project()
 >>> psram = Psram(make_board_transport())
 >>> mem = new_image()
->>> add_copy(mem, 0, 0, src_ptr=0x100, dest_ptr=0x200, length=8, next_tcd=0x0B)
+>>> add_copy(mem, 0, 0, src_ptr=0x100, dest_ptr=0x200, length=8, next_tcd=0x0B)  # next_tcd required
 >>> add_quit(mem, 0, 0x0B)
 >>> place_bytes(mem, 0, 0x100, b"01234567")
 >>> ok, result, mismatches = run_chain(host, psram, mem, exit_qpi=True)
@@ -280,7 +284,7 @@ Device physics (APS6404L Table 10 class; [`05-qspi-psram.md`](05-qspi-psram.md) 
 | `tCPH` | Min CE# high between bursts: 18 ns (CS GPIO gap; no 1 us sleep) |
 | `tPU` / `tRST` | 150 us / 50 ns |
 
-ASIC V1 `N=1` keeps DMA CE# pulses short (D20 contrast only). **MCU QPI** can still hold CE# across a long `0xEB`/`0x02` burst, so firmware must slice payloads. Never single-CE# a multi-kilobyte dump.
+ASIC V1 tapeout `N=5` (`DMA_BUF_DEPTH`). **MCU QPI** can still hold CE# across a long `0xEB`/`0x02` burst, so firmware slices payloads and raises CE# between MCU chunks (`MCU_QPI_PAYLOAD_MAX=1`). Never single-CE# a multi-kilobyte dump. Residual: one PIO burst wall-clock vs `tCEM` is hardware-only.
 
 ### Chunk-size formula (QPI)
 
@@ -314,7 +318,7 @@ Copied `encode_tcd` / `decode_tcd` / `validate_tcd` in `firmware/tcd.py` are the
 | 7..9 | `NEXT_TCD` |
 | 10 | `CTRL_FLAGS`: bit7 `NEXT_DEVICE`, bit6 `DEST_DEVICE`, bit5 `SRC_DEVICE`, bit4 `QUIT`, bits 3:0 = 0 (reserved; firmware writes 0; ASIC latches them, V1 control ignores them) |
 
-Mechanical copy only: relative import and optional `_compat.py` dataclass shim. Do not rewrite `interpret_chain`. Recopy from `test/reference/` when the 11-byte TCD contract changes; do not add a pytest that imports `test/` to detect drift.
+Mechanical copy only: relative import and optional `_compat.py` dataclass shim. Do not rewrite `interpret_chain`. Recopy from `test/reference/` when the 11-byte TCD contract changes. Firmware pytest hashes the two copies as text (minus import lines); it must not `import test/`. Default `dma_buf_depth` is tapeout **N=5**. The sim oracle additionally rejects depth outside **1..8** and uses a 65536 transaction budget; firmware copies may lag those TB-only bounds until recopy. Dataclass field order is not packed `tcd_t` order; do not `struct.pack` by iterating fields. `quit` is normalized to bool so `Tcd(quit=1)` equals a decoded descriptor.
 
 ### `build.py` helpers
 
@@ -322,20 +326,22 @@ Thin layer so REPL/scripts do not hand-place bytes:
 
 - `place_tcd(mem, device, addr, tcd)` - encode, span-check, write 11 bytes
 - `place_bytes(mem, device, addr, data)` - payload
-- `add_copy(...)` - one data TCD with `SRC`/`DEST`/`LEN`/`NEXT`/`CTRL_FLAGS`
+- `add_copy(...)` - one data TCD; `next_tcd` is required (omitting it used to default NEXT to the head, a silent loop). Pass `next_tcd=0` explicitly for a D35 self-pointing fetch.
 - `add_quit(mem, device, addr)` - `QUIT=1` terminator (address 0 is not a terminator)
 - `link(mem, prev_device, prev_addr, next_device, next_addr)` - fill `NEXT_TCD` / `NEXT_DEVICE`
 - Head convention: first TCD (or quit-for-empty) at **PSRAM 0, `0x000000`**
 
-Then `interpret_chain(mem)` is the golden. Sparse dict storage; do not allocate 8 MB.
+Layout overlap between TCD slots and payload is interpret-time. Then `interpret_chain(mem)` is the golden (default depth 5). Sparse dict storage; do not allocate 8 MB.
 
 ### Install sequence under grant (`firmware/runner.py`)
 
 ```text
-result = interpret_chain(initial_memory)
-request_bus -> enter_qpi both -> QPI write image
+result = interpret_chain(initial_memory)  # default N=5
+request_bus -> bring_up_both (or skip if already QPI; bring_up=False must not SPI 0x35)
+QPI write image; if dest already matches expected, zero dest so START must rewrite
 release_bus -> pulse_start -> wait_idle_after_start
-request_bus -> QPI read dest extents -> compare result.final_memory
+request_bus -> QPI read dest extents (SIO Hi-Z / OE_QPI_READ) -> compare dump vs expected
+empty dest is not PASS; mismatch raises RunError; release_bus in finally
 optional exit_qpi
 ```
 
@@ -344,14 +350,14 @@ optional exit_qpi
 `firmware/debug.py` (chunked QPI, never an unchunked dump):
 
 ```python
-def dump(psram, cs, addr, length, width=16) -> None: ...
-def peek(psram, cs, addr, n=1) -> bytes: ...
-def poke(psram, cs, addr, data) -> None: ...
-def decode_chain(psram, head_addr=0, head_dev=0, max_nodes=64) -> None:
-    """Fetch 11-byte records following NEXT_*; stop on QUIT or max_nodes."""
+def dump(host, psram, cs, addr, length, width=16) -> None: ...
+def peek(host, psram, cs, addr, n=1) -> bytes: ...
+def poke(host, psram, cs, addr, data) -> None: ...
+def decode_chain(host, psram, head_addr=0, head_dev=0, max_nodes=64) -> None:
+    """Fetch 11-byte records following NEXT_*; mask ptr[23]; stop on QUIT, cycle, or validate error."""
 ```
 
-Host pins stay on `Host` (`request_bus`, `pulse_start`, `wait_idle_after_start`, `kill_dma`, poll DONE/GNT).
+Debug APIs require a `Host` that already holds `BUS_GNT` (or `rst_n=0`). Host pins stay on `Host` (`request_bus`, `pulse_start`, `wait_idle_after_start`, `kill_dma`, poll DONE/GNT).
 
 ## Module layout
 
@@ -360,7 +366,7 @@ Host pins stay on `Host` (`request_bus`, `pulse_start`, `wait_idle_after_start`,
 | `firmware/constants.py` | MCU + architecture numbers used in 2+ firmware modules | No |
 | `firmware/tcd.py` | Copied pack / unpack / validate | No |
 | `firmware/chain.py` | Copied `MemoryImage`, `interpret_chain`, `ChainResult` | No |
-| `firmware/_compat.py` | Dataclass shim if the UF2 lacks `dataclasses` | No |
+| `firmware/_compat.py` | Dataclass shim if the UF2 lacks `dataclasses`. Extra positionals TypeError; unfrozen unhashable; frozen assignment raises FrozenInstanceError (AttributeError subclass). Host pytest imports this module. | No |
 | `firmware/build.py` | Thin helpers to assemble arbitrary chains | No |
 | `firmware/psram.py` | Reset, enter/exit, QPI `0xEB`/`0x02`, `tCEM` chunking, PIO behind `rp2` | Optional (`rp2` on MCU; mockable) |
 | `firmware/asic.py` | `DemoBoard` host protocol (idle-after-START) | Yes at runtime |
@@ -377,12 +383,13 @@ Host-side **pytest** under `firmware/tests/` (required by D30; no `test/` import
 
 | Covered | Not covered |
 |---|---|
-| `TC_TCD_BE_BYTES` pack / unpack / `QUIT` | Real `DemoBoard` SPI/QPI |
-| `build.py` + `interpret_chain` dest bytes | Timing vs APS6404L silicon |
-| QPI `tCEM` planner vs `f_SCK`; illegal SCK rejected | M7 HIL |
-| Enter `0x35` and exit `0xF5` (2 SCK) frame builders | Contended bus |
-| Mock host: START refused while REQ; REQ refused until idle after START; missed DONE low is fast completion (no kill); OE 0 before drop REQ | FPGA bitstream load |
-| Mock runner golden compare; `demo.py` vector | |
+| `TC_TCD_BE_BYTES` pack / unpack / `QUIT` / `ptr[23]` / dest=1 / reserved | Real `DemoBoard` SPI/QPI |
+| `build.py` + `interpret_chain` dest bytes and chunking at N=5 (N=1 explicit) | Wall-clock `tCEM` of one PIO burst |
+| QPI `tCEM` planner vs `f_SCK`; MCU 1-byte CE# chunks; illegal SCK rejected | M7 HIL |
+| Enter `0x35` and exit `0xF5` (2 SCK); mock refuses SPI-in-QPI | Contended bus |
+| Mock host: START refused while REQ; timeout clears `ui_in`; `rst_n_low` without `_in_reset`; OE 0 before drop REQ | FPGA bitstream load |
+| Mock runner golden compare; empty dest not PASS; second QPI run without SPI enter; `demo.py` vector | PIO on CPython (instruction-intent tests only) |
+| Oracle recopy/hash vs `test/reference` (file read, no `import test/`); `_compat` shim | |
 
 ```text
 cd firmware && python -m pytest -q
@@ -396,7 +403,7 @@ This suite catches serialization, chunking, and host-protocol bugs early. It doe
 
 ### One canned demo
 
-`firmware/demo.py`: PSRAM0-to-PSRAM0 copy of a short known pattern, linked to a `QUIT` TCD at `0x00000B`, programmed under grant, START, wait DONE, golden compare. Prints `PASS` or `FAIL`. That is the only canned vector.
+`firmware/demo.py`: PSRAM0-to-PSRAM0 copy of a short known pattern, linked to a `QUIT` TCD at `0x00000B`. `main()` zeros `ui_in`, asserts `rst_n`, releases `rst_n`, then START. PASS is dump vs expected dest (not oracle vs itself). Default `exit_qpi=False` leaves devices in QPI; a later `run_chain` must pass `bring_up=False` (no SPI `0x35`). Prints `PASS` or `FAIL` (catches `HostError` / `RunError`). That is the only canned vector.
 
 Everything else is built with `build.py` + `asic.py` + `runner.py` in the REPL or a user script.
 

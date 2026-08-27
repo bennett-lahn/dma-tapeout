@@ -32,20 +32,22 @@ Icarus is the required L2 simulator because it supports four-state gate nets and
 The required subset is:
 
 
-| Test ID                                         | Why it remains at L2                                               |
-| ----------------------------------------------- | ------------------------------------------------------------------ |
-| `TC-SMOKE`                                      | Basic synthesized end-to-end connectivity and sequential operation |
-| `TC-TCD-BE`                                     | Descriptor bit and byte connectivity through synthesized logic     |
-| `TC-SAME-0`, `TC-SAME-1`                        | Both PSRAM CE# paths and shared SIO mapping                        |
-| `TC-CROSS-01`, `TC-CROSS-10`                    | Device-select muxing in both directions                            |
-| `TC-CHAIN`, `TC-QUIT`, `TC-RESTART`             | State retention, chain control, reset-to-fixed-head behavior       |
-| `TC-BUS-IDLE`, `TC-BUS-ACTIVE`, `TC-BUS-REPEAT` | Grant polarity, atomic completion, OE release, and resume          |
-| `TC-RESET-IDLE`, `TC-RESET-ACTIVE`              | Initialization and reset recovery across gate storage elements     |
+| Test ID | Why it remains at L2 |
+| --- | --- |
+| `TC-GL-SMOKE` | Basic synthesized end-to-end connectivity and sequential operation |
+| `TC-GL-TCD-BE` | Descriptor bit and byte connectivity through synthesized logic |
+| `TC-GL-SAME-0`, `TC-GL-SAME-1` | Both PSRAM CE# paths and shared SIO mapping |
+| `TC-GL-CROSS-01`, `TC-GL-CROSS-10` | Device-select muxing in both directions |
+| `TC-GL-CHAIN`, `TC-GL-QUIT`, `TC-GL-RESTART` | State retention, chain control, reset-to-fixed-head behavior |
+| `TC-GL-BUS-IDLE`, `TC-GL-BUS-ACTIVE`, `TC-GL-BUS-REPEAT` | Grant polarity, atomic completion, OE release, and resume |
+| `TC-GL-RESET-IDLE`, `TC-GL-RESET-ACTIVE` | Initialization and reset recovery across gate storage elements |
+| `TC-GL-RESET-RANDOM` | Seed-derived pin-observable reset campaign, then an 11-byte head fetch |
 
+L2 IDs are `TC-GL-*` so they are not counted as L1 closure. Extra PSRAM1 / cross-device checks use the pre-dispose pin transaction log, not golden-only device sets.
 
 Run the final tapeout depth, `DMA_BUF_DEPTH=5`. The synthesized `tt_um_lahnb_sgdma` instance in `test/tb/tb_gl.sv` is flattened at that depth: do not pass `#(.DMA_BUF_DEPTH(...))` on the netlist instance, and do not treat Makefile `-Ptb_gl.DMA_BUF_DEPTH` as a resynthesis. Other depths across `1..DMA_BUF_DEPTH_MAX` are for L1 sweeps via the module parameter; they are not required at L2 unless separate netlists are intentionally hardened.
 
-Implementation entry: `tests.test_gate_level` via `test/scripts/run_gl.sh` or `GATES=yes make` / `make gl_test`. `run_gl.sh` copies the unpowered `nl` view (preferred path `ttihp-verilog-template/runs/wokwi/final/nl/tt_um_lahnb_sgdma.nl.v`) to `test/gate_level_netlist.v` and fails if that file is missing. A missing netlist or `PDK_ROOT` is `blocked`, not a pass.
+Implementation entry: `tests.test_gate_level` via `test/scripts/run_gl.sh` or `GATES=yes make` / `make gl_test`. `run_gl.sh` copies the designated 189-DFF N=5 unpowered netlist `test/gate_level_netlist.189-aug18.v` (SHA256 `9a769ad4bcc09d7cff699e8f178acab4fb5b7228e242cfdf7d027ed2274beb7a`) to `test/gate_level_netlist.v` and fails on mismatch or if `SDF` is set. It does not silently prefer a ttihp template netlist. `_require_l2` repeats that SHA pin. A missing netlist or `PDK_ROOT` is `blocked`, not a pass. M6 stays open: Verilator-X (`make verilator_x`, `--x-assign unique --x-initial unique`) isolates `RUN_DIR`/`SIM_BUILD` under `x-unique` so it cannot clobber Icarus builds; it is a binary sensitivity campaign, not four-state gate sim, and SDF remains blocked. Isolated evidence: `test/runs/run_verilator_x-20260825-191818.log` (1/1 smoke).
 
 L2 tests use only top-level pins, resolved shared-bus signals, decoded QPI transactions, final memory, and ordered transaction logs as pass criteria. They must not depend on RTL hierarchy, source enum values, internal register names, or synthesis-generated instance names.
 
@@ -58,7 +60,7 @@ L2 tests use only top-level pins, resolved shared-bus signals, decoded QPI trans
 - no gate-model warning indicates an unresolved cell, port-width mismatch, or missing primitive
 - result artifacts identify the netlist hash and PDK model revision
 
-An X on an intentionally undriven resolved SIO net during PSRAM turnaround is not automatically a failure. It must match the expected ownership phase and be absent from sampled data after the model's valid-drive point.
+An X or Z on an intentionally undriven physical SIO net during PSRAM turnaround is not automatically a failure. It must match the expected ownership phase and be absent from sampled data after the model's valid-drive point. After the Z-to-0 overlay was retired, that allowance is reachable on Icarus four-state nets; it is not itself L2 X coverage until a directed L2 test exists.
 
 ## Reset sequencing and randomized reset
 
@@ -149,7 +151,7 @@ Run these experiments primarily at L0 and L1 for fast diagnosis. Optional L2 Ver
 
 ### Status model
 
-Current SDF status: `blocked`. No qualified netlist-matched SDF annotation has been run. A 2026-08-17 zero-delay Icarus `TC-SMOKE` on the existing unpowered `nl` view (`test/gate_level_netlist.v` sha256 `18b7c984beb537d59222b63a8fe1732043705bb778ba449adecdfddb6fcb19bf`, ciel `ihp-sg13g2` rev `c4b8b4e5e7a05f375cca3815d51b3a37721fbf5c`) is not an SDF pass. That netlist is the earlier ~153-DFF harden; length-1 smoke does not by itself prove tapeout `DMA_BUF_DEPTH=5` chunking. Icarus prints `ifnone` specify-path "sorry" messages on the cell models; compile still produces a `sim.vvp`.
+Current SDF status: `blocked`. No qualified netlist-matched SDF annotation has been run. A zero-delay Icarus L2 run on the designated 189-DFF N=5 netlist `test/gate_level_netlist.189-aug18.v` (SHA256 `9a769ad4bcc09d7cff699e8f178acab4fb5b7228e242cfdf7d027ed2274beb7a`) is not an SDF pass. Do not cite an earlier ~153-DFF hash as the tapeout netlist identity. Icarus prints `ifnone` specify-path "sorry" messages on the cell models; compile still produces a `sim.vvp`.
 
 SDF is optional until the hardening flow produces a compatible SDF artifact. Record one of:
 

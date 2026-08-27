@@ -37,10 +37,10 @@ Feature path (fetch / copy / chain / cross-device) and verification through M3 a
 - [x] M0 - toolchain and L1 same-device smoke (`source test/env.sh && test/scripts/run_smoke.sh`)
 - [x] Verification scaffold + durable toolchain hooks (`test/env.sh`, wrappers, doctor/run scripts)
 - [x] SCK-accurate dual PSRAM model (6 dummy cycles; table-driven `0xEB`/`0x02`) with M1 protocol policing
-- [x] M1 - protocol policing, L0 QPI directed tests, and Icarus/Verilator agreement (behavioral `Q-*` under `ideal`; residual: model-plane Z→0, CI smoke still open; delays / `Q-LAUNCH` / `Q-RXEDGE` closed at M3)
+- [x] M1 - protocol policing, L0 QPI directed tests, and Icarus/Verilator agreement (behavioral `Q-*` under `ideal`; residual: CI smoke still open; delays / `Q-LAUNCH` / `Q-RXEDGE` closed at M3; Z-to-0 overlay retired)
 - [x] M2 - reference model, dual-axis scoreboard, directed `TC-*` (24 cases; `TC-DEPTH` deferred to M5), always-on `CHK-*`, pin monitor (`via=pin`); Acceptance 2026-08-08
 - [x] M3 - delay layer, setup/hold sweeps, launch/RX edge checks, centralized pending-item lifecycle; Acceptance 2026-08-10 (physical `T-*` remain post-M3; residual-wave TB fixes for device-plane `Q-RXEDGE` race + Verilator `Q-LAUNCH` `asic_sck_oe` gate landed without reopening M3)
-- [x] M5 - randomized regression and coverage closure; buffer-depth sweep - **exit / pass (2026-08-16):** random green at tapeout **N=5** / `TIMING_PROFILE=ideal` (zero TB placeholders) - Icarus and Verilator seeds 1/2/3/5/8, `CHK-*`/`Q-*` clean, seed-1 Icarus ≡ Verilator; `TC-DEPTH` (directed suite at each compile-time `DMA_BUF_DEPTH`) **pass** N=1..8 via `make depth` / `run_depth_sweep.sh` (Icarus, 13/13 per depth); `COV-*` (functional coverage point IDs) merge at `test/runs/m5_coverage_closure.json` `closed=true` (20 catalog IDs hit; 13 recorded exclusions for STALL and length-class collapse at N=1/2; reviewer `M5-close`, date 2026-08-16)
+- [x] M5 - randomized regression and coverage closure; buffer-depth sweep - rematch **2026-08-25:** `test/runs/m5_coverage_closure.json` `closed=true` (reviewer `tb-closure-2026-08-25`); `TC-DEPTH` Icarus 15/15 per N=1..8
 - [ ] CI smoke job (L1 Icarus)
 - [ ] Firmware library + demoboard bring-up for M7 readiness (MicroPython under `firmware/`; host-side `firmware/tests` may start earlier; demoboard HIL still Phase 3 / M7)
 

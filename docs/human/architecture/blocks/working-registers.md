@@ -35,13 +35,13 @@ Encoding for each: `0`=PSRAM 0, `1`=PSRAM 1. Pointer MSBs are **not** device sel
 
 Approximate working metadata: **88 DFFs** (24+24+8+24+8 flags), plus:
 
-- **Data buffer** between read and write (**1 byte / 8 DFFs for V1**, nibble shift register; D20)
+- **Data buffer** between read and write (**`N=5` bytes / 40 DFFs at tapeout**, nibble shift register; D20)
 - FSM state flops
 - QSPI shifter / bit counters
 
 ### Data buffer depth (D20)
 
-V1 implements a **1-byte** RX→TX hold as a nibble shift register (LSB-insert on READ, drop the MSB nibble on WRITE). **Correctness must not depend on buffer depth:** the descriptor FSM and QSPI engine should treat depth as a parameter `N` (V1: `N=1`). A later deeper scratch (for fewer cmd+addr reissues) must remain a pure performance / DFF trade, not a semantic change to TCD fields, pointer updates, or cross-device CS rules. Short held CE# pulses at `N=1` also make `tCEM` / Linear Burst page slicing a non-goal until **`N ≥ 60`** (`tCEM` 4 us / read @ 33 MHz SCK) or **`N ≥ 1026`** (two page crosses) - see [`descriptor-fsm.md`](descriptor-fsm.md).
+Tapeout implements **`N=5`** (`DMA_BUF_DEPTH=5`) RX→TX hold as a nibble shift register (LSB-insert on READ, drop MSB nibble on WRITE). **Correctness must not depend on buffer depth:** the descriptor FSM and QSPI engine treat depth as parameter `N` in `1..DMA_BUF_DEPTH_MAX` (8). A later deeper scratch (for fewer cmd+addr reissues) must remain a pure performance / DFF trade, not a semantic change to TCD fields, pointer updates, or cross-device CS rules. Short held CE# pulses at tapeout N=5 (and at N=1) also make `tCEM` / Linear Burst page slicing a non-goal until **`N ≥ 60`** (`tCEM` 4 us / read @ 33 MHz SCK) or **`N ≥ 1026`** (two page crosses) - see [`descriptor-fsm.md`](descriptor-fsm.md).
 
 TCD FETCH is also a shift register: all 22 wire nibbles into `tcd_t`, including the last nibble (`CTRL_FLAGS[3:0]` reserved).
 

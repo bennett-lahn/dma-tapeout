@@ -27,11 +27,11 @@ D_OUT(signal) = TB_TCO(signal) + TB_FLIGHT_OUT(signal)
 t_device(signal) = t_src + D_OUT(signal)
 ```
 
-After `Timer(D_OUT(signal), unit="ns")`, the task updates the corresponding device-plane signal. CE#, SCK, SIO values, and SIO output enable use the same mechanism. Each transition is transported, not collapsed into the most recent value.
+After `Timer(D_OUT(signal), unit="ns")`, the task updates the corresponding device-plane signal. CE#, SCK, SIO values, and SIO output enable use the same mechanism. Each transition is transported, not collapsed into the most recent value. Parser SCK sampling is gated on the delayed device-plane CE# level, not the live DUT-plane CE#, so unequal `D_OUT_CE_NS` / `D_OUT_SCK_NS` cannot drop the first or last nibble solely because of source-time CE# gating. Model SIO OE assert and release on the return plane also honor `D_OUT_OE_NS` (`TB_TCO_OE_NS + TB_FLIGHT_OUT_OE_NS`, the TB output-enable delay toward the device/return plane), in addition to `PSRAM_THZ_NS` / `tHZ` (CE# high to SIO Hi-Z) on release. The parser does not sample ASIC OE; the wrapper only delays the model's own drive enable.
 
-The base configuration exposes `TB_TCO` and `TB_FLIGHT_OUT`. The implementation must also permit per-signal overrides for SCK, CE#, and SIO so post-route data can represent clock-to-data and clock-to-CE skew. Applying one common delay to every output only shifts the waveform in time and does not create relative setup or hold stress.
+The base configuration exposes `TB_TCO` and `TB_FLIGHT_OUT`. The implementation must also permit per-signal overrides for SCK, CE#, SIO, and OE so post-route data can represent clock-to-data and clock-to-CE skew. Applying one common delay to every output only shifts the waveform in time and does not create relative setup or hold stress.
 
-Do not implement this path as one coroutine that awaits a delay before watching for another edge. That serial form can miss transitions. An edge collector must timestamp every source event and use `cocotb.start_soon(...)` for its delayed assignment. Same-time assignments use a stable sequence number so results do not depend on Python task ordering.
+Do not implement this path as one coroutine that awaits a delay before watching for another edge. That serial form can miss transitions. An edge collector must timestamp every source event and queue delayed assignments. Same-time assignments use a stable sequence number and an ordered apply queue keyed by `(due_time, sequence)` so results do not depend on Python task ordering.
 
 ### Device read response
 
@@ -50,7 +50,7 @@ Each delayed response carries the transaction generation described in `03-psram-
 
 The wrapper resolves DUT and model SIO drives after their respective delays:
 
-- neither drives - high impedance or the wrapper's explicit idle value,
+- neither drives - high impedance (SIO/SCK float as Z; CS bits 0/6/7 keep board pull-ups only; no Z-to-0 idle overlay),
 - exactly one drives - that driver's nibble,
 - both drive the same known value - still report overlap, even if the resolved value agrees,
 - both drive different values - resolve as unknown where supported and fail immediately.
@@ -72,11 +72,16 @@ All device AC defaults in this table are copied from repository documentation. T
 | `PSRAM_THD_NS` | `2.0` minimum | Input hold from active SCK edge | Same Table 10 sources |
 | `PSRAM_TCEM_US_EXT` | `4.0` maximum | CE# low, extended grade | Same Table 10 sources |
 | `PSRAM_TCEM_US_STD` | `8.0` maximum | CE# low, standard grade | Same Table 10 sources |
-| `PSRAM_TCH_MIN_RATIO` | `0.45` | Minimum SCK high width as a fraction of minimum period | `../../datasheets/md/APS6404L_3SQR.md` Table 10, summarized in `../11-timing-analysis.md` |
-| `PSRAM_TCL_MIN_RATIO` | `0.45` | Minimum SCK low width as a fraction of minimum period | Same Table 10 sources |
-| `PSRAM_TCH_MAX_RATIO` | `0.55` | Maximum SCK high width as a fraction of minimum period | Same Table 10 sources |
-| `PSRAM_TCL_MAX_RATIO` | `0.55` | Maximum SCK low width as a fraction of minimum period | Same Table 10 sources |
-| `PSRAM_TKHKL_NS` | `1.5` maximum | SCK rise or fall time, for reporting only in digital simulation | Same Table 10 sources |
+
+Reporting placeholders retained in the resolved `wrap_device` manifest for STA / demoboard reports. The Python timed model does **not** measure or fail them (no analog edge-rate or duty policing in cocotb). Clock-quality closure is `T-CLKQ` in `../11-timing-analysis.md`:
+
+| Parameter | Simulation default | Meaning | Repository source |
+|---|---:|---|---|
+| `PSRAM_TCH_MIN_RATIO` | `0.45` | Minimum SCK high width as a fraction of minimum period (reporting only) | `../../datasheets/md/APS6404L_3SQR.md` Table 10, summarized in `../11-timing-analysis.md` |
+| `PSRAM_TCL_MIN_RATIO` | `0.45` | Minimum SCK low width as a fraction of minimum period (reporting only) | Same Table 10 sources |
+| `PSRAM_TCH_MAX_RATIO` | `0.55` | Maximum SCK high width as a fraction of minimum period (reporting only) | Same Table 10 sources |
+| `PSRAM_TCL_MAX_RATIO` | `0.55` | Maximum SCK low width as a fraction of minimum period (reporting only) | Same Table 10 sources |
+| `PSRAM_TKHKL_NS` / `tKHKL` | `1.5` maximum | SCK rise or fall time (reporting only in digital simulation) | Same Table 10 sources |
 
 The architecture fixes system `clk` at a 66 MHz maximum and registered SCK at `clk/2`, approximately 33 MHz. Those are project values from D16 in `../03-architecture.md` and `../05-qspi-psram.md`, not APS6404L AC defaults. At that target, the derived system-clock period is approximately 15.15 ns and the derived SCK period is approximately 30.30 ns.
 
@@ -94,13 +99,13 @@ No APS6404L typical `tACLK` is invented. The profile named `nominal` is the proj
 
 ## Timing profiles
 
-`TIMING_PROFILE` selects a recorded set of runtime values:
+`TIMING_PROFILE` (named runtime timing parameter set) selects a recorded set of values:
 
-- `ideal` - all transport and response delays are zero; protocol and edge-order checks still run.
+- `ideal` - zero TB placeholders only (`TB_TCO_*` / `TB_FLIGHT_*`, the testbench clock-to-out and flight delays on DUT→device and return paths). Datasheet device AC stays live (`PSRAM_TACLK_NS` / `tACLK` read data valid after falling SCK, `PSRAM_TSP_NS` / `tSP` and `PSRAM_THD_NS` / `tHD` SIO setup/hold vs rising SCK, and the other `PSRAM_*` AC in the catalog). `wrap_device` always returns a started timed wrapper; zero delays drain synchronously. Protocol and edge-order checks still run.
 - `nominal` - the standard delay-annotated profile; device response and release use documented maxima, input requirements use documented minima, and unfilled TB path placeholders remain visibly zero.
 - `sweep` - one or more values are supplied explicitly by the sweep driver; the run manifest records every point.
 
-The platform default remains `ideal` as specified in `02-platform.md`. M3 evidence requires `nominal` and boundary sweeps, not only `ideal`.
+The platform default remains `ideal` as specified in `02-platform.md`. M3 evidence requires `nominal` and boundary sweeps, not only `ideal`. The CE# timing monitor consumes resolved profile `tCEM` (max CE# low: `PSRAM_TCEM_NS` or `PSRAM_TCEM_US_*`) and `tCPH` (min CE# high: `PSRAM_TCPH_NS`) unless a test passes explicit nanosecond overrides. `test/scripts/run_timing.sh` keeps `nominal` and also runs `sweep` `PSRAM_TACLK_NS` endpoints (including a past-capture negative). Functional simulation is not STA; an optional `CLK_PERIOD_NS=15.15` (66 MHz) cell is off by default.
 
 ## Timestamped timing checks
 
@@ -164,7 +169,7 @@ For every command, address, and write-data nibble:
 - they must remain stable for at least `tHD` after that edge, and
 - the first command nibble, first address nibble, and first write-data nibble are checked explicitly at phase boundaries.
 
-The check applies while the ASIC drives SCK (`asic_sck_oe==1`); grant/park or reset OE clear with SCK OE off is not a `Q-LAUNCH` event (`CHK-ARB-*` / `CHK-RST-OE`). OE release into read dummy and OE reclaim after a read are also required to occur while SCK is low. Device-driven read-data changes are not `Q-LAUNCH` events; they are checked under `Q-RXEDGE`.
+The check applies while the ASIC drives SCK (`asic_sck_oe==1`); grant/park or reset OE clear with SCK OE off is not a `Q-LAUNCH` event (`CHK-ARB-*` / `CHK-RST-OE`). L0 `tb_engine` has no `asic_sck_oe` because the engine always drives SCK; the monitor treats missing SCK OE as 1 only at L0, and as 0 (not driving) at L1/L2. SIO value changes while OE=0 are not launches. Setup/hold uses per-device `D_OUT_*` of the currently selected CE#. A same-fs change at the `tHD` deadline fails (inclusive hold). Zero-event `Q-LAUNCH` is `na` / unhit, not pass. OE release into read dummy and OE reclaim after a read are also required to occur while SCK is low. Device-driven read-data changes are not `Q-LAUNCH` events; they are checked under `Q-RXEDGE`.
 
 `Q-LAUNCH` exists to hold `qspi_engine` to the APS6404L setup/hold contract on an ongoing basis, independent of any specific RTL revision's implementation history: any future change to the engine's output timing must still satisfy this window. M3 directed evidence under `nominal` (and selected `tACLK` endpoints) is `pass` as of 2026-08-10; see the M3 evidence section below.
 
@@ -175,10 +180,17 @@ The check applies while the ASIC drives SCK (`asic_sck_oe==1`); grant/park or re
 For every read-data nibble:
 
 1. identify the device-plane falling edge that launches the nibble,
-2. record when the delayed nibble becomes valid at DUT input,
-3. identify the following external rising SCK edge required by D16,
-4. record the actual DUT capture event through `rdata_valid` and `rdata`, and
+2. record when the delayed nibble becomes valid at DUT input (`read-input-valid`, or independently `t_fall + tACLK + TB_FLIGHT_IN` / `D_IN_SIO_NS`),
+3. identify the following external rising SCK edge required by D16 (66 MHz `clk` / rising-edge RX),
+4. record the actual DUT capture, and
 5. require a one-to-one match between expected rising edges and captured nibbles.
+
+Capture evidence depends on DUT level:
+
+- **L0** (`tb_engine`): `rdata_valid` pulse plus `rdata` nibble match, coinciding with the armed rising SCK.
+- **L1/L2**: there is no `rdata_valid` alias on `tb_top` / `tb_uio_bus.svh`. The armed external rising SCK is the capture; the monitor still applies the `tACLK` check. Do not add `rdata_valid` to those wrappers to make this pass.
+
+Without a timed wrapper stream (`timed_devices` empty), `Q-RXEDGE` is `blocked`, not pass: `tACLK` cannot be applied independently. Write-only traffic, or wrappers with no `read-launch`, is `na` / unhit, not pass. `TIMING_PROFILE=ideal` zeros only TB placeholders; datasheet AC including `PSRAM_TACLK_NS` stays live, and `wrap_device` always wraps.
 
 Pass requires:
 
@@ -188,7 +200,7 @@ Pass requires:
 - data arrived before capture with positive recorded setup margin, and
 - no stale response from a prior transaction is captured.
 
-At L0, internal engine signals may be observed to diagnose the capture event. The durable requirement remains the port behavior: `rdata`, `rdata_valid`, SCK, and SIO must agree. At L1/L2, the pin transaction log and resulting memory data remain the end-to-end evidence.
+At L0, internal engine signals may be observed to diagnose the capture event. The durable requirement remains the port behavior: `rdata`, `rdata_valid`, SCK, and SIO must agree. At L1/L2, the pin transaction log, resulting memory data, and the armed rising-SCK capture (with independent `tACLK`) remain the end-to-end evidence. Directed L1 evidence: `TC-RXEDGE-L1-READ-PASS` in `tests.test_qspi_timing_rxedge`.
 
 DUT-plane CE# rise closes the device's pending-launch scope immediately via `close_scope` (`reason=scope-close`). With non-zero `D_OUT_CE_NS` (`D_OUT_*`: per-signal DUT-to-device output path delay), a late device-plane SCK-fall can still open a pending launch after that DUT-plane close. The timed model then emits `ce-rise-committed` when CE# rise commits on the device plane; the monitor runs a second idempotent `close_scope` so race-window opens are audited rather than lost. Directed evidence: `TC-RXEDGE-RACE-DEVICE-PLANE` in `tests.test_qspi_timing_launch_rx` under `TIMING_PROFILE=sweep` (documented boundary / override profile) with the suite's race `D_OUT_*` point. This residual wave is closed; it does not reopen M3.
 
@@ -208,7 +220,7 @@ These IDs retain the meanings established in `../11-timing-analysis.md`. Moving 
 | `Q-RST` | Asserted `rst_n` aborts the ASIC transaction, releases all top-level shared OE, and returns the engine/controller to reset state without a soft-abort command | L0/L1 | M1 | pass |
 | `Q-SCKIDLE` | SCK remains low for the entire interval while no device is selected (flash CS, RAM A CE#, and RAM B CE# all high at L1; both engine CS outputs high at L0); no erroneous SCK cycle occurs while deselected | L0/L1 | M1 | pass |
 | `Q-LAUNCH` | Driven SIO and OE change only while ASIC drives SCK (`asic_sck_oe==1`) with SCK low, meeting modeled 2 ns setup and hold windows | L0 | M3 | pass |
-| `Q-RXEDGE` | Each read nibble launched from a falling edge is captured exactly once on the documented following rising edge | L0, selected L1 | M3 | pass |
+| `Q-RXEDGE` | Each read nibble launched from a falling edge is captured exactly once on the documented following rising edge (L0: `rdata_valid`; L1/L2: armed rising SCK) | L0/L1 | M3 | pass |
 
 Every AC value in this catalog is sourced through the parameter table above from `../05-qspi-psram.md` and APS6404L Rev 2.3 Table 10. Status uses the vocabulary in `00-index.md`.
 
@@ -219,7 +231,7 @@ M1 `pass` rows above are under `TIMING_PROFILE=ideal`, `SEED=1`, `DMA_BUF_DEPTH=
 | ID | Evidence module(s) | Level | Notes |
 |---|---|---|---|
 | `Q-CEM`, `Q-CPH` | `tests.test_qspi_timing` | L1 | Coarse directed thresholds under `ideal`; delay-annotated rerun at M3 |
-| `Q-MUX`, `Q-SIO-OWN`, `Q-SCKIDLE` | `tests.test_qspi_ownership` | L1 | Shared-bus monitor negatives + clean baseline; SIO-OWN delay rerun at M3 |
+| `Q-MUX`, `Q-SIO-OWN`, `Q-SCKIDLE` | `tests.test_qspi_ownership` | L1 | Shared-bus monitor negatives + clean baseline; dispose dual rows with `CHK-PIN-*`; SIO-OWN delay rerun at M3 |
 | `Q-RST` | `tests.test_qspi_reset_protocol` | L1 (and L0 subset) | Dispose + `RESET-TRUNCATED` classification |
 | `Q-LAUNCH`, `Q-RXEDGE`, `Q-CSP`, `Q-CHD`, `Q-TERM` | - | - | Closed under M3 evidence below |
 
@@ -242,7 +254,8 @@ M3 `pass` rows above are under `TIMING_PROFILE=nominal` unless noted, `SEED=1`, 
 | `Q-CEM`, `Q-CPH` | `tests.test_qspi_timing` | L1 | Delay-annotated legal baseline + violation cases; W3b margin gate on present fields |
 | `Q-CSP`, `Q-CHD`, `Q-TERM` | `tests.test_qspi_timing_delay` | L1 | Legal baseline + directed violations; do not manufacture cleanup-only `Q-TERM` |
 | `Q-SIO-OWN` | `tests.test_qspi_ownership` | L1 | Delay-aware OE / model-drive ownership under `nominal` |
-| `Q-LAUNCH`, `Q-RXEDGE` | `tests.test_qspi_timing_launch_rx` | L0 | Nominal pass + fault/pending cleanup; `tACLK` endpoints via `sweep` + `PSRAM_TACLK_NS`; `Q-LAUNCH` only while `asic_sck_oe==1` |
+| `Q-LAUNCH`, `Q-RXEDGE` | `tests.test_qspi_timing_launch_rx` | L0 | Nominal pass + fault/pending cleanup; `tACLK` endpoints via `sweep` + `PSRAM_TACLK_NS`; `Q-LAUNCH` only while `asic_sck_oe==1`; short `tSP`/`tHD` negatives; write-only `Q-RXEDGE=na` |
+| `Q-RXEDGE` (L1 capture) | `tests.test_qspi_timing_rxedge` | L1 | Armed rising SCK capture under `ideal`; no `rdata_valid` alias |
 
 Cleanup directed evidence (same modules; lifecycle contract in `06-checkers.md`):
 
@@ -278,7 +291,7 @@ Timing monitors do not pause because a test intends to assert reset soon. Every 
 
 After the sampled reset edge, `rst_n=0` combinationally clears every shared `uio_oe` bit at top level (`CHK-RST-OE` in `06-checkers.md`), and sequential controller/engine state converges over the following edges (`CHK-RST-INTERNAL`, `Q-RST`). This can force CE#, SCK, or SIO to change in a way that would otherwise look like a `Q-CEM`, `Q-CPH`, `Q-CHD`, `Q-MUX`, `Q-SCKIDLE`, or `Q-LAUNCH` violation if judged only against the uninterrupted protocol contract.
 
-Classify a timing-window observation whose violation is fully explained by the sampled reset edge's forced OE release and state convergence as a distinct `RESET-TRUNCATED` event, not a fail of the specific `Q-*` ID that would otherwise apply:
+Classify a timing-window observation whose violation is fully explained by the sampled reset edge's forced OE release and state convergence as a distinct `RESET-TRUNCATED` event, not a fail of the specific `Q-*` ID that would otherwise apply. `RESET-TRUNCATED` applies only while `rst_n==0`; after reset release, the same pattern is an ordinary `Q-*` fail.
 
 1. record the specific `Q-*` ID that would have fired, the reset-sample timestamp, and the forced signal proven responsible for the apparent violation,
 2. require that every part of the window strictly before the sampled reset edge still meets its normal requirement,

@@ -100,9 +100,9 @@ Uninitialized-byte behavior is a test configuration decision, not an implicit ze
 One interpretation run receives:
 
 - an independent clone of the initial memory for devices 0 and 1,
-- `dma_buf_depth`, an integer at least 1,
-- a descriptor-fetch budget,
-- a transaction budget, and
+- `dma_buf_depth`, an integer in `1..8` (`DMA_BUF_DEPTH_MAX`),
+- a descriptor-fetch budget (default 64),
+- a transaction budget (default 65536; sized for worst-case N=1: 64 descriptors times one fetch plus two records per payload byte), and
 - the V1 fixed head, which is always device 0, address `0x000000`.
 
 The budgets make cyclic or self-pointing chains terminate deterministically in Python. Exhausting a budget is reported as `reference_limit`, with the next device/address and recent chain path. It is not interpreted as `QUIT`, `DONE`, or a DUT pass.
@@ -223,7 +223,7 @@ Report:
 
 Read-only source regions, descriptors, neighboring sentinels, and the inactive device are part of the guard set unless a test intentionally aliases them.
 
-Both axes are required. A test does not pass because only the destination range matches.
+Both axes are required. A test does not pass because only the destination range matches. `Scoreboard.compare` requires an observed memory image for L1 and L2; L0 may omit it (`require_memory=False`) when pin/memory images are absent by construction. Mismatch text includes `chunk=i/k` for data records. A sparse observed map that omits a written destination byte is a `missing_write` failure.
 
 ### Reset-interrupted epochs
 

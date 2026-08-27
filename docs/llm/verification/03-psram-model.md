@@ -56,7 +56,7 @@ A CE# falling edge begins a transaction. A CE# rising edge terminates it. The su
 3. exactly six dummy SCK cycles with the ASIC SIO output enable clear, and
 4. zero or more complete data bytes driven by the selected model.
 
-After the sixth dummy cycle, each falling SCK edge schedules the next read nibble. The nibble becomes visible at the model output after the configured `tACLK`, then reaches the DUT through the return delay in `04-timing-in-sim.md`. This falling-edge launch is required by APS6404L Rev 2.3 sections 11.1 and 14.6. The architecture samples that value on the following rising SCK edge.
+Once those six dummy cycles complete, further rising SCKs are data beats (a longer burst), not extra dummies; `Q-DUMMY` (CE# rose still in DUMMY with `dummy_cycles != 6`) is too-few only. `Q-NIBBLE-ODD` (odd data-nibble count at CE# rise; no partial byte) still applies if CE# rises on an odd data nibble. After the sixth dummy cycle, each falling SCK edge schedules the next read nibble. The nibble becomes visible at the model output after the configured `tACLK` (read data valid after falling SCK), then reaches the DUT through the return delay in `04-timing-in-sim.md`. This falling-edge launch is required by APS6404L Rev 2.3 sections 11.1 and 14.6. The architecture samples that value on the following rising SCK edge.
 
 ### QPI Write `0x02`
 
@@ -96,12 +96,14 @@ The generation tags delayed read-output tasks. Raising CE#, reset, or starting a
 
 On CE# rising, the parser:
 
-1. checks that command and address phases completed,
-2. checks the exact dummy count for a read,
+1. checks that command and address phases completed (`Q-PHASE`: CE# rose before the command or address phase completed; fail with the observed nibble count, not an incomplete-window diagnostic),
+2. checks too-few dummy cycles for a read (`Q-DUMMY`: still in DUMMY or `dummy_cycles != 6` at CE# rise before data; after six, further clocks are data),
 3. rejects an odd data-nibble count,
 4. records the final byte count and end timestamp,
 5. schedules model SIO release according to `tHZ`, and
 6. returns to idle after invalidating any response not legal after termination.
+
+A completed CE# rise that already ran those termination rules resolves the pending phase/frame ledger tokens so `close_scope` is not a second `Q-PHASE` for the same event. Incomplete-window diagnostics remain only for dispose/stop of a still-open CE# frame.
 
 `tHZ` is a maximum release delay, not permission to source another data beat after CE# rises. The model holds only the last driven value during this release interval.
 
@@ -110,16 +112,16 @@ On CE# rising, the parser:
 Each model owns a separate sparse mapping keyed by 23-bit byte address. Tests may preload and inspect memory through explicit backdoor methods that do not emit QPI traffic.
 
 - Valid addresses are `0x000000` through `0x7FFFFF`.
-- The 24-bit wire address must have `A[23] == 0`.
-- Device selection comes from the selected CE#, not from address bit 23 (`A[23]` don't-care; D35).
+- The 24-bit wire address is masked; the device consumes `A[22:0]`. `A[23]` is don't-care (D35: `ptr[23]` / wire `A[23]` are don't-care).
+- Device selection comes from the selected CE#, not from address bit 23.
 - Unwritten-byte behavior is a configured deterministic fill value or a seeded initialization policy. It is never host-language dictionary-order dependent.
 - Reads increment the address after each complete byte.
 - Writes increment the address after each complete byte.
 - A transaction that would move beyond `0x7FFFFF` is reported as an address-range failure rather than silently wrapping.
 
-System `rst_n` aborts the active parser and releases model drive, but does not erase preloaded PSRAM contents. `rst_n` is an ASIC reset, not the APS6404L software-reset command.
+System `rst_n` aborts the active parser and releases model drive, but does not erase preloaded PSRAM contents. `rst_n` is an ASIC reset, not the APS6404L software-reset command. The BFM samples `rst_n` and classifies an in-flight abort as `RESET-TRUNCATED` on the falling edge; `note_reset()` remains a public hook for tests that force the same path without a pin edge. Unresolved CE# (X/Z) while a transaction is open terminates through `_end_transaction` as an ordinary fail (including `Q-PHASE` when command/address is incomplete), not `RESET-TRUNCATED`; unresolved SCK while CE# remains known-low is not an edge (1→Z is not a fall; keep `prev_sck`) and does not drop the in-flight transaction. Parser SCK sampling gates on delayed device-plane CE# (`_device_ce`), not live source CE#.
 
-The model records page crossings and continuous CE# low time. V1 transactions are expected to remain within the one-page-cross rule and `tCEM`; the model reports violations instead of trying to emulate data corruption.
+The model records page crossings (`PSRAM_PAGE_SIZE` / Linear Burst 1K page) and continuous CE# (chip enable, active low) low time. A single CE# low may occupy at most two pages (at most one crossing); when `page_crossings > 1` the model fails once at CE# rise as `Q-PAGE` (Linear Burst: more than two 1K pages in one CE# pulse). Continuous CE# low beyond `tCEM` is reported separately. The model does not emulate DRAM corruption.
 
 ## Protocol policing
 
@@ -129,16 +131,16 @@ Protocol failures are immediate test failures with instance, simulation timestam
 | Condition                                                                                                                                                        | Required model response                                                                                              |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | Unsupported opcode                                                                                                                                               | Fail and identify the decoded opcode                                                                                 |
-| Command or address truncated by CE#                                                                                                                              | Fail with the completed nibble count                                                                                 |
-| `0xEB` dummy count other than six                                                                                                                                | Fail at early termination or first mistimed data beat                                                                |
+| Command or address truncated by CE# (`Q-PHASE`: CE# rose before command/address completed)                                                                         | Fail with the completed nibble count (termination rules; not incomplete-window)                                      |
+| `0xEB` CE# rose still in DUMMY with `dummy_cycles != 6` (`Q-DUMMY`, too-few only; after six dummies, further clocks are data / `Q-NIBBLE-ODD` if odd)           | Fail at early termination (too-few); do not treat a longer data burst as too-many dummies                            |
 | Write data during an incomplete phase                                                                                                                            | Fail without committing a partial byte                                                                               |
 | Odd data-nibble count at termination                                                                                                                             | Fail                                                                                                                 |
-| `A[23] != 0`                                                                                                                                                     | Fail before any memory access                                                                                        |
+| `A[23] != 0` / `Q-ADDR23` (retired model check that `A[23]` must be 0)                                                                                            | **Retired (D35).** Bit 23 is don't-care; models mask it and continue on `A[22:0]`. Do not fail a run for this ID.     |
 | Address outside `0x000000..0x7FFFFF`                                                                                                                             | Fail before access or wrap                                                                                           |
 | Both RAM CE# signals low                                                                                                                                         | Shared monitor fails and names both instances                                                                        |
 | ASIC flash CS low while `~BUS_GNT`                                                                                                                               | Shared monitor fails                                                                                                 |
 | SCK transitions while flash CS, RAM A CE#, and RAM B CE# are all high (no device selected)                                                                        | Shared monitor fails as an erroneous SCK cycle: `Q-SCKIDLE` / `CHK-PIN-SCK-PARK`                                     |
-| ASIC and a selected PSRAM/SPI device both drive any SIO bit (command, address, write, dummy, read-data, or post-CE# `tHZ` window), including equal driven values | Fail `Q-SIO-OWN` / `CHK-PIN-SIO-OWN` as drive overlap or contention. Legal ownership phases: `../03-architecture.md` |
+| ASIC and a selected PSRAM/SPI device both drive any SIO bit (command, address, write through CE# rise, read dummy/read-data, or read post-CE# float window), including equal driven values | Fail `Q-SIO-OWN` / `CHK-PIN-SIO-OWN` as drive overlap or contention. Legal ownership phases: `../03-architecture.md` |
 | ASIC drives SIO during read dummy or read-data phase                                                                                                             | Fail as the read-phase special case of the same ownership rule                                                       |
 | Model drives while its CE# is not active, except bounded `tHZ` release                                                                                           | Fail                                                                                                                 |
 | CE# low longer than configured `tCEM`                                                                                                                            | Fail `Q-CEM`                                                                                                         |
@@ -173,7 +175,7 @@ Every completed transaction produces an immutable record containing at least:
 - byte count,
 - CE# fall and rise timestamps,
 - observed command, address, dummy, and data nibble counts,
-- timing profile and relevant delay values, and
+- profile name and delay snapshot (`TIMING_PROFILE`, plus at least `PSRAM_TACLK_NS` / `tACLK` read data valid after falling SCK, `D_OUT_CE_NS` / `D_OUT_SCK_NS` DUT-to-device CE#/SCK transport, and `PSRAM_THZ_NS` / `tHZ` CE# high to SIO Hi-Z), and
 - pass or failure classification.
 
 The log contains pin-decoded facts, not request fields read from DUT internals. Later scoreboards compare this ordered log with the reference chain interpretation.
@@ -184,7 +186,7 @@ M1 model acceptance requires:
 
 - both instances retain independent memory images,
 - directed `0xEB` and `0x02` transactions decode with the required nibble order,
-- six and only six read dummy cycles are accepted,
+- six read dummy cycles complete the dummy phase (further clocks are data, not a too-many `Q-DUMMY`),
 - unsupported opcodes and malformed phase lengths fail,
 - truncation, CE# overlap, flash-CS, ASIC-versus-device SIO ownership (`Q-SIO-OWN`), and SCK-parked-while-deselected (`Q-SCKIDLE`) checks fire on injected violations (`Q-ADDR23` retired by D35; wire `A[23]` is masked),
 - transaction logs reconstruct exact addresses and bytes, and
@@ -192,13 +194,13 @@ M1 model acceptance requires:
 
 **M1 acceptance status:** `pass` (2026-08-03). Evidence: `test/runs/m1_t10_icarus_matrix.log` and `test/runs/m1_t10_verilator_matrix.log` (`TIMING_PROFILE=ideal`, `SEED=1`; both sims exit 0 on smoke, `test_qspi_negative`, `test_qspi_ownership`, `test_qspi_timing`, `test_qspi_reset_protocol`, `test_qspi_pin_disposition` at L1; `test_qspi` at L0). L0 CE#/SCK idle attach self-check now runs inside `bring_up_engine` (former `test_engine_attach` folded away). Catalog `Q-*` detail and REPROs: `04-timing-in-sim.md`.
 
-Residual limitations (do not reopen the M1 behavioral gate, but stay honest):
+Platform notes (current behavior):
 
-- `tb_top` / `tb_engine` model plane still maps floating SIO `z` to idle `0` (Z→0 idealization); `CHK-PIN-KNOWN` float-as-X coverage waits on removing that idealization.
-- Independent `QspiPinMonitor` is live: CE#-framed pin decode exports the ordered transaction log; `CHK-PIN-KNOWN` disposes with `via=pin` when the monitor ran (`CHK-PIN-ADDR23-ZERO` / model `Q-ADDR23` retired by D35). Ordinary suites use `dispose_run` / pin. Model `Q-SIO-X` remains the fallback for `CHK-PIN-KNOWN` when the pin monitor is absent or blocked; the intentional model-plane dispose contract is retained only in `tests.test_qspi_pin_disposition` (`assert_model_pin_disposition`).
-- Delay-annotated policing and `Q-LAUNCH` / `Q-RXEDGE` closed at M3 (2026-08-10); see `04-timing-in-sim.md`. Timed wrappers participate in `PendingLedger` / `finalize_all` cleanup (`06-checkers.md`).
+- Physical SIO/SCK float is visible as Z (no Z-to-0 idle overlay). ``Q-SIO-X`` (SIO must not be X when sampled in a host-driven phase) fires on host-driven command/address/write float or X; legal read dummy/data Hi-Z does not. CE# aliases the pulled-up physical net. ``Q-SCKIDLE`` (SCK idle low while deselected) treats OE=0 + Z as float, not parked-low.
+- Independent `QspiPinMonitor` is live: CE#-framed pin decode exports the ordered transaction log; `CHK-PIN-KNOWN` disposes with `via=pin` when the monitor ran (`CHK-PIN-ADDR23-ZERO` / model `Q-ADDR23` retired by D35). Ordinary suites use `dispose_run` / pin. When the pin monitor is absent, `CHK-PIN-KNOWN` and the pin twin of `Q-SIO-X` are `na` (not a tautological model map). `tests.test_qspi_pin_disposition` asserts model `Q-SIO-X` only.
+- Delay-annotated policing and `Q-LAUNCH` / `Q-RXEDGE` are specified in `04-timing-in-sim.md` (M3 evidence 2026-08-10). Timed wrappers participate in `PendingLedger` / `finalize_all` cleanup (`06-checkers.md`).
 
-M3 delay behavior and timing checks live in `04-timing-in-sim.md`. Passing M1 or M3 does not close a physical `T-*` item.
+Passing M1 or M3 does not close a physical `T-*` item.
 
 ## Repository sources
 

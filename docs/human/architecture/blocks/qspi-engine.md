@@ -16,9 +16,9 @@ Bit-level QSPI master used by the descriptor FSM:
 
 QSPI has four bidirectional data lines reused for I/O, giving up to about **4x** throughput vs 1-bit SPI (half-duplex data phases, tighter timing).
 
-`uio_oe` is **arbitrated by the descriptor FSM** as a **bus keeper** (D26): while `rst_n && ~BUS_GNT`, ASIC drives CS high and SCK low (including IDLE and between transactions); the engine's own SIO mask drives cmd/addr/write, floats for **dummy/read**, and stays floated through post-CE# **`tHZ`** before park reclaim of SIO don't-care. On `BUS_GNT` or asserted active-low reset (`rst_n=0`), all shared OE is forced off. Board **10 kΩ** CS pull-ups cover reset / pre-enable. Ownership matrix: [`host-interface.md`](host-interface.md); arbiter: [`descriptor-fsm.md`](descriptor-fsm.md).
+`uio_oe` is **arbitrated by the descriptor FSM** as a **bus keeper** (D26): while `rst_n && ~BUS_GNT`, ASIC drives CS high and SCK low (including IDLE and between transactions); the engine's SIO mask drives cmd/addr/write; floats for **read dummy/data** and stays floated through `SCLK_OFF` / `CS_OFF` on reads (**one `clk`** after CE# rise, ~15.2 ns @ 66 MHz vs `tHZ` max 5.5 ns) before park reclaim. **Writes (`0x02`) keep SIO driven** through CE# rise (device never sourced SIO; floating would violate park). On `BUS_GNT` or asserted active-low reset (`rst_n=0`), all shared OE is forced off combinationally. Board **10 kΩ** CS pull-ups cover reset / pre-enable. Ownership matrix: [`host-interface.md`](host-interface.md); arbiter: [`descriptor-fsm.md`](descriptor-fsm.md).
 
-Hard CE# / clock limits are summarized in `[../limitations.md](../limitations.md)`. Full opcode tables: `[../../../llm/05-qspi-psram.md](../../../llm/05-qspi-psram.md)`. With V1 buffer depth `N=1` (and 11-byte TCD fetch), each CE# pulse is short enough that `**tCEM` and Linear Burst one-page-cross limits are not binding** - no CE# refresh timer or page slicer required (see `[descriptor-fsm.md](descriptor-fsm.md)`). Revisit if `N` grows (D20).
+Hard CE# / clock limits are summarized in `[../limitations.md](../limitations.md)`. Full opcode tables: `[../../../llm/05-qspi-psram.md](../../../llm/05-qspi-psram.md)`. With tapeout buffer depth **`N=5`** (and 11-byte TCD fetch), each CE# pulse is short enough that **`tCEM` (max CE# low) and Linear Burst one-page-cross limits are not binding** - no CE# refresh timer or page slicer required (see `[descriptor-fsm.md](descriptor-fsm.md)`). Revisit if `N` grows (D20).
 
 ### Cross-device transfers
 
@@ -61,7 +61,7 @@ Start legality is `~busy`. Write/read length is entirely from `byte_len` (engine
 | `cmd` | in | `logic [7:0]` (same width as `qspi_cmd_t`) | V1: `QSPI_CMD_FAST_READ` (`0xEB`) or `QSPI_CMD_WRITE` (`0x02`). Packed `logic` so the Tiny Tapeout wrapper can stay free of `qspi_pkg` for yowasp. Hold until `!busy`. |
 | `addr` | in | `qspi_addr_t` `[23:0]` | Full 24-bit QPI address phase. Device uses `addr[22:0]` as `A[22:0]`; **`addr[23]` don't-care** (D35). Hold until `!busy`. |
 | `device_sel` | in | `logic` (same width as `qspi_device_sel_t`) | `QSPI_PSRAM0` / `QSPI_PSRAM1` from `CTRL_FLAGS` device bits; steers `ram_*_cs_n`. Packed `logic` for the same wrapper constraint. Hold until `!busy`. |
-| `byte_len` | in | `qpi_byte_len_t` | Payload bytes this CE# (FETCH=`QPI_TCD_BYTES`, data=`k` ≤ `N`). `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)`, `QPI_MAX_BYTES = max(DMA_BUF_DEPTH_MAX, QPI_TCD_BYTES)`. Hold until `!busy`. |
+| `byte_len` | in | `qpi_byte_len_t` | Payload bytes this CE# (FETCH=`QPI_TCD_BYTES`, data=`k` ≤ `N`). **`byte_len >= 1`** on every `txn_valid` (hard precondition; controller never issues 0). `QPI_BYTE_LEN_W = $clog2(QPI_MAX_BYTES + 1)`, `QPI_MAX_BYTES = max(DMA_BUF_DEPTH_MAX, QPI_TCD_BYTES)`. Hold until `!busy`. |
 | `wdata` | in | `[3:0]` | Write nibble. **Must be valid on the `txn_valid` cycle**. When `wdata_next` asserts, the **next** nibble must already be on `wdata` **before the next `clk` cycle** (same-cycle response) so the engine has setup time into the SPI/SIO path for the following rising SCK. |
 | `busy` | out | 1 | High while not `IDLE` (in flight through CE# complete). Start qualifier; OE reclaim / BUS_GNT wait for 0. |
 | `rdata` | out | `[3:0]` | Last captured read nibble (held between captures). |
@@ -72,7 +72,7 @@ Start legality is `~busy`. Write/read length is entirely from `byte_len` (engine
 | `ram_a_cs_n` | out | 1 | RAM A CE# (active low). Never both RAM CE#s low. |
 | `ram_b_cs_n` | out | 1 | RAM B CE# (active low). |
 | `sio_out` | out | `[3:0]` | Pad SIO drive data (cmd/addr/write). |
-| `sio_oe` | out | `[3:0]` | Per-pin OE for this engine; driven for cmd/addr/write; floats in `WAIT` / `READ_DATA` and through post-CE# `tHZ` before park reclaim. Top / FSM parks CS+SCK while `~BUS_GNT` (flash CS never driven low). |
+| `sio_oe` | out | `[3:0]` | Per-pin OE: driven for cmd/addr/write; floats in `WAIT` / `READ_DATA` and through `SCLK_OFF` / `CS_OFF` on **reads only** (one `clk` after CE# rise); **writes keep OE asserted** through CE# rise into park. Top / FSM parks CS+SCK while `~BUS_GNT` (flash CS never driven low). |
 
 ### Flows
 
@@ -100,7 +100,7 @@ Start legality is `~busy`. Write/read length is entirely from `byte_len` (engine
 4. Engine **never stalls** SCK/CE# waiting on the FSM (deterministic QPI).
 5. FSM pulses `txn_valid` only while `~busy`.
 6. Engine owns start/end CE# pad and ≥2-`clk` `tCPH` (via `CS_OFF` + `IDLE` before the next CE# fall). Never both `ram_a_cs_n` and `ram_b_cs_n` low; flash CS never driven low (parked high by top/FSM while `~BUS_GNT`).
-7. FSM parks CS/SCK while `~BUS_GNT` (D26); grants SIO OE for live cmd/addr/write; float SIO for dummy/read and through `tHZ`; reclaim / release all OE when `BUS_GNT` (idle park resumes when grant falls). Do not start a new txn while `BUS_REQ` (D22).
+7. FSM parks CS/SCK while `~BUS_GNT` (D26); grants SIO OE for live cmd/addr/write; float SIO for read dummy/data and one-`clk` post-CE# on reads; **writes keep SIO driven** through CE# rise. Reclaim / release all OE when `BUS_GNT` (idle park resumes when grant falls). Do not start a new txn while `BUS_REQ` (D22).
 8. `wdata_next` asserts iff the controller must provide another nibble for the current write. It must remain low after the final nibble and during every non-write phase.
 
 ## Engine behavior notes
@@ -140,6 +140,10 @@ Timing pad states (SCK held low) around each transaction:
 
 Then apply the two-`clk` CE# high `tCPH` wait (`CS_OFF` + `IDLE`) before the next CE# falling edge.
 
+### Read-path SIO OE reclaim (`T-HZ` note)
+
+After the last read SCK: `SCLK_OFF` (CE# still low, SCK off, SIO still floated), then `CS_OFF` raises CE# with SIO still floated; next state `IDLE` reasserts SIO OE. That is **one `clk`** (~15.2 ns @ 66 MHz) vs APS6404L `tHZ` (chip-disable to DQ high-Z, max 5.5 ns). Document as the tightest turnaround for Phase 3, not as an RTL bug. Writes do not float SIO post-CE#.
+
 ## Initialization sequence (MCU-owned, D17)
 
 ASIC does not run this sequence. Firmware (pass-through while DONE) on each device:
@@ -163,7 +167,7 @@ ASIC does not run this sequence. Firmware (pass-through while DONE) on each devi
 | `tRST`  | After Reset command before next cmd    | **50 ns** min                                                                                     |
 
 
-**V1 implication:** raise CE# after every short txn (1-byte data or 11-byte TCD fetch). That naturally satisfies `tCEM` and Linear Burst page rules without a dedicated slicer. With **SCK = clk/2**, wall-clock CE# low time for a given beat count is longer than a full-rate-SCK design; at V1 `N=1` this is still far under `tCEM`. Recompute failing-`N` thresholds if the buffer deepens. Detail: `[descriptor-fsm.md](descriptor-fsm.md)`.
+**V1 implication:** raise CE# after every short txn. At tapeout **`N=5`** (and at **`N=1`**), that naturally satisfies `tCEM` and Linear Burst page rules without a dedicated slicer. Recompute failing-`N` thresholds if the buffer deepens. Detail: `[descriptor-fsm.md](descriptor-fsm.md)`.
 
 While active-low reset is asserted (`rst_n=0`, D23 kill path), the engine returns to idle with CE# high and the top level forces every shared `uio_oe` low. Board CS pull-ups keep the devices deselected until reset is deasserted and ASIC parking resumes. There is no soft-abort mid-txn path in V1.
 

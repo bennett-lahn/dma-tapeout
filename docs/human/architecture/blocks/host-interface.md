@@ -20,7 +20,9 @@ MCU host pins (`ui_in`) are **asynchronous** to the design `clk`. The **top-leve
 | `ui_in[2]` BUS_REQ | Synchronized level into `sys_controller`; drives yield / grant behavior |
 
 - Prefer a **two-flop** synchronizer per bit before qualification.
+- Simulation `pulse_start` holds raw START **3 clk cycles** by default (capture-required). A dedicated one-cycle pulse exists only for state injection. `assert_bus_req` waits the two-flop delay so synchronized `bus_req` is visible on return.
 - `sys_controller` sees a one-cycle START pulse and a synchronized BUS_REQ level; it never samples raw `ui_in`.
+- START sync plus rising-edge detect **reset to 0** on `rst_n` assert. If MCU holds `ui_in[0]` high through reset release, a START pulse fires ~3 `clk` cycles after deassert. **Firmware:** hold START low across a `rst_n` kill / reset release; assert only after **DONE** high and **`~BUS_REQ`**.
 - A START edge presented while busy or while `BUS_REQ` is high is ignored and is not queued. Firmware must deassert and reassert START to issue another command (drop `BUS_REQ` / wait `BUS_GNT=0` first if a request was held).
 - Firmware must hold raw START long enough for the level synchronizer to capture it, then deassert it before issuing a later START.
 - After pulsing START, do not assert `BUS_REQ` until `DONE` falls. That ACK closes the START/`BUS_REQ` sync race in IDLE (discarded START vs accept-then-stall at `NEW_FETCH`).
@@ -106,10 +108,10 @@ Control plane:
 | Quit TCD         | `CTRL_FLAGS.QUIT=1` after fetch → return to idle (no execute); next START fetches `0x000000` / PSRAM 0 again |
 | DONE             | High whenever idle (including after reset, before first run)                                                  |
 | Pass-through     | MCU may drive `uio` while **`BUS_GNT=1`** or **`rst_n=0`** (D22/D26); idle alone is not a drive permit |
-| BUS_REQ          | MCU priority: finish current QPI txn (atomic), then **release** `uio_oe` + assert `BUS_GNT`; no new DMA txn while REQ   |
+| BUS_REQ          | MCU priority: finish current QPI txn (atomic by construction - STALL only when engine idle), then **release** `uio_oe` + assert `BUS_GNT`; no new DMA txn while REQ   |
 | BUS_GNT release  | After MCU Hi-Z and drops `BUS_REQ`, ASIC drops `BUS_GNT` and **resumes parking**; if not idle, DMA may resume |
-| Bus keeper       | While `rst_n=1` and `~BUS_GNT`, ASIC drives all CS high and SCK low; SIO don't-care in park after `tHZ`, float on dummy/read and through `tHZ` (D26) |
-| Kill / reset drive | Assert **`rst_n`** to stop a runaway DMA (D23). While `rst_n=0`, MCU drive is legal (D26); board pull-ups hold CE# unless MCU selects |
+| Bus keeper       | While `rst_n=1` and `~BUS_GNT`, ASIC drives all CS high and SCK low; SIO don't-care driven in park; float SIO on read dummy/data and through post-CE# on reads only (writes keep SIO driven through CE# rise; D26) |
+| Kill / reset drive | Assert **`rst_n`** to stop a runaway DMA (D23). While `rst_n=0`, shared `uio_oe` is off combinationally (D26); MCU drive is legal; board pull-ups hold CE# unless MCU selects |
 
 
 
@@ -158,7 +160,7 @@ Rule for every handoff: **release before seize**.
 | PSRAM | CE# should idle high once power-up wait is done                     |
 
 
-While active-low reset is asserted (`rst_n=0`), the top level forces all shared `uio_oe` bits low and the MCU **may** master the shared QSPI nets (D26; TT mux often holds a deselected design in reset). Board CS pull-ups keep devices deselected until the MCU drives a CS low. After `rst_n` deasserts, ASIC resumes parking unless `BUS_GNT` is high. Asserting reset mid-run is the V1 kill path (D23); there is no soft-abort pin (D34).
+While active-low reset is asserted (`rst_n=0`), `top.v` forces all shared `uio_oe` bits low **combinationally with `rst_n`** (D26; not registered through reset) and the MCU **may** master the shared QSPI nets. Board CS pull-ups keep devices deselected until the MCU drives a CS low. After `rst_n` deasserts, ASIC resumes parking unless `BUS_GNT` is high. Asserting reset mid-run is the V1 kill path (D23); there is no soft-abort pin (D34).
 
 ### Phase 1 - MCU pass-through (programming)
 
@@ -191,7 +193,7 @@ Ordered sequence:
 | Actor | Configuration                                                                                                                                                    |
 | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | MCU   | QSPI GPIOs remain high-Z unless / until `BUS_GNT` (or while `rst_n=0`). Host may still drive `ui_in` (START ignored while busy; `BUS_REQ`) and read `uo_out`; kill via `rst_n` |
-| ASIC  | Masters QSPI when not yielding: parks or drives **all CS high / SCK** while `~BUS_GNT`; during a live txn, one RAM CS may go low; **flash CS stays high**; SIO OE follows phase (drive cmd/addr/write; float dummy/read and through post-CE# `tHZ`) |
+| ASIC  | Masters QSPI when not yielding: parks or drives **all CS high / SCK** while `~BUS_GNT`; during a live txn, one RAM CS may go low; **flash CS stays high**; SIO OE follows phase (drive cmd/addr/write; float dummy/read and one-`clk` post-CE# float on reads only; writes keep SIO driven through CE# rise) |
 | PSRAM | Sees ASIC as sole master on the selected device (when not granted to MCU)                                                                                           |
 
 

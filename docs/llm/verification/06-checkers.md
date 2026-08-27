@@ -49,12 +49,12 @@ Every sampled logic value is checked for resolution before integer conversion. `
 
 | ID | Condition | L0 | L1 | Visibility |
 |---|---|---:|---:|---|
-| `CHK-PIN-CS-MUTEX` | RAM A CE# and RAM B CE# are never both low. At L1, also fail if OE state makes both appear selected or the resolved bus is ambiguous. | required | required | L0-port at L0, top-observable at L1 |
+| `CHK-PIN-CS-MUTEX` | RAM A CE# and RAM B CE# are never both selected. Fail on two known-low nets, on ambiguous dual-select (CE# X/Z), and on both ASIC CE# OEs driving out=0. | required | required | L0-port at L0, top-observable at L1 |
 | `CHK-PIN-FLASH-HIGH` | While the ASIC drives flash CS, its value is 1. The ASIC never selects flash. | na | required | top-observable |
 | `CHK-PIN-ADDR23-ZERO` | **Retired (D35).** Formerly required `A[23]==0` on decoded QPI addresses. Bit 23 is don't-care; models mask it and continue on `A[22:0]`. Do not fail a run for this ID. | retired | retired | historical ID only |
 | `CHK-PIN-KNOWN` | Driven CE#, SCK, and SIO values, and sampled read SIO values, contain no unknown or high-impedance bit where the protocol requires a value. | required | required | L0-port at L0, top-observable at L1 |
 | `CHK-PIN-SIO-OWN` | ASIC and any selected PSRAM/SPI device model never drive the same bidirectional SIO bit at the same time. Fail on any overlapping OE/model-drive window, including when both drive the same known value. Judge ownership from ASIC `uio_oe` (or L0 SIO OE) and the model's drive enable after the timing layer's delays when present; do not infer safety from the resolved net alone. | required | required | L0-port at L0, top-observable at L1 |
-| `CHK-PIN-SCK-PARK` | SCK stays low for the entire interval while no device is selected: flash CS, RAM A CE#, and RAM B CE# all high at L1, or both engine CS outputs high at L0. No erroneous SCK cycle occurs while every device is deselected, regardless of which side of the shared bus currently owns drive. | required | required | L0-port at L0, top-observable at L1 |
+| `CHK-PIN-SCK-PARK` | SCK stays low while no device is selected, and while the ASIC is bus keeper (`~BUS_GNT`, `rst_n=1`) even if a CE# is X/Z. No erroneous SCK cycle while deselected, regardless of which side of the shared bus currently owns drive. | required | required | L0-port at L0, top-observable at L1 |
 | `CHK-ARB-GNT-OE` | Whenever `BUS_GNT=1`, all eight ASIC `uio_oe` bits are 0. | na | required | top-observable |
 | `CHK-ARB-GNT-QUIET` | No ASIC QPI transaction begins or remains active while `BUS_GNT=1`; a grant rise occurs only with both RAM CE# high and SCK low on the resolved bus. | na | required | top-observable |
 | `CHK-ARB-PARK` | While `rst_n=1`, `BUS_GNT=0`, and no QPI transaction is active, all eight ASIC output enables are 1, flash CS and both RAM CS outputs are high, and SCK output is low. SIO output values are don't-care but their OEs are 1. | na | required | top-observable |
@@ -63,11 +63,29 @@ Every sampled logic value is checked for resolution before integer conversion. `
 
 `CHK-ARB-PARK` excludes the complete CE#-low transaction interval. During a read transaction, SIO must float for dummy and read phases, so requiring all OEs high there would be wrong. CS and SCK remain enabled at L1 throughout DMA ownership.
 
-`CHK-PIN-SIO-OWN` is the ASIC-versus-device half-duplex rule for shared SIO. It covers command, address, write, dummy, read-data, and post-CE# `tHZ` release windows. Ownership phases are defined by the normative matrix in `../03-architecture.md` (Bidirectional I/O ownership specification); human summary: `../../human/architecture/blocks/host-interface.md`. MCU-versus-ASIC contention remains under the `CHK-ARB-*` grant/OE rows, not this ID. The same condition is cataloged for the timing/model venue as `Q-SIO-OWN` in `04-timing-in-sim.md`; a model or wrapper may report either ID, but every applicable L0/L1 run must still dispose `CHK-PIN-SIO-OWN`.
+`CHK-PIN-SIO-OWN` is the ASIC-versus-device half-duplex rule for shared SIO. It covers command, address, write (ASIC-driven through CE# rise), read dummy/read-data, and read post-CE# float/reclaim windows (writes do not float SIO post-CE#). Ownership phases are defined by the normative matrix in `../03-architecture.md` (Bidirectional I/O ownership specification); human summary: `../../human/architecture/blocks/host-interface.md`. MCU-versus-ASIC contention remains under the `CHK-ARB-*` grant/OE rows, not this ID. The same condition is cataloged for the timing/model venue as `Q-SIO-OWN` in `04-timing-in-sim.md`; a model or wrapper may report either ID, but every applicable L0/L1 run must still dispose `CHK-PIN-SIO-OWN`. Deselected model SIO injection is `Q-DRIVE-DESEL` (`TC-OWN-SIO-DUAL`); dual OE while the device is selected is `Q-SIO-OWN` only (`TC-OWN-SIO-DUAL-SELECTED`). Dual known-low CE# while already selected is `Q-MUX` (`TC-OWN-CS-MUTEX-SELECTED`); raising the second CE# aborts that device's command phase, so dispose also records two `Q-PHASE` (CE# rose before command/address completed). ASIC-selected SIO contention with monitors attached is `TC-QPI-ASIC-SIO-X`.
 
-`CHK-ARB-GNT-QUIET` is the external atomicity check. It proves that grant does not overlap an externally active transaction, but it cannot prove the internal `qspi_busy` value. That stronger RTL-only condition has its own ID below.
+`CHK-ARB-GNT-QUIET` is the external atomicity check. It proves that grant does not overlap an externally active transaction, but it cannot prove the internal `qspi_busy` value. That stronger RTL-only condition has its own ID below. X/Z on a RAM CE# output enable while `BUS_GNT=1` is a fail of this ID (the checker must not skip an unresolved enable).
 
-`CHK-PIN-SCK-PARK` is the runtime counterpart of `Q-SCKIDLE` in `04-timing-in-sim.md`. It differs from `CHK-ARB-PARK`: `CHK-ARB-PARK` judges only the ASIC's own driven value while `~BUS_GNT`, while `CHK-PIN-SCK-PARK` judges the resolved SCK net itself and applies whenever no device is selected, including while the MCU pass-through masters the bus. A model or wrapper may report either the `CHK-*` or `Q-*` ID, but every applicable L0/L1 run must still dispose `CHK-PIN-SCK-PARK`. A violation whose apparent cause is a sampled reset edge follows the `RESET-TRUNCATED` classification in `04-timing-in-sim.md` rather than an ordinary fail.
+`CHK-PIN-SCK-PARK` is the runtime counterpart of `Q-SCKIDLE` in `04-timing-in-sim.md`. It differs from `CHK-ARB-PARK`: `CHK-ARB-PARK` judges only the ASIC's own driven value while `~BUS_GNT`, while `CHK-PIN-SCK-PARK` judges the resolved SCK net itself and applies whenever no device is selected, including while the MCU pass-through masters the bus. While the ASIC is bus keeper (`~BUS_GNT`, `rst_n=1`) the park check still runs if a CE# is X/Z; a clean CE#=1 is not required. A model or wrapper may report either the `CHK-*` or `Q-*` ID, but every applicable L0/L1 run must still dispose `CHK-PIN-SCK-PARK`. A violation whose apparent cause is a sampled reset edge follows the `RESET-TRUNCATED` classification in `04-timing-in-sim.md` rather than an ordinary fail.
+
+### `CHK-*` / `Q-*` twin table
+
+Pin and ownership conditions have two catalog names: a runtime `CHK-PIN-*` (or `CHK-ARB-*` sibling) and a simulation `Q-*`. Dispose prints **both** as rows. `expect_fail=["Q-MUX"]` matches the Q row (it is not a `timing_id` label only). Expecting one twin does not treat the other as an undeclared surprise. Dual-emitted ownership twins (`Q-MUX`, `Q-SIO-OWN`, `Q-SCKIDLE`) must actually appear under the Q name: expecting `Q-MUX` fails if only `CHK-PIN-CS-MUTEX` ran. `Q-SIO-X` / `CHK-PIN-KNOWN` is the exception: the model already records `Q-SIO-X`, so expecting `Q-SIO-X` also accepts a pin `CHK-PIN-KNOWN` finding (tests that require both, such as `TC-QNEG-SIO-X`, list both).
+
+| `CHK-*` | `Q-*` | Condition |
+|---|---|---|
+| `CHK-PIN-CS-MUTEX` | `Q-MUX` | at most one RAM CE# selected (known-low, X/Z dual-select, or both OE=1 with out=0) |
+| `CHK-PIN-FLASH-HIGH` | `Q-MUX` | ASIC never selects flash while it owns the bus |
+| `CHK-PIN-SIO-OWN` | `Q-SIO-OWN` | one enabled SIO driver per net |
+| `CHK-PIN-SCK-PARK` | `Q-SCKIDLE` | SCK idle low while deselected / while ASIC is keeper |
+| `CHK-PIN-KNOWN` | `Q-SIO-X` | CE# / SCK / SIO unresolved where the protocol requires a value |
+
+`CHK-PIN-ADDR23-ZERO` / `Q-ADDR23` are **retired (D35)**: `ptr[23]` / wire `A[23]` are don't-care. They are not live fail IDs and are not required dispose rows.
+
+When `pin_monitor=False` (L0 `bring_up_engine` default), `CHK-PIN-KNOWN` and the pin twin of `Q-SIO-X` are `na`. Do not claim pin coverage from a tautological model-to-CHK map. Tests that need `CHK-PIN-KNOWN` pass `pin_monitor=True`. A model `Q-SIO-X` finding still fails that Q id when it fires.
+
+Monitor `max_events` overflow (`_suppressed`) fails dispose rather than dropping later IDs silently. Caps are per-id on the pin / shared-bus / arbitration monitors.
 
 ### Engine request and streaming handshake checks
 
@@ -81,7 +99,13 @@ Every sampled logic value is checked for resolution before integer conversion. `
 | `CHK-HS-WDATA-KNOWN` | On a write acceptance and on every cycle where `wdata_next=1`, `wdata` is a resolved 4-bit value holding the **next** nibble (same-cycle response before the following `clk`, per D21 setup contract). The sequence presented is retained for comparison with pin-decoded write data. | required | required | L0-port at L0, RTL-hierarchy-only at L1 |
 | `CHK-HS-OPCODE` | Every accepted command is exactly `0xEB` or `0x02`; `0xEB` has six QPI wait cycles and `0x02` has none. | required | required | L0-port plus pins at L0, RTL-hierarchy and pins at L1 |
 
-For count checks, capture `cmd` and `byte_len` on acceptance, initialize both counts to zero, and count sampled pulses until `busy` returns low. Compare only when the transaction completes normally. If reset is sampled while busy, mark the transaction aborted, retain partial counts for diagnostics, and do not demand the completed-transaction total.
+For count checks, capture `cmd` and `byte_len` on acceptance, initialize both counts to zero, and count sampled pulses until `busy` returns low. Compare when the transaction completes normally. If dispose/timeout still sees `busy=1`, fail the relevant count ID with expected vs observed beats. If reset is sampled while busy, mark the transaction aborted, retain partial counts as `RESET-TRUNCATED` rows, and do not treat them as ordinary fails.
+
+`CHK-HS-REQ-STABLE` fails immediately when an accepted field is unresolved (X/Z) and on any unresolved sample while `busy=1`.
+
+The command-allowlist half of `CHK-HS-OPCODE` stays live without a pin monitor (illegal `cmd` still fails). The six-wait-cycle half is `na` without pin evidence, not a blanket `blocked` of the whole ID. `TC-QPI-READ` / `TC-QPI-WRITE` pass `pin_monitor=True` at L0 and assert pin-decoded dummy counts (six for `0xEB`, zero for `0x02`) so that wait half is `pass`, not `na`. At L2, hierarchy-only HS/CTRL rows are `na`; pin OPCODE wait-cycle, `CHK-CTRL-FETCH-HEAD`, and `CHK-CTRL-DATA-PAIR` stay live when pin data exists.
+
+`CHK-CTRL-FETCH-HEAD` fails when an accepted START is not followed by the head fetch within a bounded cycle window (or at dispose). Reset abort of that wait is `RESET-TRUNCATED`. START ignored while busy is a separate non-event (no extra DONE falling edge).
 
 `CHK-HS-WDATA-COUNT` counts requests for later nibbles, not transmitted nibbles. The first nibble accompanies `txn_valid`, which is why the required count is one less than `2 * byte_len`.
 
@@ -97,10 +121,10 @@ The six-wait-cycle part of `CHK-HS-OPCODE` is measured by the pin protocol decod
 | `CHK-CTRL-DATA-PAIR` | Between descriptor fetches, every payload read is followed by exactly one same-length payload write before another payload read or fetch. | na | required | top-observable at pins |
 | `CHK-ARB-GNT-NOT-BUSY` | On every sampled low-to-high transition of `bus_gnt`, internal `qspi_busy=0`. It remains 0 for the complete grant interval. | na | required | RTL-hierarchy-only |
 | `CHK-CTRL-STATE-VALID` | `curr_state`, `next_state`, and `stalled_state` are resolved values in `sys_control_state_t`; `stalled_state` is not overwritten while stalled. | na | required | RTL-hierarchy-only |
-| `CHK-CTRL-DATA-CNT` | **Retired (D31).** Former remaining-nibble counter `data_cnt` is gone; FETCH latches all 22 wire nibbles. Keep the ID; results are `na` at every DUT level. | na | na | retired |
+| `CHK-CTRL-DATA-CNT` | **Retired (D31), removed from code.** Former remaining-nibble counter `data_cnt` is gone; FETCH latches all 22 wire nibbles. Not a live dispose row. | retired | retired | historical ID only |
 | `CHK-RST-INTERNAL` | After a rising `clk` edge sampled with `rst_n=0`, controller state is `SYS_CTRL_IDLE`, engine state is `QSPI_IDLE`, `qspi_busy=0`, request/stream pulses are 0, engine `cycle_cnt` is 0, RAM CE# registers are high, SCK is low, and first-fetch state is reset to device 0/address 0. | required subset | required | L0-port plus hierarchy at L0, RTL-hierarchy-only at L1 |
 
-`CHK-CTRL-DATA-CNT` is retired. Do not reuse the ID. FETCH completion is `~qspi_busy`; every `qspi_rdata_valid` in FETCH is latched. Write-buffer part-selects are driven from `qspi_byte_len`, not a remaining-nibble count.
+`CHK-CTRL-DATA-CNT` is retired and removed from monitors/dispose. Do not reuse the ID. FETCH completion is `~qspi_busy`; every `qspi_rdata_valid` in FETCH is latched. Write-buffer part-selects are driven from `qspi_byte_len`, not a remaining-nibble count.
 
 For `CHK-CTRL-FETCH-HEAD`, the top-observable high-to-low transition of `DONE` identifies acceptance of the host driver's valid START protocol. The first following ASIC QPI transaction is checked only from top-level pins. The checker does not depend on the internal synchronized pulse or a synthesized hierarchy name.
 
@@ -166,7 +190,7 @@ Do not print enum values only as simulator-specific integers. Include the symbol
 
 Monitor ownership under `test/monitors/`:
 
-- `qspi.py` - CE#, SCK, opcode/address/data decoding and `CHK-PIN-*`
+- `qspi.py` - CE#, SCK, opcode/address/data decoding, `CHK-PIN-*`, and dual `Q-MUX` / `Q-SIO-OWN` / `Q-SCKIDLE` / `Q-SIO-X` dispose rows
 - `arbitration.py` - grant, OE, park, reset release, and bus atomicity
 - `handshake.py` - engine request stability, pulse counts, pulse widths, and controller bounds
 - `timing.py` - `Q-*` timing-window checks, not the `CHK-*` catalog
@@ -205,7 +229,7 @@ As of M3 (2026-08-10), every open event window is audited through one shared pol
 
 `dispose_run` defaults `reset_truncated=FORBID`: any `RESET-TRUNCATED` finding (a timing-window observation fully explained by sampled-reset OE release / state convergence, not an ordinary `Q-*` fail) is an unreviewed surprise and fails the dispose. `bring_up_top` / `bring_up_engine` default `ce_monitor=True`, so a live `CeTimingMonitor` can emit `RESET-TRUNCATED` `Q-LAUNCH` (driven SIO/OE changes only while SCK is low, with modeled setup/hold) during a forced `rst_n=0` convergence window.
 
-**Rule:** any `dispose_run` window that includes a forced `rst_n=0` interval on a bring-up with a live CE monitor must declare `reset_truncated=REVIEW` or `REQUIRE`. Do not rely on the default `FORBID`. Do not loosen to `REVIEW`/`REQUIRE` on windows where reset is not actually asserted (post-reset ordinary traffic keeps `FORBID`).
+**Rule:** any `dispose_run` window that includes a forced `rst_n=0` interval on a bring-up with a live CE monitor must declare `reset_truncated=REVIEW` or `REQUIRE`. Do not rely on the default `FORBID`. Do not loosen to `REVIEW`/`REQUIRE` on windows where reset is not actually asserted (post-reset ordinary traffic keeps `FORBID`). `RESET-TRUNCATED` applies only while `rst_n==0`.
 
 Reference patterns:
 
@@ -213,17 +237,18 @@ Reference patterns:
 - `REQUIRE` when the abort must produce at least one truncated finding: `tests.test_qspi_reset_protocol` mid-txn abort windows
 - Pre-bring-up `rst_n=0` parking with no live CE dispose window (for example `tests.test_qspi_pin_disposition`) is out of scope for this rule
 
-### Hunt residuals / intentional non-fails
+### Lifecycle intentional non-fails
 
-These severity choices are durable policy, not missing coverage:
+These severity choices are durable policy, not open testbench bugs:
 
 | Open item | Severity / policy | Notes |
 |---|---|---|
 | `CeTimingMonitor` pending read launch | `SEV_FAIL` / `Q-RXEDGE` | scope = device; CE# fall uses `close_scope` |
 | `ControllerMonitor._pending_pair` | `SEV_FAIL` / `CHK-CTRL-DATA-PAIR` | payload read awaiting matching write |
-| Live CE#-framed txn (`PsramQpiAgent` / pin decoder) | `SEV_FAIL` / applicable `Q-PHASE`, else `SEV_DIAGNOSTIC` | incomplete command/address when completion was promised |
-| Handshake open txn / pending write nibble | `SEV_DIAGNOSTIC` only | no new catalog ID in M3; do not reuse `CHK-HS-*-COUNT` |
-| `ControllerMonitor._pending_start` | `SEV_IGNORE` | intentional non-fail (START with no first QPI txn yet) |
+| Live CE#-framed txn (`PsramQpiAgent` / pin decoder) | `SEV_FAIL` / applicable `Q-PHASE` on CE# rise via termination rules (nibble counts); else `SEV_DIAGNOSTIC` incomplete-window only for dispose/stop of a still-open frame | incomplete command/address when completion was promised |
+| Handshake open txn still `busy` at dispose/timeout | `SEV_FAIL` / `CHK-HS-RDATA-COUNT` or `CHK-HS-WDATA-COUNT` | expected vs observed beats; reset abort is `RESET-TRUNCATED` with partial counts, not an ordinary fail |
+| Handshake pending write nibble | `SEV_DIAGNOSTIC` | incomplete-window note only when the txn itself closed |
+| `ControllerMonitor._pending_start` | `SEV_FAIL` / `CHK-CTRL-FETCH-HEAD` | bounded START-to-fetch; expires in-sample or at dispose; reset abort is `RESET-TRUNCATED` |
 | CE# still low at cleanup | not a ledger item | do not manufacture cleanup-only `Q-TERM`; `Q-CEM` fires only if the low pulse already exceeded `tCEM` while active |
 | Timed wrapper delayed tasks | `cancel_tasks()` participant | not a finding ID |
 
@@ -241,7 +266,7 @@ Directed cleanup evidence: `TC-RXEDGE-PENDING-AT-STOP`, `TC-PENDING-SURVIVES-CLE
 - At least one controlled negative test per monitor group proves the monitor can fail and emits the required ID and context.
 - Icarus and Verilator agree on all checks assigned to both simulators.
 
-**Status:** `pass` (2026-08-08) for M2 directed DMA paths and migrated M1 suites under shared bring-up. Ordinary dispose prefers pin-axis `dispose_run` / `dispose_pin_checks`. `test_qspi_pin_disposition` alone retains `assert_model_pin_disposition` as the intentional model-plane contract test.
+**Status:** `pass` (2026-08-08) for M2 directed DMA paths and migrated M1 suites under shared bring-up. Ordinary dispose prefers pin-axis `dispose_run` / `dispose_pin_checks`. `test_qspi_pin_disposition` asserts model `Q-SIO-X` only and does not map that ID onto `CHK-PIN-KNOWN`.
 
 **Residuals (do not reopen M2):**
 

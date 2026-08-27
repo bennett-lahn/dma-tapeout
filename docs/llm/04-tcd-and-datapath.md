@@ -6,7 +6,7 @@ Status: **11-byte** TCD layout, **big-endian 24-bit pointer fields** (D25), devi
 
 | Rule | V1 |
 |---|---|
-| Pointer width on-chip / in TCD | **24-bit** (byte address; `[23]` unused / 0) |
+| Pointer width on-chip / in TCD | **24-bit** (byte address; **`ptr[23]` don't-care**, D35) |
 | QSPI address phase | **`ptr[22:0]`** as device byte address (`A[22:0]`) |
 | Device select | **`CTRL_FLAGS.SRC_DEVICE` / `DEST_DEVICE` / `NEXT_DEVICE`** (D24); not pointer MSBs |
 | Fixed head | START always fetches **`0x000000` on PSRAM 0** (no head register / pins) |
@@ -88,23 +88,23 @@ loop:
     if QUIT:
         return IDLE; DONE=1   # quit TCD (D19); next START → fixed head again (D23)
     while TRANSFER_LEN > 0:       # LEN==0 skips this loop (no-op TCD)
-        # Buffer depth N is a parameter (V1: N=1). Correctness must not assume N (D20).
+        # Buffer depth N is a parameter (tapeout N=5; D20). Correctness must not assume N.
         k = min(N, TRANSFER_LEN)
         buf[0..k) = READ(SRC_PTR, k)   # CS from SRC_DEVICE; addr SRC_PTR[22:0]
         WRITE(DEST_PTR, buf[0..k))     # CS from DEST_DEVICE; may be other device
         TRANSFER_LEN -= k
         SRC_PTR += N; DEST_PTR += N   # RTL; consumed only if TRANSFER_LEN remains (then k was N)
         # Final-step pointer values are don't-care once TRANSFER_LEN reaches 0.
-        # V1 N=1: CE# rises every short txn; tCEM / page slicer not required
+        # At tapeout N=5 (and N=1): CE# pulses stay far under tCEM; page slicer not required
     fetch_ptr = NEXT_TCD
     fetch_device = NEXT_DEVICE
 ```
 
 No host **ABORT** pin (D23): stop a runaway DMA with **`rst_n`**. Mid-run bus yield uses **BUS_REQ** / **BUS_GNT** (D22). While `~BUS_GNT`, ASIC parks the shared bus (D26); board has **10 kΩ** CS pull-ups. Firmware contract: `docs/human/architecture/firmware.md`.
 
-**Data buffer (D20):** V1 implements `N=1` (8 DFFs) as a nibble shift register (LSB-insert on READ, drop MSB nibble on WRITE). FSM / QSPI path must remain correct for any `N >= 1`; deepening the scratch is optional performance work, not a protocol or TCD change. Working TCD fetch is also a shift register: all 22 wire nibbles into `tcd_t` (D31). Short held CE# pulses also make APS6404L `tCEM` and Linear Burst one-page-cross rules non-binding for V1 (see human [`descriptor-fsm.md`](../human/architecture/blocks/descriptor-fsm.md)).
+**Data buffer (D20):** tapeout **`N=5`** (`DMA_BUF_DEPTH=5`; default sim/Make depth 5). On-chip scratch is a nibble shift register (LSB-insert on READ, drop MSB nibble on WRITE). FSM / QSPI path must remain correct for any `N` in `1..DMA_BUF_DEPTH_MAX` (8); deepening the scratch is optional performance work, not a protocol or TCD change. Working TCD fetch is also a shift register: all 22 wire nibbles into `tcd_t` (D31). Short held CE# pulses at tapeout N=5 (and at N=1) also make APS6404L `tCEM` (max CE# low) and Linear Burst one-page-cross rules non-binding for V1 (see human [`descriptor-fsm.md`](../human/architecture/blocks/descriptor-fsm.md)).
 
-**FSM ↔ QSPI (D21):** start with `txn_valid` only when `~busy` (no `txn_ready` / no `wdone`). Engine does not latch the request; FSM holds `{cmd, addr, device_sel, byte_len}`. `byte_len` width is `QPI_BYTE_LEN_W` from `qspi_pkg`. Writes: first nibble on `wdata` with `txn_valid`; `wdata_next` then asserts iff another nibble is needed to finish that transaction, for exactly `2 * byte_len - 1` pulses. When `wdata_next` asserts, the next nibble must be on `wdata` before the next `clk` (same-cycle) to preserve SPI/SIO setup. It never asserts after the final nibble or outside the active write. The engine ends after `2 * byte_len` SCK. SCK = clk/2. Detail: [`03-architecture.md`](03-architecture.md) / human [`qspi-engine.md`](../human/architecture/blocks/qspi-engine.md).
+**FSM ↔ QSPI (D21):** start with `txn_valid` only when `~busy` (no `txn_ready` / no `wdone`). Engine does not latch the request; FSM holds `{cmd, addr, device_sel, byte_len}`. **`byte_len >= 1`** on every `txn_valid` (controller never issues 0). `byte_len` width is `QPI_BYTE_LEN_W` from `qspi_pkg`. Writes: first nibble on `wdata` with `txn_valid`; exactly `2 * byte_len - 1` `wdata_next` pulses. Consumer muxes the next nibble combinationally on `wdata_next` (buffer shift is NBA). When `wdata_next` asserts, the next nibble must be on `wdata` before the next `clk` (same-cycle) to preserve SPI/SIO setup. It never asserts after the final nibble or outside the active write. The engine ends after `2 * byte_len` SCK. SCK = clk/2. Detail: [`03-architecture.md`](03-architecture.md) / human [`qspi-engine.md`](../human/architecture/blocks/qspi-engine.md).
 
 ## Host programming model (firmware view)
 
