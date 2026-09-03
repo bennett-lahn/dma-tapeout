@@ -13,7 +13,7 @@ BUS_REQ_BIT = 2  # ui_in bit index
 DONE_MASK = 0x1  # uo_out[0] mask; not the firmware DONE_BIT index
 BUS_GNT_MASK = 0x2  # uo_out[1] mask; not a uio bit index
 
-# Resolved ``uio`` bit map (src/top.v / test/tb/tb_top.sv).
+# Physical ``uio`` bit map (src/top.v / test/tb/tb_top.sv).
 UIO_FLASH_CS_BIT = 0
 UIO_SCK_BIT = 3
 UIO_PSRAM_CE_BITS = (6, 7)

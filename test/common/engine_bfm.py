@@ -19,6 +19,14 @@ Icarus and Verilator. Do not write ``wdata`` from a test directly; extend this
 module instead, and let ``CHK-HS-WDATA-*`` in :mod:`monitors.handshake` police
 the result.
 
+L0 scope: this BFM drives ``qspi_engine`` ports only. It cannot cover the
+controller ``wdata`` mux; that path is an L1 pin-nibble check (ordered
+``DATA_WRITE`` payload vs source bytes). Reads sample ``rdata`` in the
+read-only region. After busy falls, one extra IDLE clock covers ``tCPH``
+(CE# high gap) before the next request. ``BUSY_TIMEOUT_CYCLES`` (512) is
+sized for an 11-byte TCD fetch (cmd+addr+dummy+22 data nibbles at SCK=clk/2)
+with margin; timeout is an assertion, not a hang.
+
 Public API (frozen for M2):
 
 * :func:`engine_qpi_write` -> :class:`EngineWriteResult`
@@ -32,8 +40,9 @@ from cocotb.triggers import NextTimeStep, ReadOnly, RisingEdge
 
 from models.psram import QSPI_CMD_FAST_READ, QSPI_CMD_WRITE
 
-# Longest V1 transaction is an 11-byte TCD fetch (22 SCK nibbles); the ceiling
-# only has to be generous enough to distinguish a hang from a slow transfer.
+# Longest V1 transaction is an 11-byte TCD fetch (22 data nibbles plus
+# command, address, dummy, and CS on/off). SCK is clk/2, so 512 clocks is
+# well above 2*(2+6+6+22) plus pad; timeout distinguishes a hang.
 BUSY_TIMEOUT_CYCLES = 512
 
 
@@ -152,6 +161,7 @@ async def engine_qpi_read(
     saw_busy = False
     for _ in range(timeout_cycles):
         await RisingEdge(dut.clk)
+        await ReadOnly()
         busy = _level(dut.busy)
         if busy:
             saw_busy = True
@@ -159,6 +169,7 @@ async def engine_qpi_read(
             result.ce_trace.append(_sample_ce(dut))
         if _level(dut.rdata_valid) == 1:
             result.nibbles.append(_level(dut.rdata) & 0xF)
+        await NextTimeStep()
         if saw_busy and busy == 0:
             break
     else:

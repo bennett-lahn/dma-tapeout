@@ -386,6 +386,14 @@ class ArbitrationMonitor:
                 self._sample()
 
     async def _run_reset_oe(self) -> None:
+        """Sample immediately, then on every rst_n/OE change.
+
+        A stable OE through a reset window must still produce evidence
+        (tb-hs-07); value-change-only sampling missed that case.
+        """
+        await ReadOnly()
+        if self._active:
+            self._check_rst_oe()
         watched = [self._h["rst_n"], self._h["uio_oe"]]
         while True:
             await First(*[handle.value_change for handle in watched])
@@ -401,7 +409,8 @@ class ArbitrationMonitor:
         event = ArbViolation(
             check_id=check_id, time_ns=_now_ns(), cycle=self._cycle, detail=detail
         )
-        if len(self.events) >= self._max_events:
+        id_count = sum(1 for item in self.events if item.check_id == check_id)
+        if id_count >= self._max_events:
             self._suppressed += 1
             return
 
@@ -452,6 +461,7 @@ class ArbitrationMonitor:
         self._prev_rst = rst_n
 
         if reset_applied:
+            self._check_rst_oe()
             self._on_reset_sample()
             return
         if rst_n != 1:
@@ -487,12 +497,21 @@ class ArbitrationMonitor:
     # -- resolved-bus helpers ---------------------------------------------
 
     def _asic_drives_low(self, oe_name: str, out_name: str) -> "bool | None":
-        """True when the ASIC enables *out_name* and drives it low."""
+        """True when the ASIC enables *out_name* and drives it low.
+
+        ``None`` means the enable (or a driven output) is X/Z. Released OE=0
+        with an unresolved out is not a drive: the grant-quiet checker uses
+        :meth:`_asic_unresolved_ce_oe` for X/Z on the enable itself.
+        """
         oe = _level(self._h[oe_name])
         out = _level(self._h[out_name])
-        if oe is None or out is None:
+        if oe is None:
             return None
-        return oe == 1 and out == 0
+        if oe != 1:
+            return False
+        if out is None:
+            return None
+        return out == 0
 
     def _asic_selected_rams(self) -> "list[str]":
         """Return RAM labels the ASIC itself is driving CE# low on."""
@@ -501,9 +520,22 @@ class ArbitrationMonitor:
             ("PSRAM0", "asic_ram_a_cs_oe", "asic_ram_a_cs_out"),
             ("PSRAM1", "asic_ram_b_cs_oe", "asic_ram_b_cs_out"),
         ):
-            if self._asic_drives_low(oe_name, out_name):
+            if self._asic_drives_low(oe_name, out_name) is True:
                 selected.append(label)
         return selected
+
+    def _asic_unresolved_ce_oe(self) -> "list[str]":
+        """RAM labels whose ASIC CE# OE is X/Z, or OE=1 with out X/Z."""
+        unresolved = []
+        for label, oe_name, out_name in (
+            ("PSRAM0", "asic_ram_a_cs_oe", "asic_ram_a_cs_out"),
+            ("PSRAM1", "asic_ram_b_cs_oe", "asic_ram_b_cs_out"),
+        ):
+            oe = _level(self._h[oe_name])
+            out = _level(self._h[out_name])
+            if oe is None or (oe == 1 and out is None):
+                unresolved.append(label)
+        return unresolved
 
     def _net_selected_rams(self) -> "list[str]":
         """Return RAM labels whose resolved CE# net reads low."""
@@ -592,12 +624,20 @@ class ArbitrationMonitor:
         if not self._judged(CHK_ARB_GNT_QUIET):
             return
         asic_selected = self._asic_selected_rams()
+        unresolved_oe = self._asic_unresolved_ce_oe()
         self._latch(
             CHK_ARB_GNT_QUIET,
             "gnt-quiet",
             gnt == 1 and bool(asic_selected),
             f"ASIC drives {' and '.join(asic_selected) or 'a RAM'} CE# low while "
             "BUS_GNT=1; no ASIC QPI transaction may begin or remain active under grant",
+        )
+        self._latch(
+            CHK_ARB_GNT_QUIET,
+            "gnt-quiet-oe-xz",
+            gnt == 1 and bool(unresolved_oe),
+            f"ASIC CE# OE unresolved (x/z) on {' and '.join(unresolved_oe)} while "
+            "BUS_GNT=1; grant-quiet cannot skip an unresolved enable",
         )
 
         if not (self._prev_gnt == 0 and gnt == 1):

@@ -52,10 +52,13 @@ from models.psram import (
 from monitors.arbitration import ArbitrationMonitor
 from monitors.handshake import ControllerMonitor, HandshakeMonitor
 from monitors.qspi import (
-    MODEL_DISPOSE_VIA,
+    CHK_PIN_KNOWN,
+    DUAL_FINDING_TWINS,
     MODEL_PIN_CHECK_IDS,
+    Q_SIO_X,
     QspiPinMonitor,
     SharedBusMonitor,
+    twin_ids,
 )
 from monitors.timing import CeTimingMonitor
 
@@ -74,7 +77,11 @@ _RESET_POLICIES = (FORBID, REVIEW, REQUIRE)
 
 @dataclass(frozen=True)
 class Expected:
-    """One declared negative: a catalog/model ID and its allowed count."""
+    """One declared negative: a catalog/model ID and its allowed count.
+
+    ``count=None`` (the default) means at least one occurrence (``>=1``).
+    Pass ``count=N`` for an exact count.
+    """
 
     check_id: str
     count: "int | None" = None  # None means "one or more"
@@ -126,8 +133,10 @@ class DisposeReport:
     via: "dict[str, str]" = field(default_factory=dict)
     ordinary: "list[Finding]" = field(default_factory=list)
     reset_truncated: "list[Finding]" = field(default_factory=list)
+    truncated_counts: "dict[str, int]" = field(default_factory=dict)
     expected: "tuple[Expected, ...]" = ()
     sources: "tuple[str, ...]" = ()
+    pin_transactions: tuple = ()
 
     def failures(self) -> "list[str]":
         return [check_id for check_id, result in self.results.items() if result == RESULT_FAIL]
@@ -169,6 +178,37 @@ def _model_findings(agent: PsramQpiAgent) -> "list[Finding]":
     return findings
 
 
+def _carryover_findings(records) -> "list[Finding]":
+    """Normalize snapshotted model/monitor records from ``BringUp.clear``."""
+    findings = []
+    seen = set()
+    for record in records:
+        check_id = getattr(record, "check_id", None) or getattr(record, "code", None)
+        if check_id is None:
+            continue
+        time_ns = getattr(record, "time_ns", None)
+        if time_ns is None:
+            time_ns = getattr(record, "sim_time_ns", 0.0)
+        detail = getattr(record, "detail", "") or str(record)
+        reset_truncated = bool(getattr(record, "reset_truncated", False))
+        if getattr(record, "classification", None) == CLASS_RESET_TRUNCATED:
+            reset_truncated = True
+        key = (check_id, float(time_ns), str(detail), reset_truncated)
+        if key in seen:
+            continue
+        seen.add(key)
+        findings.append(
+            Finding(
+                check_id=check_id,
+                source="carryover",
+                time_ns=float(time_ns),
+                detail=str(detail),
+                reset_truncated=reset_truncated,
+            )
+        )
+    return findings
+
+
 def _monitor_findings(monitor) -> "list[Finding]":
     source = _source_name(monitor, type(monitor).__name__)
     findings = []
@@ -190,15 +230,38 @@ def _monitor_findings(monitor) -> "list[Finding]":
         if key in seen:
             continue
         seen.add(key)
+        source_name = getattr(event, "source", source)
         findings.append(
             Finding(
                 check_id=check_id,
-                source=getattr(event, "source", source),
+                source=source_name,
                 time_ns=time_ns,
                 detail=detail,
                 reset_truncated=reset_truncated,
             )
         )
+        # Dual dispose rows for shared-bus Q twins (Q-MUX / Q-SIO-OWN /
+        # Q-SCKIDLE). Q-SIO-X is not dual-emitted here: the model already
+        # records it, and a second pin finding would double-count.
+        timing_id = getattr(event, "timing_id", None)
+        if (
+            timing_id
+            and timing_id != check_id
+            and timing_id in DUAL_FINDING_TWINS
+            and not reset_truncated
+        ):
+            twin_key = (timing_id, time_ns, detail, reset_truncated)
+            if twin_key not in seen:
+                seen.add(twin_key)
+                findings.append(
+                    Finding(
+                        check_id=timing_id,
+                        source=source_name,
+                        time_ns=time_ns,
+                        detail=detail,
+                        reset_truncated=reset_truncated,
+                    )
+                )
     return findings
 
 
@@ -291,7 +354,7 @@ def _normalize_expected(expect_fail) -> "tuple[Expected, ...]":
 # -- dispose ---------------------------------------------------------------
 
 
-def collect(*sources) -> "tuple[list[Finding], dict[str, str], dict[str, int], dict[str, str], dict[str, str], tuple[str, ...]]":
+def collect(*sources) -> "tuple[list[Finding], dict[str, str], dict[str, int], dict[str, str], dict[str, str], tuple[str, ...], tuple[str, ...]]":
     """Return ``(findings, results, counts, blocked_reasons, via, source_names)``.
 
     Results start from each monitor's own per-ID disposition so structurally
@@ -299,9 +362,11 @@ def collect(*sources) -> "tuple[list[Finding], dict[str, str], dict[str, int], d
     report even when nothing was recorded against them.
 
     ``CHK-PIN-KNOWN`` prefers a live
-    :class:`QspiPinMonitor` (``via=pin``). Model ``Q-SIO-X``
-    records are the fallback when no usable pin monitor is present (absent or
-    ``blocked``), matching :func:`monitors.qspi.dispose_pin_checks`.
+    :class:`QspiPinMonitor` (``via=pin``). The Q twin ``Q-SIO-X`` is a
+    dispose row from that pin monitor. When no usable pin monitor is present,
+    both ``CHK-PIN-KNOWN`` and ``Q-SIO-X`` are ``na`` (L0 defaults
+    ``pin_monitor=False``; do not claim pin coverage via a tautological model
+    mapping). Model ``Q-SIO-X`` records remain ordinary findings when they fire.
     """
     agents, monitors, participants = _expand(sources)
     finalize_all(participants, reason=REASON_DISPOSE)
@@ -317,6 +382,10 @@ def collect(*sources) -> "tuple[list[Finding], dict[str, str], dict[str, int], d
         names.append(f"PSRAM{agent.device_id}")
         findings.extend(_model_findings(agent))
 
+    for item in sources:
+        if isinstance(item, BringUp) and item.event_carryover:
+            findings.extend(_carryover_findings(item.event_carryover))
+
     for monitor in monitors:
         names.append(_source_name(monitor, type(monitor).__name__))
         findings.extend(_monitor_findings(monitor))
@@ -331,31 +400,41 @@ def collect(*sources) -> "tuple[list[Finding], dict[str, str], dict[str, int], d
         if isinstance(monitor, QspiPinMonitor) and not monitor.blocked
     ]
 
-    # Pin-decoded rows win when a usable pin monitor ran. Counts for those IDs
-    # come from the pin findings themselves in dispose_run. Otherwise derive the
-    # catalog IDs from model Q-* twins so the rows are never silently skipped.
+    blocked_pin = [
+        monitor
+        for monitor in monitors
+        if isinstance(monitor, QspiPinMonitor) and monitor.blocked
+    ]
+
+    # Pin-decoded rows win when a usable pin monitor ran. Without one, pin
+    # coverage of CHK-PIN-KNOWN / Q-SIO-X is na (not a tautological map from
+    # model Q-SIO-X). A blocked pin monitor keeps ``blocked``. Model Q-SIO-X
+    # findings still fail that Q id below.
     if usable_pin:
         for check_id in MODEL_PIN_CHECK_IDS:
             via[check_id] = "pin"
-            # Re-assert pin disposition after any earlier monitor.results() pass;
-            # blocked pin monitors are not in usable_pin, so they cannot win here.
             hit = sum(monitor.counts()[check_id] for monitor in usable_pin)
             results[check_id] = RESULT_FAIL if hit else RESULT_PASS
-    elif agents:
-        codes = [
-            finding.check_id for finding in findings if not finding.reset_truncated
-        ]
-        for check_id in MODEL_PIN_CHECK_IDS:
-            model_id = MODEL_DISPOSE_VIA[check_id]
-            hit = sum(1 for code in codes if code == model_id)
-            via[check_id] = model_id
-            results[check_id] = RESULT_FAIL if hit else RESULT_PASS
-            counts[check_id] = hit
-            # A blocked pin monitor may have stamped these rows earlier; model
-            # fallback is the disposition that actually judged them.
-            blocked_reasons.pop(check_id, None)
+            via[Q_SIO_X] = "pin"
+            results[Q_SIO_X] = results[check_id]
+    elif not blocked_pin:
+        results[CHK_PIN_KNOWN] = RESULT_NA
+        results[Q_SIO_X] = RESULT_NA
+        via[CHK_PIN_KNOWN] = "na"
+        via[Q_SIO_X] = "na"
+        blocked_reasons.pop(CHK_PIN_KNOWN, None)
+        blocked_reasons.pop(Q_SIO_X, None)
 
-    return findings, results, counts, blocked_reasons, via, tuple(names)
+    overflow = []
+    for monitor in monitors:
+        suppressed = int(getattr(monitor, "_suppressed", 0) or 0)
+        if suppressed:
+            overflow.append(
+                f"{_source_name(monitor, type(monitor).__name__)} "
+                f"dropped {suppressed} event(s) past max_events"
+            )
+
+    return findings, results, counts, blocked_reasons, via, tuple(names), tuple(overflow)
 
 
 def dispose_run(
@@ -363,7 +442,10 @@ def dispose_run(
     test: str,
     log=None,
     expect_fail=(),
+    expect_blocked=(),
     reset_truncated: str = FORBID,
+    reset_truncated_allow=None,
+    reset_truncated_count: "int | None" = None,
     repro: str = "",
     quiet: bool = False,
 ) -> DisposeReport:
@@ -372,11 +454,17 @@ def dispose_run(
     *sources* may be :class:`common.bringup.BringUp` bundles, PSRAM devices or
     agents, or any started monitor (including :class:`QspiPinMonitor`).
     ``CHK-PIN-KNOWN`` prefers a live pin monitor
-    (``via=pin`` in the disposition log) and falls back to model ``Q-SIO-X``
-    when the pin monitor is absent or blocked. Ordinary findings must be empty
-    unless declared through *expect_fail* (a string ID, or :func:`expect` with
-    a count). ``RESET-TRUNCATED`` findings follow *reset_truncated*:
+    (``via=pin`` in the disposition log) and prints the ``Q-SIO-X`` twin as
+    its own row. Without a pin monitor both pin IDs are ``na`` (L0 default);
+    a model ``Q-SIO-X`` finding still fails that Q id. Ordinary findings must
+    be empty unless declared through *expect_fail* (a string ID, or
+    :func:`expect` with a count). Twin IDs (``Q-MUX``/``CHK-PIN-CS-MUTEX``,
+    ``Q-SIO-X``/``CHK-PIN-KNOWN``, ...) are accepted as declared together:
+    expecting one is not surprised by the other. Expecting a dual-emitted Q
+    twin (``Q-MUX``, ``Q-SIO-OWN``, ``Q-SCKIDLE``) fails if only the CHK row
+    ran. ``RESET-TRUNCATED`` findings follow *reset_truncated*:
     :data:`FORBID` (default), :data:`REVIEW`, or :data:`REQUIRE`.
+    Monitor ``max_events`` overflow (``_suppressed``) fails the dispose.
 
     Raises:
         AssertionError: on an undeclared finding, a declared ID that did not
@@ -389,16 +477,30 @@ def dispose_run(
         )
 
     expected = _normalize_expected(expect_fail)
-    findings, results, counts, blocked_reasons, via, names = collect(*sources)
+    findings, results, counts, blocked_reasons, via, names, overflow = collect(*sources)
 
     ordinary = [finding for finding in findings if not finding.reset_truncated]
     truncated = [finding for finding in findings if finding.reset_truncated]
+    truncated_counts: "dict[str, int]" = {}
+    for finding in truncated:
+        truncated_counts[finding.check_id] = truncated_counts.get(finding.check_id, 0) + 1
 
     for finding in ordinary:
         counts[finding.check_id] = counts.get(finding.check_id, 0) + 1
         results[finding.check_id] = RESULT_FAIL
     for check_id in results:
         counts.setdefault(check_id, 0)
+
+    for item in sources:
+        if isinstance(item, BringUp):
+            item._disposed = True
+            item.event_carryover.clear()
+            # The judged window must not leak into the next clear()/dispose on
+            # the same BringUp (ownership sub-steps park+clear between cases).
+            for monitor in item.monitors:
+                monitor.clear()
+            for agent in item.agents:
+                agent.violations.clear()
 
     report = DisposeReport(
         test=test,
@@ -408,6 +510,7 @@ def dispose_run(
         via=via,
         ordinary=ordinary,
         reset_truncated=truncated,
+        truncated_counts=truncated_counts,
         expected=expected,
         sources=names,
     )
@@ -418,9 +521,29 @@ def dispose_run(
     suffix = f" {repro}" if repro else ""
     prefix = f"{test}: " if test else ""
 
-    expected_ids = {entry.check_id for entry in expected}
+    assert not overflow, (
+        f"{prefix}monitor event cap overflow hid later IDs: "
+        f"{'; '.join(overflow)}.{suffix}"
+    )
+
+    expected_ids = set()
+    for entry in expected:
+        expected_ids.add(entry.check_id)
+        expected_ids.update(twin_ids(entry.check_id))
+
     for entry in expected:
         observed = counts.get(entry.check_id, 0)
+        if not entry.matches(observed):
+            # Q-SIO-X accepts CHK-PIN-KNOWN (and vice versa) when the
+            # requested ID itself did not fire. Dual-emitted ownership twins
+            # must still appear under their Q name: do not accept CHK-only
+            # for Q-MUX / Q-SIO-OWN / Q-SCKIDLE.
+            if entry.check_id not in DUAL_FINDING_TWINS:
+                for twin in twin_ids(entry.check_id):
+                    twin_count = counts.get(twin, 0)
+                    if entry.matches(twin_count):
+                        observed = twin_count
+                        break
         assert entry.matches(observed), (
             f"{prefix}expected {entry}, observed {observed} occurrence(s). "
             f"Recorded: {format_findings(ordinary) or '<none>'}.{suffix}"
@@ -430,6 +553,19 @@ def dispose_run(
     assert not surprises, (
         f"{prefix}undeclared checker/model failures: "
         f"{format_findings(surprises)}.{suffix}"
+    )
+
+    allowed_blocked = set()
+    for entry in expect_blocked:
+        allowed_blocked.add(entry.check_id if isinstance(entry, Expected) else str(entry))
+    unexpected_blocked = [
+        check_id
+        for check_id, result in report.results.items()
+        if result == RESULT_BLOCKED and check_id not in allowed_blocked
+    ]
+    assert not unexpected_blocked, (
+        f"{prefix}unexpected blocked checker IDs: {unexpected_blocked}. "
+        "Pass expect_blocked=() with those IDs; na rows are not blocked.{suffix}"
     )
 
     if reset_truncated == FORBID:
@@ -442,6 +578,21 @@ def dispose_run(
         assert truncated, (
             f"{prefix}expected at least one RESET-TRUNCATED finding from the "
             f"reset window, observed none.{suffix}"
+        )
+        if reset_truncated_count is not None:
+            assert len(truncated) == reset_truncated_count, (
+                f"{prefix}expected exactly {reset_truncated_count} RESET-TRUNCATED "
+                f"finding(s), observed {len(truncated)}: "
+                f"{format_findings(truncated)}.{suffix}"
+            )
+    elif reset_truncated == REVIEW and reset_truncated_allow is not None:
+        allowed_trunc = set(reset_truncated_allow)
+        surprise_trunc = [
+            finding for finding in truncated if finding.check_id not in allowed_trunc
+        ]
+        assert not surprise_trunc, (
+            f"{prefix}RESET-TRUNCATED IDs not on the REVIEW allowlist "
+            f"{sorted(allowed_trunc)}: {format_findings(surprise_trunc)}.{suffix}"
         )
 
     return report

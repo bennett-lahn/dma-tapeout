@@ -35,10 +35,10 @@ absent.
 Dispose the resulting monitors and model logs with :mod:`common.dispose`.
 
 Each attached device is passed through :func:`models.psram_timing.wrap_device`
-using ``parse_run_config()["timing_profile"]`` (default ``ideal``). ``ideal``
-returns the same object with no transport task, so pre-M3 attachment behavior
-is unchanged; ``nominal`` / ``sweep`` return an already-started delayed-device
-wrapper that still exposes ``.agent`` / ``.device_id`` for existing consumers.
+using ``parse_run_config()["timing_profile"]`` (default ``ideal``). Every
+profile returns an already-started timed wrapper that exposes
+``timing_params`` / ``timing_events`` plus ``.agent`` / ``.device_id``.
+``ideal`` keeps datasheet device AC live and zeros only TB path placeholders.
 """
 
 from dataclasses import dataclass, field
@@ -106,6 +106,8 @@ class BringUp:
     arbitration: "ArbitrationMonitor | None" = None
     controller: "ControllerMonitor | None" = None
     notes: "list[str]" = field(default_factory=list)
+    _disposed: bool = False
+    event_carryover: list = field(default_factory=list)
 
     # -- device access -----------------------------------------------------
 
@@ -175,14 +177,19 @@ class BringUp:
     def clear(self) -> None:
         """Drop recorded findings and history for a fresh directed window.
 
-        Model transaction logs are kept: a test that wants a clean transaction
-        window clears them itself, so an accidental clear cannot erase the
-        evidence a scoreboard is about to compare.
+        Ordinary and truncated findings are snapshotted onto
+        :attr:`event_carryover` first so a later ``dispose_run`` still sees
+        them (model ``agent.violations`` used to vanish here). Model
+        transaction logs are kept: a test that wants a clean transaction
+        window clears them itself.
         """
         finalize_all(self.participants, reason=REASON_CLEAR)
         for monitor in self.monitors:
+            self.event_carryover.extend(list(getattr(monitor, "events", ())))
+            self.event_carryover.extend(list(getattr(monitor, "reset_truncated", ())))
             monitor.clear()
         for agent in self.agents:
+            self.event_carryover.extend(list(agent.violations))
             agent.violations.clear()
 
     def clear_transactions(self) -> None:
@@ -201,9 +208,22 @@ class BringUp:
 
 
 def _stop_previous() -> None:
+    undisposed = [
+        bringup for bringup in _HISTORY if not getattr(bringup, "_disposed", False)
+    ]
+    msg = None
+    if undisposed:
+        names = ", ".join(getattr(bringup, "level", "?") for bringup in undisposed)
+        msg = (
+            "omitted dispose_run for the previous BringUp window(s) "
+            f"({len(undisposed)} at {names}); every test must dispose, including "
+            "the last test in a module"
+        )
     for bringup in _HISTORY:
         bringup.stop()
     _HISTORY.clear()
+    if msg:
+        raise AssertionError(msg)
 
 
 def _park(handle, value: int) -> None:
@@ -293,7 +313,11 @@ def _start_monitors(
             )
     if handshake_monitor:
         bringup.handshake = start_handshake_monitor(
-            dut, strict=strict_monitors, pin=bringup.pin, log=log
+            dut,
+            strict=strict_monitors,
+            pin=bringup.pin,
+            level=bringup.level,
+            log=log,
         )
         if bringup.handshake.blocked:
             bringup.notes.append(
@@ -344,25 +368,27 @@ async def bring_up_engine(
     test means to judge them.
 
     ``pin_monitor`` defaults off at L0 so existing M1 engine suites keep the
-    model-only dispose path unless they opt in. ``tb_engine`` still exposes the
-    same ``bus_sck`` / ``bus_ram_*_cs_n`` / ``bus_sio`` aliases, so pass
-    ``pin_monitor=True`` when a test wants pin-axis evidence. L1
-    :func:`bring_up_top` keeps ``pin_monitor=True`` by default.
+    model-only dispose path unless they opt in. ``CHK-PIN-KNOWN`` and the pin
+    twin of ``Q-SIO-X`` are ``na`` at that default (not silent pin coverage).
+    ``tb_engine`` still exposes the same ``bus_sck`` / ``bus_ram_*_cs_n`` /
+    ``bus_sio`` aliases, so pass ``pin_monitor=True`` when a test wants pin-axis
+    evidence. L1 :func:`bring_up_top` keeps ``pin_monitor=True`` by default.
 
     ``arbitration_monitor`` and ``controller_monitor`` default on at both levels
     so no run drops a catalog row. At L0 they resolve to the honest disposition
     the catalog assigns: every ``CHK-ARB-*`` / ``CHK-RST-OE`` / ``CHK-RST-STATUS``
     and ``CHK-CTRL-*`` row is ``na``, and ``CHK-RST-INTERNAL`` runs its engine
-    subset. ``CHK-HS-OPCODE`` needs the pin decoder for its wait-cycle half, so
-    it reports ``blocked`` at L0 unless ``pin_monitor=True``.
+    subset. ``CHK-HS-OPCODE`` command allowlist stays live at L0; the pin
+    wait-cycle half is ``na`` unless ``pin_monitor=True`` (not a blanket
+    ``blocked``).
 
     After reset release, settles a few IDLE clocks and asserts CE# high / SCK
     parked / agents deselected (coverage formerly in ``test_engine_attach``,
     including the single-device case where the unselected CE# must stay high).
 
     Each attached device is wrapped per ``parse_run_config()["timing_profile"]``
-    (see module docstring); the default ``ideal`` profile is an identity
-    passthrough, so this is a no-op for existing M1/M2 engine suites.
+    (see module docstring); every profile including ``ideal`` returns a live
+    timed wrapper (zero TB delays drain synchronously).
     """
     log = dut._log if log is None else log
     _stop_previous()
@@ -458,8 +484,8 @@ async def bring_up_top(
     flattened netlist has no such names by construction.
 
     Each attached device is wrapped per ``parse_run_config()["timing_profile"]``
-    (see module docstring); the default ``ideal`` profile is an identity
-    passthrough, so this is a no-op for existing M1/M2 top/gl suites.
+    (see module docstring); every profile including ``ideal`` returns a live
+    timed wrapper (zero TB delays drain synchronously).
     """
     log = dut._log if log is None else log
     if level is None:

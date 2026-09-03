@@ -49,8 +49,6 @@ required at L1):
 ``CHK-CTRL-STATE-VALID`` ``curr_state`` / ``next_state`` / ``stalled_state``
                          are resolved members of ``sys_control_state_t``, and
                          ``stalled_state`` is not overwritten while stalled
-``CHK-CTRL-DATA-CNT``    **retired (D31)**; always ``na``. FETCH latches all
-                         22 wire nibbles; there is no remaining-nibble counter
 ======================== ==================================================
 
 ``CHK-CTRL-FETCH-HEAD`` and ``CHK-CTRL-DATA-PAIR`` are top-observable rows: they
@@ -81,9 +79,13 @@ Signal source by level (the ``start_*`` helpers resolve it):
 
 * **L0** - ``tb_engine`` top-level stimulus/status handles (L0-port visibility);
   there is no ``sys_controller``, so every ``CHK-CTRL-*`` row is ``na``.
+  ``CHK-HS-OPCODE`` command allowlist stays live; the pin wait-cycle half is
+  ``na`` without a pin monitor (not a blanket ``blocked``).
 * **L1** - ``dut.qspi_engine`` instance ports and ``dut.sys_controller`` state
   inside ``tt_um_lahnb_sgdma`` (RTL-hierarchy-only visibility).
-* **L2** - no source hierarchy, so every row here is ``na``.
+* **L2** - no source hierarchy: hierarchy-only HS/CTRL rows are ``na`` (not
+  ``blocked``). Pin OPCODE wait-cycle evidence, ``CHK-CTRL-FETCH-HEAD``, and
+  ``CHK-CTRL-DATA-PAIR`` stay live when pin data exists.
 """
 
 from dataclasses import dataclass, field
@@ -149,7 +151,6 @@ CHK_CTRL_REQ_SHAPE = "CHK-CTRL-REQ-SHAPE"
 CHK_CTRL_FETCH_HEAD = "CHK-CTRL-FETCH-HEAD"
 CHK_CTRL_DATA_PAIR = "CHK-CTRL-DATA-PAIR"
 CHK_CTRL_STATE_VALID = "CHK-CTRL-STATE-VALID"
-CHK_CTRL_DATA_CNT = "CHK-CTRL-DATA-CNT"
 
 HANDSHAKE_CHECK_IDS = (
     CHK_HS_TXN_START,
@@ -167,12 +168,35 @@ CONTROLLER_CHECK_IDS = (
     CHK_CTRL_FETCH_HEAD,
     CHK_CTRL_DATA_PAIR,
     CHK_CTRL_STATE_VALID,
-    CHK_CTRL_DATA_CNT,
+)
+
+# Hierarchy-only handshake rows: ``na`` at L2 (no engine instance), not blocked.
+HS_HIERARCHY_CHECK_IDS = (
+    CHK_HS_TXN_START,
+    CHK_HS_REQ_STABLE,
+    CHK_HS_RDATA_COUNT,
+    CHK_HS_WDATA_COUNT,
+    CHK_HS_PULSE_WIDTH,
+    CHK_HS_WDATA_KNOWN,
+)
+
+# Hierarchy-only controller rows: ``na`` at L2. FETCH-HEAD and DATA-PAIR are
+# top-observable from pins and stay live when pin data exists.
+CTRL_HIERARCHY_CHECK_IDS = (
+    CHK_CTRL_REQ_GATE,
+    CHK_CTRL_REQ_SHAPE,
+    CHK_CTRL_STATE_VALID,
 )
 
 # Rows that need pin-decoded evidence in addition to (or instead of) the clocked
-# ports. Without a usable QspiPinMonitor they report `blocked`.
+# ports. OPCODE's command allowlist stays live without pins; only the wait-cycle
+# half is ``na`` then. FETCH-HEAD / DATA-PAIR still report ``blocked`` without
+# pin evidence at L1 (applicable but unwired).
 PIN_EVIDENCE_CHECK_IDS = (CHK_HS_OPCODE, CHK_CTRL_FETCH_HEAD, CHK_CTRL_DATA_PAIR)
+
+# Bound on START falling-DONE to first pin transaction (head fetch). Generous
+# versus an 11-byte QPI fetch at clk/2 SCK; a hang past this is FETCH-HEAD fail.
+START_TO_FETCH_CYCLES = 4096
 
 NO_PIN_EVIDENCE_REASON = (
     "no usable QspiPinMonitor attached; this row's pin half is measured by the "
@@ -383,6 +407,7 @@ class HandshakeMonitor:
         max_events: int = 64,
         missing: "tuple[str, ...]" = (),
         blocked_reason: str = "",
+        na=(),
         log=None,
     ) -> None:
         self._clk = clk
@@ -409,6 +434,7 @@ class HandshakeMonitor:
         self.blocked_reason = blocked_reason or (
             f"missing handles: {', '.join(self.missing)}" if self.missing else ""
         )
+        self.na = tuple(na)
 
         self.violations: "list[str]" = []
         self.events: "list[HsViolation]" = []
@@ -441,14 +467,29 @@ class HandshakeMonitor:
 
     @property
     def blocked(self) -> bool:
-        """True when a required handle was absent, so no row could be judged."""
-        return bool(self.missing)
+        """True when required engine ports are missing at a level that needs them.
+
+        L2 lacks engine hierarchy by construction, so missing ports are ``na``
+        (not a global block). Opcode wait-cycle evidence can still run from pins.
+        """
+        return bool(self.missing) and self.level != "L2"
+
+    def _judged(self, check_id: str) -> bool:
+        if check_id in self.na:
+            return False
+        if self.blocked:
+            return False
+        return True
+
+    def _can_judge_opcode_allowlist(self) -> bool:
+        return self._cmd is not None and self._txn_valid is not None
 
     def attach_pin(self, pin) -> None:
         """Supply the pin monitor that measures this monitor's pin half.
 
-        Additive and idempotent: bring-up calls it once the pin decoder exists,
-        and ``CHK-HS-OPCODE`` stops reporting ``blocked``.
+        Additive and idempotent: bring-up calls it once the pin decoder exists.
+        The wait-cycle half of ``CHK-HS-OPCODE`` is then judged; without a pin
+        monitor that half is ``na`` and the command allowlist stays live.
         """
         self._pin = pin
         self._pins.reset()
@@ -463,6 +504,8 @@ class HandshakeMonitor:
                     self.level,
                     self.blocked_reason,
                 )
+            return None
+        if self._clk is None:
             return None
         self._active = True
         self._task = cocotb.start_soon(self._run())
@@ -501,6 +544,8 @@ class HandshakeMonitor:
     # -- reporting ---------------------------------------------------------
 
     def _report(self, check_id: str, detail: str, *, in_reset: bool = False) -> None:
+        if not self._judged(check_id):
+            return
         event = HsViolation(
             check_id=check_id,
             time_ns=_now_ns(),
@@ -532,6 +577,12 @@ class HandshakeMonitor:
     def _record_pending(
         self, check_id: str, detail: str, *, reset_truncated: bool
     ) -> str:
+        if self._txn is not None:
+            self._close_open_transaction(reset=reset_truncated)
+            if self.reset_truncated:
+                return str(self.reset_truncated[-1])
+            if self.events:
+                return str(self.events[-1])
         note = f"{self.name} {detail}"
         self.notes.append(note)
         return note
@@ -576,15 +627,96 @@ class HandshakeMonitor:
             "wdata_next": 0 if wdata_next is None else wdata_next,
         }
 
+    def _close_open_transaction(self, *, reset: bool) -> None:
+        """Close an in-flight request with count evidence.
+
+        Dispose/timeout with the engine still busy fails the relevant count
+        checker (expected vs observed beats). Reset abort records the same
+        counts as ``RESET-TRUNCATED`` rows, not ordinary fails.
+        """
+        txn = self._txn
+        if txn is None:
+            return
+        txn.aborted = reset
+        txn.end_ns = _now_ns()
+        opcode = _show_op(txn.opcode)
+        end = "reset" if reset else "timeout"
+        expected_wdata = txn.expected_wdata_next
+        expected_rdata = txn.expected_rdata_valid
+        wdata_mismatch = (
+            expected_wdata is not None and txn.wdata_next_count != expected_wdata
+        )
+        rdata_mismatch = (
+            expected_rdata is not None and txn.rdata_valid_count != expected_rdata
+        )
+        if reset:
+            if expected_wdata is not None:
+                self._report(
+                    CHK_HS_WDATA_COUNT,
+                    f"op={opcode} len={_show(txn.byte_len)} "
+                    f"expected_wdata_next={expected_wdata} "
+                    f"observed_wdata_next={txn.wdata_next_count} "
+                    f"transaction_end={end}",
+                    in_reset=True,
+                )
+            if expected_rdata is not None:
+                self._report(
+                    CHK_HS_RDATA_COUNT,
+                    f"op={opcode} len={_show(txn.byte_len)} "
+                    f"expected_rdata_valid={expected_rdata} "
+                    f"observed_rdata_valid={txn.rdata_valid_count} "
+                    f"transaction_end={end}",
+                    in_reset=True,
+                )
+        else:
+            if wdata_mismatch:
+                self._report(
+                    CHK_HS_WDATA_COUNT,
+                    f"op={opcode} len={_show(txn.byte_len)} "
+                    f"expected_wdata_next={expected_wdata} "
+                    f"observed_wdata_next={txn.wdata_next_count} "
+                    f"transaction_end={end}",
+                )
+            if rdata_mismatch:
+                self._report(
+                    CHK_HS_RDATA_COUNT,
+                    f"op={opcode} len={_show(txn.byte_len)} "
+                    f"expected_rdata_valid={expected_rdata} "
+                    f"observed_rdata_valid={txn.rdata_valid_count} "
+                    f"transaction_end={end}",
+                )
+            if not wdata_mismatch and not rdata_mismatch:
+                if txn.direction == DIR_READ:
+                    primary = CHK_HS_RDATA_COUNT
+                elif txn.direction == DIR_WRITE:
+                    primary = CHK_HS_WDATA_COUNT
+                else:
+                    primary = None
+                if primary is not None:
+                    self._report(
+                        primary,
+                        f"op={opcode} len={_show(txn.byte_len)} "
+                        f"expected_wdata_next={expected_wdata} "
+                        f"observed_wdata_next={txn.wdata_next_count} "
+                        f"expected_rdata_valid={expected_rdata} "
+                        f"observed_rdata_valid={txn.rdata_valid_count} "
+                        f"transaction_end={end} busy still high",
+                    )
+        self.transactions.append(txn)
+        self.pending.resolve(self._txn_pending)
+        self._txn_pending = None
+        self._txn = None
+        self._saw_busy = False
+        self._pending_wdata = False
+        self.pending.resolve(self._pending_wdata_token)
+        self._pending_wdata_token = None
+        self._unstable.clear()
+
     def _on_reset_sample(self) -> None:
         """Close an in-flight transaction as aborted; do not demand its totals."""
         self._in_reset = True
+        self._close_open_transaction(reset=True)
         self.pending.audit(reason=REASON_RESET)
-        if self._txn is not None:
-            self._txn.aborted = True
-            self._txn.end_ns = _now_ns()
-            self.transactions.append(self._txn)
-            self._txn = None
         self._txn_pending = None
         self._saw_busy = False
         self._pending_wdata = False
@@ -647,12 +779,22 @@ class HandshakeMonitor:
         }
         accepted = txn.request()
         for field_name, value in observed.items():
-            if value == accepted[field_name] or field_name in self._unstable:
+            if field_name in self._unstable:
                 continue
-            self._unstable.add(field_name)
             shown = _show_addr if field_name == "addr" else _show
             if field_name == "cmd":
                 shown = _show_op
+            if value is None:
+                self._unstable.add(field_name)
+                self._report(
+                    CHK_HS_REQ_STABLE,
+                    f"{field_name} unresolved (x/z) while busy "
+                    f"(accepted={shown(accepted[field_name])}) ({txn})",
+                )
+                continue
+            if value == accepted[field_name]:
+                continue
+            self._unstable.add(field_name)
             self._report(
                 CHK_HS_REQ_STABLE,
                 f"{field_name} changed during the accepted transaction: "
@@ -718,12 +860,25 @@ class HandshakeMonitor:
             device_sel=_resolved(self._device_sel),
         )
         self._txn_pending = self.pending.open(
-            "",
-            severity=SEV_DIAGNOSTIC,
+            CHK_HS_RDATA_COUNT if direction == DIR_READ else CHK_HS_WDATA_COUNT,
+            severity=SEV_FAIL,
             detail=f"accepted transaction remains open ({self._txn})",
         )
         self._saw_busy = False
         self._unstable.clear()
+
+        for field_name, value in self._txn.request().items():
+            if value is not None:
+                continue
+            self._unstable.add(field_name)
+            shown = _show_addr if field_name == "addr" else _show
+            if field_name == "cmd":
+                shown = _show_op
+            self._report(
+                CHK_HS_REQ_STABLE,
+                f"accepted {field_name}={shown(value)} is unresolved (x/z); "
+                "CHK-HS-REQ-STABLE requires a resolved request at acceptance",
+            )
 
         if direction == DIR_WRITE:
             first = _resolved(self._wdata)
@@ -902,27 +1057,35 @@ class HandshakeMonitor:
         return counts
 
     def results(self) -> "dict[str, str]":
-        """Return per-ID ``pass`` / ``fail`` / ``blocked`` disposition."""
-        if self.blocked:
-            return {check_id: RESULT_BLOCKED for check_id in HANDSHAKE_CHECK_IDS}
+        """Return per-ID ``pass`` / ``fail`` / ``na`` / ``blocked`` disposition."""
         counts = self.counts()
         reasons = self.blocked_reasons()
         dispositions: "dict[str, str]" = {}
         for check_id in HANDSHAKE_CHECK_IDS:
-            if counts[check_id]:
+            if check_id in self.na:
+                dispositions[check_id] = RESULT_NA
+            elif counts[check_id]:
                 dispositions[check_id] = RESULT_FAIL
             elif check_id in reasons:
                 dispositions[check_id] = RESULT_BLOCKED
+            elif (
+                check_id == CHK_HS_OPCODE
+                and not self._can_judge_opcode_allowlist()
+                and not self._pin_evidence()
+            ):
+                dispositions[check_id] = RESULT_NA
             else:
                 dispositions[check_id] = RESULT_PASS
         return dispositions
 
     def blocked_reasons(self) -> "dict[str, str]":
-        """Return the reason string behind every ``blocked`` row."""
+        """Return the reason string behind every ``blocked`` row.
+
+        ``CHK-HS-OPCODE`` command allowlist stays live without a pin monitor.
+        Missing pin evidence no longer blocks that whole ID.
+        """
         if self.blocked:
             return {check_id: self.blocked_reason for check_id in HANDSHAKE_CHECK_IDS}
-        if not self._pin_evidence():
-            return {CHK_HS_OPCODE: NO_PIN_EVIDENCE_REASON}
         return {}
 
     def violations_for(self, check_id: str) -> "list[HsViolation]":
@@ -1017,8 +1180,8 @@ def start_handshake_monitor(
     wait-cycle half of ``CHK-HS-OPCODE`` has pin evidence.
 
     Returns the monitor even when its signals are unavailable; the returned
-    object then reports every row ``blocked`` with a reason instead of vanishing
-    from the run's disposition table.
+    object then reports hierarchy rows ``na`` at L2 or ``blocked`` at L0/L1
+    with a reason instead of vanishing from the run's disposition table.
     """
     log = dut._log if log is None else log
     scope, scope_name = _engine_scope(dut)
@@ -1026,19 +1189,25 @@ def start_handshake_monitor(
     rst_n = _optional(dut, "rst_n")
 
     if scope is None:
-        return HandshakeMonitor(
-            level=level or "L2",
+        resolved_level = level or "L2"
+        monitor = HandshakeMonitor(
+            clk=clk,
+            rst_n=rst_n,
+            level=resolved_level,
             name=name,
-            visibility="unavailable",
+            visibility="top-observable",
             strict=strict,
             pin=pin,
             missing=("qspi_engine hierarchy",),
             blocked_reason=(
                 "no qspi_engine request/stream hierarchy under this DUT level"
             ),
+            na=HS_HIERARCHY_CHECK_IDS,
             log=log,
             **kwargs,
         )
+        monitor.start()
+        return monitor
 
     handles = {
         "clk": clk,
@@ -1139,10 +1308,7 @@ class ControllerMonitor:
         self.name = name
         self.visibility = visibility
         self.scope = scope
-        na_ids = list(na)
-        if CHK_CTRL_DATA_CNT not in na_ids:
-            na_ids.append(CHK_CTRL_DATA_CNT)
-        self.na = tuple(na_ids)
+        self.na = tuple(na)
         self.blocked = dict(blocked or {})
         self._add_handle_blocks()
 
@@ -1153,6 +1319,7 @@ class ControllerMonitor:
 
         self._pins = _PinCursor()
         self._pending_start: "float | None" = None
+        self._start_wait_cycles = 0
         self._starts = 0
         self._fetch_heads = 0
         self._pending_pair: "int | None" = None
@@ -1271,6 +1438,7 @@ class ControllerMonitor:
         self.notes.clear()
         self._pins.reset()
         self._pending_start = None
+        self._start_wait_cycles = 0
         self._starts = 0
         self._fetch_heads = 0
         self._pending_pair = None
@@ -1371,6 +1539,7 @@ class ControllerMonitor:
         self._check_req_gate(txn_valid, busy, bus_req)
         self._check_req_shape(txn_valid, busy, state, next_state)
         self._track_start(done)
+        self._check_start_timeout()
         self._check_pin_intervals()
 
         self._prev_state = state
@@ -1382,6 +1551,7 @@ class ControllerMonitor:
         self._in_reset = True
         self.pending.audit(reason=REASON_RESET)
         self._pending_start = None
+        self._start_wait_cycles = 0
         self._pending_pair = None
         self._pending_start_token = None
         self._pending_pair_token = None
@@ -1498,11 +1668,32 @@ class ControllerMonitor:
         if self._prev_done == 1 and done == 0:
             self._starts += 1
             self._pending_start = _now_ns()
+            self._start_wait_cycles = 0
             self._pending_start_token = self.pending.open(
-                "",
-                severity=SEV_IGNORE,
-                detail="accepted START awaits its first QPI transaction",
+                CHK_CTRL_FETCH_HEAD,
+                severity=SEV_FAIL,
+                detail=(
+                    "accepted START awaits its first QPI transaction "
+                    "(head fetch 0xEB device 0 address 0 length 11)"
+                ),
             )
+
+    def _check_start_timeout(self) -> None:
+        """Fail ``CHK-CTRL-FETCH-HEAD`` when START is not followed by a fetch."""
+        if self._pending_start is None:
+            return
+        self._start_wait_cycles += 1
+        if self._start_wait_cycles <= START_TO_FETCH_CYCLES:
+            return
+        self._report(
+            CHK_CTRL_FETCH_HEAD,
+            "accepted START was not followed by a head fetch within "
+            f"{START_TO_FETCH_CYCLES} clk cycles",
+        )
+        self.pending.resolve(self._pending_start_token)
+        self._pending_start = None
+        self._pending_start_token = None
+        self._start_wait_cycles = 0
 
     def _check_pin_intervals(self) -> None:
         """``CHK-CTRL-FETCH-HEAD`` and ``CHK-CTRL-DATA-PAIR`` from pin intervals."""
@@ -1524,6 +1715,7 @@ class ControllerMonitor:
         self._pending_start = None
         self.pending.resolve(self._pending_start_token)
         self._pending_start_token = None
+        self._start_wait_cycles = 0
         self._fetch_heads += 1
         faults = []
         if interval.opcode != QSPI_CMD_FAST_READ:
@@ -1548,6 +1740,9 @@ class ControllerMonitor:
         payload is predicted here. A read of the descriptor length is treated as
         a fetch, which restarts pairing; any other read must be answered by
         exactly one same-length write.
+
+        Length ``TCD_BYTES`` (11) is fetch-only: V1 ``DMA_BUF_DEPTH`` N is 1..8,
+        so a payload chunk cannot be 11 bytes.
         """
         if not self._judged(CHK_CTRL_DATA_PAIR):
             return
@@ -1564,7 +1759,7 @@ class ControllerMonitor:
                 self._pending_pair_token = None
                 return
             if interval.length == TCD_BYTES:
-                return  # descriptor fetch: pairing restarts here
+                return  # descriptor fetch only: V1 payload N cannot reach 11
             self._pending_pair = interval.length
             self._pending_pair_token = self.pending.open(
                 CHK_CTRL_DATA_PAIR,
@@ -1680,10 +1875,12 @@ def start_controller_monitor(
 ) -> ControllerMonitor:
     """Create and start the ``CHK-CTRL-*`` monitor for *dut*.
 
-    Every row is ``na`` at L0 (``qspi_engine`` has no controller) and at L2 (no
-    source hierarchy). At L1 a missing hierarchy name is ``blocked`` with the
-    missing list, never a silent skip. Pass *pin* so the two top-observable rows
-    have pin evidence, or call :meth:`ControllerMonitor.attach_pin` later.
+    Every hierarchy-only row is ``na`` at L0 (``qspi_engine`` has no controller)
+    and at L2 (no source hierarchy). ``CHK-CTRL-FETCH-HEAD`` and
+    ``CHK-CTRL-DATA-PAIR`` stay live at L2 when pin data exists. At L1 a missing
+    hierarchy name is ``blocked`` with the missing list, never a silent skip.
+    Pass *pin* so the two top-observable rows have pin evidence, or call
+    :meth:`ControllerMonitor.attach_pin` later.
     """
     log = dut._log if log is None else log
     top, controller, scope_name = _controller_scope(dut)
@@ -1695,8 +1892,12 @@ def start_controller_monitor(
             level = "L1" if controller is not None else "L2"
 
     na = list(kwargs.pop("na", ()))
-    if level != "L1":
+    if level == "L0":
         na += [check_id for check_id in CONTROLLER_CHECK_IDS if check_id not in na]
+    elif level == "L2":
+        na += [
+            check_id for check_id in CTRL_HIERARCHY_CHECK_IDS if check_id not in na
+        ]
 
     handles = {
         "clk": _optional(dut, "clk"),
@@ -1733,7 +1934,6 @@ def start_controller_monitor(
 
 
 __all__ = [
-    "CHK_CTRL_DATA_CNT",
     "CHK_CTRL_DATA_PAIR",
     "CHK_CTRL_FETCH_HEAD",
     "CHK_CTRL_REQ_GATE",

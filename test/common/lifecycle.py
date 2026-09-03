@@ -23,6 +23,7 @@ class _PendingItem:
     detail: str
     scope: object
     opened_ns: float
+    in_reset_at_open: bool = False
     resolved: bool = False
     audited: bool = False
 
@@ -63,6 +64,7 @@ class PendingLedger:
             detail=detail,
             scope=scope,
             opened_ns=float(self._now_ns()),
+            in_reset_at_open=bool(self._in_reset()),
         )
         self._items.append(item)
         return item
@@ -91,7 +93,7 @@ class PendingLedger:
         if item.severity == SEV_IGNORE:
             return
 
-        reset_truncated = bool(self._in_reset())
+        reset_truncated = bool(item.in_reset_at_open) or reason == REASON_RESET
         detail = f"{item.detail} reason={reason}"
         if item.severity == SEV_DIAGNOSTIC:
             detail = f"incomplete-window {detail}"
@@ -120,7 +122,7 @@ def finalize_all(participants, *, reason: str) -> None:
         audit = getattr(pending, "audit", None)
         if callable(audit):
             audit(reason=reason)
-        if reason == REASON_STOP:
+        if reason in (REASON_STOP, REASON_DISPOSE, REASON_CLEAR):
             cancel_tasks = getattr(participant, "cancel_tasks", None)
             if callable(cancel_tasks):
                 cancel_tasks()
