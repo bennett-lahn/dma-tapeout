@@ -58,6 +58,38 @@ def test_module_vector_matches_restated_vector():
     assert TC_TCD_BE_TCD == MANDATORY_TCD
 
 
+def test_dest1_bit23_module_vector_matches_restated():
+    from reference.tcd import TC_TCD_DEST1_BIT23_BYTES, TC_TCD_DEST1_BIT23_TCD
+
+    assert TC_TCD_DEST1_BIT23_BYTES == DEST1_BIT23_BYTES
+    assert TC_TCD_DEST1_BIT23_TCD == DEST1_BIT23_TCD
+
+
+# Destination-1 vector with ptr[23]=1 (cov-refu-02 / cov-refu-07). Frozen A0
+# vector above stays dest_device=0. Restated independently of tcd.py.
+DEST1_BIT23_BYTES = bytes([0x12, 0x34, 0x56, 0x81, 0x00, 0x00, 0x04, 0x34, 0x56, 0x78, 0x40])
+DEST1_BIT23_TCD = Tcd(
+    src_ptr=0x123456,
+    dest_ptr=PTR_BIT23 | 0x010000,
+    transfer_len=0x04,
+    next_tcd=0x345678,
+    quit=False,
+    src_device=0,
+    dest_device=1,
+    next_device=0,
+    reserved=0,
+)
+
+
+def test_dest1_bit23_vector_encodes_and_decodes():
+    """cov-refu-02: dest_device=1 with dest_ptr[23]=1 round-trips."""
+    assert encode_tcd(DEST1_BIT23_TCD) == DEST1_BIT23_BYTES
+    assert decode_tcd(DEST1_BIT23_BYTES) == DEST1_BIT23_TCD
+    assert DEST1_BIT23_TCD.dest_device == 1
+    assert DEST1_BIT23_TCD.dest_ptr & PTR_BIT23
+    assert (DEST1_BIT23_TCD.dest_ptr & PTR_MAX) == 0x010000
+
+
 def test_pointers_are_big_endian_per_offset():
     raw = encode_tcd(MANDATORY_TCD)
     assert raw[0:3] == bytes([0x12, 0x34, 0x56])

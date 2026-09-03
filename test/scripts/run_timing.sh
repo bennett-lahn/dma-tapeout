@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Executable timing CI (not STA). Runs under TIMING_PROFILE=nominal.
-# Suites: test_qspi_timing, test_qspi_timing_delay, test_qspi_timing_launch_rx,
-# and ownership delay (tests.test_qspi_ownership).
-#
-# Does not run TIMING_PROFILE=sweep or STA compose.
+# Executable timing CI (not STA). Default TIMING_PROFILE=nominal, plus
+# documented TIMING_PROFILE=sweep endpoints for PSRAM_TACLK_NS (tACLK: read
+# data valid after falling SCK) and the ASIC L0 CE# frame case.
+# Set RUN_TIMING_SWEEP=0 to skip sweep cells. Set RUN_TIMING_66MHZ=1 for an
+# optional 15.15 ns clk period (functional sim is not STA).
 # If a LibreLane summary.rpt is present, print WNS but do not fail on
 # paper T-ACLK (tACLK read-return path) or unsigned T-CLKQ / T-GPIO-LIB / T-66.
 
@@ -48,6 +48,35 @@ run_one tests.test_qspi_timing top || fail=1
 run_one tests.test_qspi_timing_delay top || fail=1
 run_one tests.test_qspi_timing_launch_rx engine || fail=1
 run_one tests.test_qspi_ownership top ownership_shared_bus_negatives || fail=1
+run_one tests.test_qspi engine qpi_asic_ce_timing_legal_read || fail=1
+
+# cov-tim-04: documented sweep endpoints. Nominal stays the default TIMING_PROFILE.
+if [ "${RUN_TIMING_SWEEP:-1}" = "1" ]; then
+  echo "=== timing sweep PSRAM_TACLK_NS=2.0 (tACLK: read data valid after falling SCK) ==="
+  TIMING_PROFILE=sweep PSRAM_TACLK_NS=2.0 \
+    make test LEVEL=engine SIM="$SIM" SEED="$SEED" TIMING_PROFILE=sweep WAVES="$WAVES" \
+    COCOTB_TEST_MODULES=tests.test_qspi_timing_launch_rx TEST_FILTER=qspi_rxedge_directed \
+    || fail=1
+  echo "=== timing sweep PSRAM_TACLK_NS=5.5 ==="
+  TIMING_PROFILE=sweep PSRAM_TACLK_NS=5.5 \
+    make test LEVEL=engine SIM="$SIM" SEED="$SEED" TIMING_PROFILE=sweep WAVES="$WAVES" \
+    COCOTB_TEST_MODULES=tests.test_qspi_timing_launch_rx TEST_FILTER=qspi_rxedge_directed \
+    || fail=1
+  echo "=== timing sweep PSRAM_TACLK_NS=12.0 (past capture; expect Q-RXEDGE fail) ==="
+  TIMING_PROFILE=sweep PSRAM_TACLK_NS=12.0 \
+    make test LEVEL=engine SIM="$SIM" SEED="$SEED" TIMING_PROFILE=sweep WAVES="$WAVES" \
+    COCOTB_TEST_MODULES=tests.test_qspi_timing_launch_rx TEST_FILTER=qspi_rxedge_taclk_past_capture \
+    || fail=1
+fi
+
+# Optional 66 MHz clk period (15.15 ns). Functional simulation is not STA.
+if [ "${RUN_TIMING_66MHZ:-0}" = "1" ]; then
+  echo "=== timing optional CLK_PERIOD_NS=15.15 (66 MHz; not STA) ==="
+  CLK_PERIOD_NS=15.15 \
+    make test LEVEL=engine SIM="$SIM" SEED="$SEED" TIMING_PROFILE="$TIMING_PROFILE" WAVES="$WAVES" \
+    COCOTB_TEST_MODULES=tests.test_qspi_timing_launch_rx TEST_FILTER=qspi_rxedge_directed \
+    || fail=1
+fi
 
 # Prefer WS2 contract path; otherwise stitch the last RUN_DIR results into test/results.xml.
 if [ ! -f "$TEST_DIR/results.xml" ]; then

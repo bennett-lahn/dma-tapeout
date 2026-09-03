@@ -394,10 +394,77 @@ def test_two_epoch_field_difference_is_reported():
     assert "epoch1=0 epoch2=1" in str(error.value)
 
 
-def test_cross_device_epoch_passes_both_axes():
+def test_cross_device_epoch_passes_both_axes_against_independent_image():
+    """cov-refu-03: dest-1 compare uses a rebuilt image, not the oracle object."""
     result = oracle(dest_device=1)
     board = scoreboard(result)
-    board.compare(observed_from(result), result.final_memory)
+    rebuilt = MemoryImage(fill=result.final_memory.fill)
+    for device in result.final_memory.devices:
+        for address in result.final_memory.defined_addresses(device):
+            rebuilt.poke(device, address, result.final_memory.byte(device, address))
+    assert rebuilt is not result.final_memory
+    board.compare(observed_from(result), rebuilt)
+
+
+def test_dest_device1_corruption_fails_memory_axis():
+    """cov-refu-03: mutating dest-1 observed bytes is a scoreboard fail."""
+    result = oracle(dest_device=1)
+    board = scoreboard(result)
+    observed = result.final_memory.clone()
+    dest_hits = [addr for (dev, addr) in result.expected_writes if dev == 1]
+    assert dest_hits
+    address = dest_hits[0]
+    observed.poke(1, address, (observed.byte(1, address) + 1) & 0xFF)
+    with pytest.raises(ScoreboardError) as error:
+        board.compare(observed_from(result), observed)
+    assert error.value.axis == AXIS_MEMORY
+    assert CLASS_WRONG_DATA in str(error.value)
+
+
+def test_l1_compare_requires_observed_memory():
+    """tb-ref-04: L1/L2 compare cannot skip the memory axis."""
+    result = oracle()
+    board = scoreboard(result)
+    with pytest.raises(ScoreboardError) as error:
+        board.compare(observed_from(result))
+    assert error.value.axis == AXIS_MEMORY
+    assert "required" in str(error.value)
+
+
+def test_l0_compare_may_omit_memory():
+    """tb-ref-04: documented L0 exception omits observed memory."""
+    result = oracle()
+    board = Scoreboard.from_result(
+        result, context=RunContext(level="L0", test="unit", repro="REPRO: l0")
+    )
+    board.compare(observed_from(result))
+
+
+def test_sparse_observed_dict_detects_missing_dest_byte():
+    """tb-ref-04: a sparse dest map still fails when a written byte is absent."""
+    result = oracle()
+    board = scoreboard(result)
+    sparse = {
+        device: dict(values) for device, values in result.final_memory.snapshot().items()
+    }
+    sparse[0].pop(DST_ADDR)
+    with pytest.raises(ScoreboardError) as error:
+        board.compare(observed_from(result), sparse)
+    assert CLASS_MISSING_WRITE in str(error.value)
+
+
+def test_transaction_mismatch_includes_chunk_index():
+    """tb-ref-06: mismatch text includes chunk=i/k. AXIS_REFERENCE was deleted."""
+    import reference.scoreboard as scoreboard_mod
+
+    assert not hasattr(scoreboard_mod, "AXIS_REFERENCE")
+    result = oracle()
+    board = scoreboard(result)
+    observed = observed_from(result)
+    observed[2] = transaction(2, DATA_WRITE, 0, DST_ADDR, b"\x00\x00")
+    with pytest.raises(ScoreboardError) as error:
+        board.compare_transactions(observed)
+    assert "chunk=1/2" in str(error.value)
 
 
 def _renumber(records) -> list:

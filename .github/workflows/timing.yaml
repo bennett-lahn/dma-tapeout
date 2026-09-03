@@ -32,6 +32,7 @@ jobs:
       - name: Run executable timing
         env:
           TIMING_PROFILE: nominal
+          RUN_TIMING_SWEEP: "1"
         # Invoke via bash so a Windows commit without the git +x bit still runs.
         run: bash test/scripts/run_timing.sh
 

@@ -128,7 +128,7 @@ def test_l1_adapter_source_imports_shared_fsm_tables_without_this_test_importing
 
 
 def test_failing_window_does_not_count_hits():
-    chain = build_directed_chain([TcdSpec(transfer_len=1)])
+    chain = build_directed_chain([TcdSpec(transfer_len=1)], dma_buf_depth=1)
     result = chain.interpret()
     cov = sampler(1)
     cov.record_chain(result, generated=chain)
@@ -139,7 +139,7 @@ def test_failing_window_does_not_count_hits():
 
 
 def test_checkers_fail_does_not_count_hits():
-    chain = build_directed_chain([TcdSpec(transfer_len=1)])
+    chain = build_directed_chain([TcdSpec(transfer_len=1)], dma_buf_depth=1)
     result = chain.interpret()
     cov = sampler(1)
     assert cov.record_passing(result, generated=chain, checkers_ok=False) is False
@@ -272,6 +272,9 @@ def test_address_classes_overlap_and_roles():
     assert ADDR_AT_OR_ABOVE_64K in classify_address(0x010000)
     assert ADDR_PAGE_EDGE in classify_address(0x010000)
     assert ADDR_HIGHEST in classify_address(0x7FFFF0)
+    # D35: ptr[23] is don't-care; COV-ADDR classifies A[22:0].
+    assert classify_address(0x800400) == classify_address(0x000400)
+    assert ADDR_BELOW_64K in classify_address(0x800400)
     chain = build_directed_chain(
         [
             TcdSpec(
@@ -282,6 +285,7 @@ def test_address_classes_overlap_and_roles():
             )
         ],
         seed=3,
+        dma_buf_depth=1,
     )
     result = chain.interpret()
     cov = sampler(1)
@@ -323,7 +327,7 @@ def test_payload_patterns():
 
 
 def test_record_compare_accepts_scoreboard_and_still_needs_commit():
-    chain = build_directed_chain([TcdSpec(transfer_len=1)])
+    chain = build_directed_chain([TcdSpec(transfer_len=1)], dma_buf_depth=1)
     result = chain.interpret()
     board = Scoreboard.from_result(result)
     board.compare(result.transactions, result.final_memory)
@@ -450,14 +454,14 @@ def test_from_config_uses_artifacts_run_dir(tmp_path, monkeypatch):
         "run_dir": str(tmp_path / "run"),
     }
     cov = CoverageSampler.from_config(config)
-    chain = build_directed_chain([TcdSpec(transfer_len=1)], seed=7)
+    chain = build_directed_chain([TcdSpec(transfer_len=1)], seed=7, dma_buf_depth=1)
     cov.record_passing(chain.interpret(), generated=chain)
     path = cov.write_fragment()
     assert Path(path).parent == Path(config["run_dir"])
 
 
 def test_uncommitted_pending_flag_on_fragment(tmp_path):
-    chain = build_directed_chain([TcdSpec(transfer_len=1)])
+    chain = build_directed_chain([TcdSpec(transfer_len=1)], dma_buf_depth=1)
     cov = sampler(1, run_dir=str(tmp_path))
     cov.record_chain(chain.interpret(), generated=chain)
     payload = json.loads(Path(cov.write_fragment()).read_text(encoding="utf-8"))
@@ -470,3 +474,84 @@ def test_collapsed_len_bins_at_depth_two():
     assert collapsed["N-1"] == "1"
     assert collapsed["2N-1"] == "N+1"
     assert "N" not in collapsed
+
+
+def test_scoreboard_na_counts_without_compare(tmp_path):
+    cov = sampler(5, run_dir=str(tmp_path))
+    cov.record_observation(COV_CTRL_STATE, "FETCH")
+    assert cov.commit_window(checkers_ok=True, scoreboard_na=True) is True
+    assert cov.hits[COV_CTRL_STATE]["FETCH"] == 1
+    assert cov.fragment()["windows"][0]["scoreboard_na"] is True
+    with pytest.raises(CoverageError, match="both scoreboard_ok and scoreboard_na"):
+        cov.commit_window(checkers_ok=True, scoreboard_ok=True, scoreboard_na=True)
+
+
+def test_begin_window_rejects_leaked_pending():
+    cov = sampler(5)
+    cov.record_observation(COV_CTRL_STATE, "FETCH")
+    cov.begin_window(test="next")
+    assert cov.pending_hits() == {}
+    assert cov.fragment()["windows"][0]["counted"] is False
+
+
+def test_write_fragment_absorbs_existing_and_is_order_independent(tmp_path):
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first = passing(5, [TcdSpec(transfer_len=1)], run_dir=str(first_dir), seed=1)
+    second = passing(5, [TcdSpec(transfer_len=5)], run_dir=str(second_dir), seed=1)
+    first.write_fragment()
+    second.write_fragment()
+    ab = CoverageSampler(5, run_dir=str(tmp_path / "ab"), config={"seed": 1, "sim": "icarus"})
+    ba = CoverageSampler(5, run_dir=str(tmp_path / "ba"), config={"seed": 1, "sim": "icarus"})
+    ab.context = first.context
+    ba.context = first.context
+    ab.absorb_fragment(str(first_dir / FRAGMENT_FILENAME))
+    ab.absorb_fragment(str(second_dir / FRAGMENT_FILENAME))
+    ba.absorb_fragment(str(second_dir / FRAGMENT_FILENAME))
+    ba.absorb_fragment(str(first_dir / FRAGMENT_FILENAME))
+    assert ab.hits[COV_LEN]["1"] == ba.hits[COV_LEN]["1"] == 1
+    assert ab.hits[COV_LEN]["N"] == ba.hits[COV_LEN]["N"] == 1
+
+    shared = tmp_path / "shared"
+    owner = passing(5, [TcdSpec(transfer_len=1)], run_dir=str(shared), seed=3)
+    owner.write_fragment()
+    later = CoverageSampler(
+        5,
+        context=owner.context,
+        run_dir=str(shared),
+        config={"seed": 3, "sim": owner.context.sim},
+    )
+    later.record_passing(
+        build_directed_chain([TcdSpec(transfer_len=5)], seed=4, dma_buf_depth=5).interpret(5),
+        generated=build_directed_chain([TcdSpec(transfer_len=5)], seed=4, dma_buf_depth=5),
+    )
+    later.write_fragment()
+    payload = json.loads((shared / FRAGMENT_FILENAME).read_text(encoding="utf-8"))
+    assert payload["hits"][COV_LEN]["1"] == 1
+    assert payload["hits"][COV_LEN]["N"] == 1
+
+
+def test_n1_exclusion_does_not_hide_n5_nm1(tmp_path):
+    n1 = passing(1, [TcdSpec(transfer_len=1)], run_dir=str(tmp_path / "n1"), seed=1)
+    n1.write_fragment()
+    n5 = passing(5, [TcdSpec(transfer_len=5)], run_dir=str(tmp_path / "n5"), seed=1)
+    n5.write_fragment()
+    report = aggregate_fragments(str(tmp_path))
+    assert "N-1" in required_bins((1, 5))[COV_LEN]
+    assert "N-1" in report.missing.get(COV_LEN, [])
+    n5_hit = passing(
+        5, [TcdSpec(transfer_len=4)], run_dir=str(tmp_path / "n5hit"), seed=2
+    )
+    n5_hit.write_fragment()
+    closed_len = aggregate_fragments(str(tmp_path))
+    assert "N-1" not in closed_len.missing.get(COV_LEN, [])
+
+
+def test_exclusion_reviewer_is_open_until_closure():
+    from reference.coverage import EXCLUSION_REVIEWER
+
+    assert EXCLUSION_REVIEWER == "tb-closure-2026-08-25"
+    stall = next(row for row in structural_exclusions(5) if row["bin"] == "STALL")
+    assert "08-stimulus-and-coverage.md" in stall["architecture_citation"]
+    assert "D22" in stall["architecture_citation"]
+    assert stall["reviewer"] == "tb-closure-2026-08-25"

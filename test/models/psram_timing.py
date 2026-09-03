@@ -1,13 +1,20 @@
 """Runtime transport timing for an attached :mod:`models.psram` device.
 
 ``wrap_device`` is deliberately the sole delay layer.  It delays the parser's
-view of DUT output transitions and delays read-data drive at the return plane;
-the parser itself remains a protocol model.  ``ideal`` is an exact passthrough
-so the pre-M3 attachment behavior remains available without a second code path.
+view of DUT output transitions and delays read-data drive / model SIO OE at
+the return plane; the parser itself remains a protocol model.  Every profile
+returns a started ``_TimedPsramDevice``; zero delays drain synchronously via
+the apply heap (``delay_fs == 0``).  ``ideal`` keeps datasheet device AC live
+and zeros only TB path placeholders.
+
+Duty-cycle ratios and ``PSRAM_TKHKL_NS`` / ``tKHKL`` (SCK rise or fall time)
+remain in the resolved manifest as reporting placeholders only.  This Python
+model does not police them; clock-quality closure is STA / ``T-CLKQ``.
 """
 
 from __future__ import annotations
 
+import heapq
 from types import MappingProxyType
 from typing import Mapping
 
@@ -16,6 +23,9 @@ from cocotb.simtime import get_sim_time
 from cocotb.triggers import First, Timer
 
 
+# Active device AC applied by the timed wrapper (response, setup/hold, CE#).
+# Duty ratios and PSRAM_TKHKL_NS are reporting placeholders only (see module
+# docstring); they are resolved into the manifest but never measured here.
 _DEVICE_AC = {
     "PSRAM_TACLK_NS": 5.5,
     "PSRAM_TCSP_NS": 2.5,
@@ -26,6 +36,7 @@ _DEVICE_AC = {
     "PSRAM_THD_NS": 2.0,
     "PSRAM_TCEM_US_EXT": 4.0,
     "PSRAM_TCEM_US_STD": 8.0,
+    # Reporting placeholders (not policed by this model):
     "PSRAM_TCH_MIN_RATIO": 0.45,
     "PSRAM_TCL_MIN_RATIO": 0.45,
     "PSRAM_TCH_MAX_RATIO": 0.55,
@@ -55,14 +66,15 @@ _PARAM_ALIASES = {
     "TB_FLIGHT_OUT_CE_N_NS": "TB_FLIGHT_OUT_CE_NS",
 }
 
+def _ns_to_fs(delay_ns: float) -> int:
+    return int(round(float(delay_ns) * 1_000_000.0))
+
 
 def _profile_defaults(profile: str) -> dict[str, float | None]:
     profile = profile.lower()
-    if profile == "ideal":
-        params = {name: 0.0 for name in _DEVICE_AC}
-        params.update(_TB_PATH)
-        return params
-    if profile in ("nominal", "sweep"):
+    if profile in ("ideal", "nominal", "sweep"):
+        # ideal: datasheet AC live, TB_* path placeholders zero.
+        # nominal/sweep: same AC base; sweep callers override points.
         params = dict(_DEVICE_AC)
         params.update(_TB_PATH)
         return params
@@ -78,6 +90,9 @@ def resolve_timing_params(profile: str = "ideal", **overrides) -> Mapping[str, f
     one or more explicit values, such as ``PSRAM_TACLK_NS=2.0``; the returned
     mapping records the complete point rather than relying on ambient state.
     Per-signal output knobs inherit their corresponding base parameter.
+
+    Duty ratios and ``PSRAM_TKHKL_NS`` are retained for run reports only; the
+    timed wrapper never measures or fails them.
     """
 
     params = _profile_defaults(profile)
@@ -116,8 +131,9 @@ def resolve_timing_params(profile: str = "ideal", **overrides) -> Mapping[str, f
 def active_timing_params(device) -> Mapping[str, float]:
     """Return the immutable resolved timing manifest for *device*.
 
-    An unwrapped device is the ideal profile.  This keeps acceptance reporting
-    simple while preserving ``wrap_device(..., profile="ideal") is device``.
+    Prefer ``device.timing_params`` from a ``wrap_device`` result.  An
+    unwrapped object falls back to the ``ideal`` defaults (datasheet AC live,
+    TB path placeholders zero).
     """
 
     return getattr(device, "timing_params", resolve_timing_params())
@@ -138,9 +154,21 @@ class _TimedPsramDevice:
         self._transport_active = False
         self._generation = 0
         self._sequence = 0
+        # Ordered device-plane apply queue: (due_fs, sequence, generation, cb, args).
+        # Same-time callbacks run in increasing schedule sequence, not Python task order.
+        self._apply_heap: list[tuple] = []
+        self._apply_waiter = None
         self._release_sio = self._agent._release_sio
+        self._drive_nibble = self._agent._drive_nibble
         self._sio_handle = self._find_sio_handle()
         self._device_sio = self._agent._read_nibble()
+        # Device-plane CE# level after D_OUT_CE_NS (DUT-to-device CE# delay).
+        # Parser clocking gates on this wire, not live source agent.ce_n.
+        try:
+            initial_ce = int(self._agent.ce_n) if self._agent.ce_n is not None else 1
+        except (TypeError, ValueError):
+            initial_ce = 1
+        self._device_ce = initial_ce
         # Public, append-only observation stream consumed by Q-RXEDGE. It keeps
         # source, device-plane, and return-plane timestamps distinct without
         # widening the frozen parser API.
@@ -164,6 +192,7 @@ class _TimedPsramDevice:
         self._agent.stop()
         self._agent._thz_release_ns = self.timing_params["PSRAM_THZ_NS"]
         self._agent._release_sio = self._delayed_release
+        self._agent._drive_nibble = self._delayed_drive
         self._task = cocotb.start_soon(self._run())
         self._agent._task = self._task
         return self._task
@@ -171,29 +200,41 @@ class _TimedPsramDevice:
     def stop(self) -> None:
         """Stop delayed observation and restore the agent's release hook."""
 
-        self.cancel_tasks()
         if self._task is not None:
             self._task.cancel()
             self._task = None
+        self.cancel_tasks()
         self._agent._release_sio = self._release_sio
+        self._agent._drive_nibble = self._drive_nibble
         self._release_sio()
 
     def cancel_tasks(self) -> None:
         """Invalidate and cancel delayed callbacks owned by this wrapper.
 
-        ``BringUp.stop()`` reaches this method through the shared lifecycle
-        participant registry.  A generation change covers callbacks already
-        runnable when cancellation arrives, while task cancellation prevents
-        delayed transport from surviving into a later bring-up.
+        ``BringUp.stop()`` / ``dispose_run`` reach this method through the
+        shared lifecycle participant registry. A generation change covers
+        callbacks already runnable when cancellation arrives. Window ``clear()``
+        must not leave the wrapper unable to see later CE#/SCK: if the
+        observation task is still running, transport stays live and only
+        in-flight delayed callbacks are dropped.
         """
         self._cancelled_generations.add(self._generation)
         self._generation += 1
-        self._transport_active = False
-        if self._agent._release_sio == self._delayed_release:
-            self._agent._release_sio = self._release_sio
+        self._apply_heap.clear()
+        self._apply_waiter = None
         tasks, self._delayed_tasks = self._delayed_tasks, set()
         for task in tasks:
             task.cancel()
+        still_running = self._task is not None
+        self._transport_active = still_running
+        if still_running:
+            self._agent._release_sio = self._delayed_release
+            self._agent._drive_nibble = self._delayed_drive
+        else:
+            if self._agent._release_sio == self._delayed_release:
+                self._agent._release_sio = self._release_sio
+            if self._agent._drive_nibble == self._delayed_drive:
+                self._agent._drive_nibble = self._drive_nibble
 
     def _start_delayed(self, coroutine) -> None:
         """Start and retain one transport callback until lifecycle cancellation."""
@@ -221,7 +262,41 @@ class _TimedPsramDevice:
                 return candidate
         return None
 
+    def _drain_due_applies(self) -> None:
+        """Apply every due heap entry in ``(due_fs, sequence)`` order."""
+
+        now_fs = int(get_sim_time(unit="fs"))
+        while self._apply_heap and self._apply_heap[0][0] <= now_fs:
+            _due_fs, _sequence, generation, callback, args = heapq.heappop(
+                self._apply_heap
+            )
+            if generation != self._generation or not self._transport_active:
+                continue
+            callback(*args)
+
+    def _ensure_apply_waiter(self) -> None:
+        if self._apply_waiter is not None:
+            return
+        self._apply_waiter = cocotb.start_soon(self._apply_loop())
+        self._delayed_tasks.add(self._apply_waiter)
+
+    async def _apply_loop(self) -> None:
+        """Wait for the next due time, then drain same-time entries by sequence."""
+
+        try:
+            while self._apply_heap:
+                due_fs = self._apply_heap[0][0]
+                now_fs = int(get_sim_time(unit="fs"))
+                if due_fs > now_fs:
+                    await Timer(due_fs - now_fs, unit="fs")
+                    continue
+                self._drain_due_applies()
+        finally:
+            self._apply_waiter = None
+
     def _schedule(self, delay_ns: float, callback, *args) -> None:
+        """Queue a device-plane callback; same-time entries keep schedule order."""
+
         self._sequence += 1
         sequence = self._sequence
         generation = self._generation
@@ -229,41 +304,54 @@ class _TimedPsramDevice:
             return
 
         # Zero means unannotated / no transport delay, not a physical claim.
-        if delay_ns <= 0:
-            _ = sequence
-            if generation == self._generation:
-                callback(*args)
-            return
+        now_fs = int(get_sim_time(unit="fs"))
+        delay_fs = max(0, _ns_to_fs(delay_ns))
+        due_fs = now_fs + delay_fs
+        heapq.heappush(
+            self._apply_heap,
+            (due_fs, sequence, generation, callback, args),
+        )
+        if delay_fs == 0:
+            self._drain_due_applies()
+        else:
+            self._ensure_apply_waiter()
 
-        async def delayed():
-            await Timer(delay_ns, unit="ns")
-            # Tasks created in source-event order remain independently pending.
-            # The sequence is retained for waveform/debug consumers and avoids
-            # relying on a mutable source value after a delay.
-            _ = sequence
-            if generation == self._generation:
-                callback(*args)
+    def _delayed_drive(self, nibble: int) -> None:
+        """Delay model SIO value and OE by ``D_OUT_OE_NS`` on the return plane.
 
-        self._start_delayed(delayed())
+        ``D_OUT_OE_NS`` is the TB output-enable delay toward the device/return
+        plane (``TB_TCO_OE_NS + TB_FLIGHT_OUT_OE_NS``).  The parser does not
+        sample ASIC OE; this only defers the model's own drive enable.
+        """
+
+        self._schedule(
+            self.timing_params["D_OUT_OE_NS"],
+            self._drive_nibble,
+            nibble,
+        )
 
     def _delayed_release(self) -> None:
-        """Hold the final device value for modeled tHZ after CE# rises."""
+        """Hold then release model SIO OE after ``tHZ`` plus ``D_OUT_OE_NS``.
 
-        if (
-            not self._transport_active
-            or self._agent.selected
-            or self.timing_params["PSRAM_THZ_NS"] == 0.0
-        ):
+        ``PSRAM_THZ_NS`` / ``tHZ`` is CE# high to SIO Hi-Z.  ``D_OUT_OE_NS``
+        further delays the OE clear on the return plane when non-zero.
+        """
+
+        if not self._transport_active or self._agent.selected:
             self._release_sio()
             return
-        generation = self._generation
+        delay_ns = (
+            self.timing_params["PSRAM_THZ_NS"] + self.timing_params["D_OUT_OE_NS"]
+        )
+        if delay_ns <= 0.0:
+            self._release_sio()
+            return
 
-        async def release_after_thz():
-            await Timer(self.timing_params["PSRAM_THZ_NS"], unit="ns")
-            if generation == self._generation and not self._agent.selected:
+        def release_if_deselected() -> None:
+            if not self._agent.selected:
                 self._release_sio()
 
-        self._start_delayed(release_after_thz())
+        self._schedule(delay_ns, release_if_deselected)
 
     def _launch_read_nibble(
         self,
@@ -302,19 +390,7 @@ class _TimedPsramDevice:
             din_ns = self.timing_params["D_IN_SIO_NS"]
             if din_ns > 0:
                 await Timer(din_ns, unit="ns")
-            if generation == self._generation and self._agent.selected:
-                self._agent._drive_nibble(nibble)
-                self.timing_events.append(
-                    {
-                        "kind": "read-input-valid",
-                        "generation": generation,
-                        "nibble": nibble & 0xF,
-                        "time_fs": int(get_sim_time(unit="fs")),
-                        "source_fall_fs": source_fall_fs,
-                        "device_fall_fs": device_fall_fs,
-                    }
-                )
-            else:
+            if generation != self._generation or not self._agent.selected:
                 if generation in self._cancelled_generations:
                     return
                 self.timing_events.append(
@@ -325,12 +401,46 @@ class _TimedPsramDevice:
                         "time_fs": int(get_sim_time(unit="fs")),
                     }
                 )
+                return
+
+            # Return-plane OE delay (D_OUT_OE_NS) via the ordered apply queue.
+            # Use the raw drive hook so _delayed_drive does not stack a second
+            # D_OUT_OE_NS on top of this schedule.
+            def commit_read() -> None:
+                if generation != self._generation or not self._agent.selected:
+                    if generation in self._cancelled_generations:
+                        return
+                    self.timing_events.append(
+                        {
+                            "kind": "read-stale",
+                            "generation": generation,
+                            "nibble": nibble & 0xF,
+                            "time_fs": int(get_sim_time(unit="fs")),
+                        }
+                    )
+                    return
+                self._drive_nibble(nibble)
+                self.timing_events.append(
+                    {
+                        "kind": "read-input-valid",
+                        "generation": generation,
+                        "nibble": nibble & 0xF,
+                        "time_fs": int(get_sim_time(unit="fs")),
+                        "source_fall_fs": source_fall_fs,
+                        "device_fall_fs": device_fall_fs,
+                    }
+                )
+
+            self._schedule(self.timing_params["D_OUT_OE_NS"], commit_read)
 
         self._start_delayed(delayed_launch())
 
     def _on_device_fall(self, source_fall_fs: int) -> None:
         """Run the parser's falling-edge action with response timing separated."""
 
+        # Clock only while device-plane CE# is low (after D_OUT_CE_NS).
+        if self._device_ce != 0:
+            return
         agent = self._agent
         if agent.phase != "DATA" or agent._command.direction != "read":
             agent._release_sio()
@@ -349,6 +459,9 @@ class _TimedPsramDevice:
     def _on_device_rise(self, nibble) -> None:
         """Sample the transported SIO value at the delayed device SCK edge."""
 
+        # Clock only while device-plane CE# is low (after D_OUT_CE_NS).
+        if self._device_ce != 0:
+            return
         agent = self._agent
         reader = agent._read_nibble
         agent._read_nibble = lambda: nibble
@@ -366,12 +479,34 @@ class _TimedPsramDevice:
             prev_sck = int(agent._sck.value)
         except ValueError:
             prev_sck = None
+        rst_n = getattr(agent, "_rst_n", None)
+        try:
+            prev_rst = None if rst_n is None else int(rst_n.value)
+        except ValueError:
+            prev_rst = None
 
         while True:
             triggers = [agent._sck.value_change, agent._ce_n.value_change]
             if self._sio_handle is not None:
                 triggers.append(self._sio_handle.value_change)
+            if rst_n is not None and hasattr(rst_n, "value_change"):
+                triggers.append(rst_n.value_change)
             await First(*triggers)
+
+            # Falling rst_n (sync active-low ASIC reset) aborts immediately.
+            # wrap_device stopped agent._run, so this path must call note_reset
+            # itself. Classify as RESET-TRUNCATED (in-reset/truncated sample;
+            # not a fail). Do this before CE#/SCK so a same-timestep CE# rise
+            # cannot retire the frame as an ordinary termination.
+            if rst_n is not None:
+                try:
+                    rst = int(rst_n.value)
+                except ValueError:
+                    rst = None
+                if prev_rst == 1 and rst == 0:
+                    agent.note_reset()
+                prev_rst = rst
+
             ce = agent.ce_n
             try:
                 sck = int(agent._sck.value)
@@ -389,10 +524,22 @@ class _TimedPsramDevice:
                         source_sio,
                     )
 
+            # CE# and SCK are independent delayed wires (D_OUT_CE_NS /
+            # D_OUT_SCK_NS). Schedule every source SCK edge; parser callbacks
+            # gate on delayed _device_ce so CE#>SCK skew cannot drop the first
+            # nibble before _begin_transaction, and SCK>CE# skew cannot drop
+            # the last nibble after source CE# has risen.
             if prev_ce != 0 and ce == 0:
-                self._schedule(self.timing_params["D_OUT_CE_NS"], agent._begin_transaction)
+                def begin_transaction():
+                    self._device_ce = 0
+                    agent._begin_transaction()
+
+                self._schedule(
+                    self.timing_params["D_OUT_CE_NS"], begin_transaction
+                )
             elif prev_ce == 0 and ce != 0:
                 def end_transaction():
+                    self._device_ce = 1
                     self._generation += 1
                     agent._ce_rise_ns = get_sim_time(unit="ns")
                     agent._end_transaction()
@@ -414,9 +561,11 @@ class _TimedPsramDevice:
                             }
                         )
 
-                self._schedule(self.timing_params["D_OUT_CE_NS"], end_transaction)
+                self._schedule(
+                    self.timing_params["D_OUT_CE_NS"], end_transaction
+                )
 
-            if ce == 0 and prev_sck is not None:
+            if prev_sck is not None:
                 if sck == 1 and prev_sck == 0:
                     self._schedule(
                         self.timing_params["D_OUT_SCK_NS"],
@@ -430,20 +579,23 @@ class _TimedPsramDevice:
                         int(get_sim_time(unit="fs")),
                     )
 
-            prev_ce, prev_sck = ce, sck
+            # Unresolved SCK is not an edge: keep last known 0/1 so a later
+            # resolved level does not lose the edge baseline (Z/X = no-edge).
+            # 1->Z is not a fall; 1->Z->driven 0 is still a fall.
+            prev_ce = ce
+            if sck is not None:
+                prev_sck = sck
 
 
 def wrap_device(device, profile: str = "ideal", **overrides):
-    """Return *device* with the selected profile's transport delays.
+    """Return an already-started timed wrapper around *device*.
 
-    ``ideal`` with no overrides returns the original object and exposes no
-    timing transport.  ``nominal`` and ``sweep`` return an already-started,
-    transparent wrapper that replaces the raw agent task.
+    Every profile constructs ``_TimedPsramDevice`` and calls ``start()``.
+    Zero delays drain synchronously on the apply heap; ``ideal`` still
+    exposes ``timing_params`` / ``timing_events`` for monitors and tests.
     """
 
     params = resolve_timing_params(profile, **overrides)
-    if profile.lower() == "ideal" and not overrides:
-        return device
     wrapped = _TimedPsramDevice(device, params)
     wrapped.start()
     return wrapped

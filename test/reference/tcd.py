@@ -1,14 +1,18 @@
-"""11-byte TCD encode/decode/validate (``TC-TCD-BE`` unit vector).
+"""Firmware-side copy of the 11-byte TCD oracle, used on the MCU and in firmware pytest.
 
-Pure Python only; no cocotb imports. See ``docs/llm/verification/05-reference-model.md``.
+Keep the firmware and ``test/reference`` copies aligned except import paths
+and the MicroPython dataclass shim. Pure Python only; no cocotb imports.
+See ``docs/llm/verification/05-reference-model.md``.
 
 Architecture numbers (byte offsets, ``CTRL_FLAGS`` bit positions, pointer
-width) live in ``reference.constants`` as copies of ``../04-tcd-and-datapath.md``.
+width) live in the sibling ``constants`` module as copies of
+``../04-tcd-and-datapath.md``.
 Packed ``tcd_t`` in ``types.svh`` is the layout: RTL is 88 bits and latches
-``reserved`` as the packed LSB nibble. This dataclass keeps ``reserved`` as the last field so
-encode/decode can round-trip the 11-byte memory record
-(``CTRL_FLAGS[3:0]``, last wire nibble). Constants are never parsed out of
-SystemVerilog.
+``reserved`` as the packed LSB nibble. This dataclass keeps ``reserved`` as
+the last field so encode/decode can round-trip the 11-byte memory record
+(``CTRL_FLAGS[3:0]``, last wire nibble). Do not ``struct.pack`` by iterating
+dataclass fields: Python field order is not the packed ``tcd_t`` order.
+Constants are never parsed out of SystemVerilog.
 
 Representation and V1 validity are deliberately separate:
 
@@ -81,6 +85,14 @@ class Tcd:
     next_device: int = 0
     reserved: int = 0
 
+    def __post_init__(self):
+        """Normalize ``quit`` to bool so ``Tcd(quit=1)`` equals a decoded TCD."""
+        quit = self.quit
+        if isinstance(quit, bool):
+            return
+        if isinstance(quit, int) and quit in (0, 1):
+            object.__setattr__(self, "quit", bool(quit))
+
 
 # Mandatory unit vector from 05-reference-model.md. Unit tests restate the byte
 # literal independently; this pair exists so stimulus code has one reference.
@@ -96,6 +108,22 @@ TC_TCD_BE_TCD = Tcd(
     reserved=0,
 )
 TC_TCD_BE_BYTES = bytes.fromhex("12345623456789345678A0")
+
+# Destination-device-1 vector with dest_ptr[23]=1 (D35 don't-care). Frozen A0
+# vector above stays dest_device=0. Firmware ``firmware/tcd.py`` may lag this
+# extra constant until recopy (same hash-drift class as chain.py depth bounds).
+TC_TCD_DEST1_BIT23_TCD = Tcd(
+    src_ptr=0x123456,
+    dest_ptr=PTR_BIT23 | 0x010000,
+    transfer_len=0x04,
+    next_tcd=0x345678,
+    quit=False,
+    src_device=0,
+    dest_device=1,
+    next_device=0,
+    reserved=0,
+)
+TC_TCD_DEST1_BIT23_BYTES = bytes.fromhex("1234568100000434567840")
 
 
 def _reject_bool(name: str, value) -> None:
@@ -171,7 +199,16 @@ def validate_tcd(tcd: Tcd) -> Tcd:
 
 
 def ctrl_flags(tcd: Tcd) -> int:
-    """Return byte 10 of *tcd*: NEXT, DEST, SRC, QUIT, then reserved."""
+    """Return byte 10 of *tcd*: NEXT, DEST, SRC, QUIT, then reserved.
+
+    Public encode is :func:`encode_tcd`, which validates first. This helper
+    still range-checks device and reserved bits so a caller that skips
+    ``validate_tcd`` cannot pack out-of-range flags.
+    """
+    _check_integer("next_device", tcd.next_device, 0, 1)
+    _check_integer("dest_device", tcd.dest_device, 0, 1)
+    _check_integer("src_device", tcd.src_device, 0, 1)
+    _check_integer("reserved", tcd.reserved, 0, RESERVED_MAX)
     return (
         (tcd.next_device << CTRL_NEXT_DEVICE_BIT)
         | (tcd.dest_device << CTRL_DEST_DEVICE_BIT)
@@ -272,6 +309,8 @@ __all__ = [
     "TCD_BYTES",
     "TC_TCD_BE_BYTES",
     "TC_TCD_BE_TCD",
+    "TC_TCD_DEST1_BIT23_BYTES",
+    "TC_TCD_DEST1_BIT23_TCD",
     "TRANSFER_LEN_MAX",
     "ReferenceModelError",
     "Tcd",

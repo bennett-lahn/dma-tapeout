@@ -12,7 +12,9 @@ Edge contract (APS6404L Rev 2.3 sections 11.1 / 14.6, summarised in
 * Read-data nibbles are launched on **falling** SCK so the host captures them on
   the following rising SCK.
 * ``0xEB`` inserts exactly six dummy SCK cycles between address and data. The
-  first read nibble is launched on the falling edge that closes dummy cycle six.
+  first read nibble is launched on the falling edge that closes dummy cycle six
+  (``tACLK``: read data valid after falling SCK). Extra rising SCKs after those
+  six are data beats, not additional dummies.
 * Within a byte the upper nibble goes first, and ``SIO3`` is the nibble MSB.
 
 Opcodes dispatch through :data:`QPI_COMMANDS`. A new command is a
@@ -28,9 +30,10 @@ ID               Condition
 ===============  =====================================================
 ``Q-OPCODE``     decoded opcode is outside the command table
 ``Q-PHASE``      CE# rose before the command or address phase completed
-``Q-DUMMY``      ``0xEB`` saw a dummy-cycle count other than six
-``Q-NIBBLE-ODD`` odd data-nibble count at termination (no partial byte)
-``Q-ADDR23``     retired (D35); ``A[23]`` is don't-care and is masked
+``Q-DUMMY``      too-few only: CE# rose still in DUMMY with
+                 ``dummy_cycles != 6`` (after six, clocks are data)
+``Q-NIBBLE-ODD`` odd data-nibble count at CE# rise (no partial byte)
+``Q-PAGE``       Linear Burst: one CE# low occupied more than two 1K pages
 ``Q-ADDR-RANGE`` a transferred byte moved past ``0x7FFFFF`` (no wrap)
 ``Q-DRIVE-DESEL``model drove SIO while its CE# was inactive
 ``Q-SIO-X``      SIO was unresolved during a host-driven phase
@@ -55,6 +58,7 @@ with ``strict=True``.
 
 from dataclasses import dataclass, field
 from typing import Callable
+import os
 
 import cocotb
 from cocotb.simtime import get_sim_time
@@ -69,6 +73,7 @@ from common.lifecycle import (
     SEV_FAIL,
 )
 from common.constants import SIO_UIO_BITS
+from models.psram_timing import active_timing_params
 from reference.constants import (
     ADDR_NIBBLES,
     CMD_NIBBLES,
@@ -88,7 +93,8 @@ from reference.constants import (
 Q_OPCODE = "Q-OPCODE"
 Q_DUMMY = "Q-DUMMY"
 Q_NIBBLE_ODD = "Q-NIBBLE-ODD"
-Q_ADDR23 = "Q-ADDR23"
+# Q-PAGE: Linear Burst may occupy at most two PSRAM_PAGE_SIZE (1K) pages per CE#.
+Q_PAGE = "Q-PAGE"
 Q_ADDR_RANGE = "Q-ADDR-RANGE"
 Q_DRIVE_DESEL = "Q-DRIVE-DESEL"
 Q_SIO_X = "Q-SIO-X"
@@ -150,7 +156,7 @@ def _value_sio_bit(handle, index: int) -> "int | None":
 def _sio_contention_unresolved(dut) -> bool:
     """True when two enabled SIO drivers disagree (wired-X that some sims drop).
 
-    Icarus resolves conflicting ``assign`` drivers to X on ``resolved_uio``.
+    Icarus resolves conflicting ``assign`` drivers to X on the physical bus.
     Verilator often keeps a 2-state winner instead. Detect the same contention
     from OE/drive handles so ``Q-SIO-X`` still fires without weakening the check.
     """
@@ -183,8 +189,17 @@ def _sio_contention_unresolved(dut) -> bool:
 
 
 def uio_nibble_reader(dut):
-    """Return a callable sampling SIO[3:0] from an L1/L2 resolved ``uio`` bus."""
-    handle = dut.resolved_uio
+    """Return a callable sampling SIO[3:0] from the physical L1/L2 bus.
+
+    Prefers ``bus_sio`` so ``_level()`` can return None on SIO Hi-Z without
+    folding in independent SCK float on ``uio_bus``. Falls back to extracting
+    bits 1, 2, 4, 5 from ``uio_bus``. No Z-to-0 idle overlay.
+    """
+    sio = getattr(dut, "bus_sio", None)
+    if sio is not None:
+        return sio_nibble_reader(sio, dut=dut)
+
+    handle = dut.uio_bus
 
     def read():
         if _sio_contention_unresolved(dut):
@@ -196,7 +211,7 @@ def uio_nibble_reader(dut):
 
 
 def sio_nibble_reader(handle, dut=None):
-    """Return a callable sampling SIO[3:0] from a 4-bit resolved SIO net (L0)."""
+    """Return a callable sampling SIO[3:0] from a 4-bit physical SIO net (L0)."""
 
     def read():
         if dut is not None and _sio_contention_unresolved(dut):
@@ -313,7 +328,17 @@ class PsramDevice:
 
 @dataclass
 class QpiTransaction:
-    """Pin-decoded record of one CE#-framed transaction."""
+    """Pin-decoded record of one CE#-framed transaction.
+
+    ``timing_profile`` / ``timing_snapshot`` are debug/log stamps only: the
+    ``TIMING_PROFILE`` name (``ideal`` zeros TB and, until wrap stamps AC,
+    also zeros device AC; ``nominal`` is documented APS6404L min/max AC) and a
+    shallow copy of the resolved delay manifest that affected the frame
+    (at least ``PSRAM_TACLK_NS`` / ``tACLK`` read-data valid after falling SCK,
+    ``D_OUT_CE_NS`` / ``D_OUT_SCK_NS`` DUT-to-device CE#/SCK transport, and
+    ``PSRAM_THZ_NS`` / ``tHZ`` CE# high to SIO Hi-Z). Parser behavior does not
+    branch on these fields.
+    """
 
     device_id: int
     opcode: int = 0
@@ -334,6 +359,8 @@ class QpiTransaction:
     faults: "list[str]" = field(default_factory=list)
     scratch: dict = field(default_factory=dict)
     complete: bool = False
+    timing_profile: str = "ideal"
+    timing_snapshot: dict = field(default_factory=dict)
 
     @property
     def byte_count(self) -> int:
@@ -380,7 +407,12 @@ class QpiAccess:
         return True
 
     def advance(self) -> None:
-        """Post-byte pointer increment; keeps overflow visible instead of wrapping."""
+        """Post-byte pointer increment; keeps overflow visible instead of wrapping.
+
+        Crossing into a new ``PSRAM_PAGE_SIZE`` (Linear Burst 1K page) boundary
+        increments ``page_crossings``. ``Q-PAGE`` fails once at CE# rise when
+        that count is greater than one (more than two pages in one CE# low).
+        """
         self.txn.address += 1
         if self.txn.address % PSRAM_PAGE_SIZE == 0:
             self.txn.page_crossings += 1
@@ -534,11 +566,15 @@ TERMINATION_RULES: "tuple[TerminationRule, ...]" = (
             f"{view.txn.addr_nibbles}/{view.command.address_nibbles} address nibbles"
         ),
     ),
+    # Q-DUMMY: too-few only. applies once address is complete; if the parser
+    # already left DUMMY for DATA (dummy_cycles == expected), violated is false.
+    # Extra clocks after six are data, not a too-many-dummy fail.
     TerminationRule(
         code=Q_DUMMY,
         applies=lambda view: (
             view.command is not None and view.command.dummy_cycles > 0 and view.addr_complete
         ),
+        # Still in dummy or dummy count != expected at termination before data.
         violated=lambda view: view.txn.dummy_cycles != view.command.dummy_cycles,
         detail=lambda view: (
             f"{view.txn.name}: {view.txn.dummy_cycles} dummy cycles, "
@@ -556,15 +592,28 @@ TERMINATION_RULES: "tuple[TerminationRule, ...]" = (
             "no partial byte committed"
         ),
     ),
+    TerminationRule(
+        code=Q_PAGE,
+        applies=lambda view: (
+            view.command is not None and view.addr_complete and view.dummy_complete
+        ),
+        violated=lambda view: view.txn.page_crossings > 1,
+        detail=lambda view: (
+            f"{view.txn.name}: {view.txn.page_crossings} page crossings in one CE# "
+            f"(PSRAM_PAGE_SIZE={PSRAM_PAGE_SIZE} Linear Burst 1K page); "
+            "at most one crossing (two pages) allowed"
+        ),
+    ),
 )
 
 
 class PsramQpiAgent:
     """QPI slave BFM for one PSRAM instance, clocked by SCK and CE#.
 
-    The agent wakes on resolved-bus SCK and CE# transitions only, samples
-    inbound nibbles on rising SCK, and launches read-data nibbles on falling
-    SCK.
+    The agent wakes on resolved-bus SCK and CE# transitions (and ``rst_n`` when
+    a handle is attached), samples inbound nibbles on rising SCK, and launches
+    read-data nibbles on falling SCK. Falling ``rst_n`` aborts via
+    :meth:`note_reset`.
     """
 
     def __init__(
@@ -576,6 +625,7 @@ class PsramQpiAgent:
         read_nibble,
         drive,
         oe,
+        rst_n=None,
         commands: "dict[int, QpiCommand] | None" = None,
         rules: "tuple[TerminationRule, ...]" = TERMINATION_RULES,
         strict: bool = False,
@@ -585,6 +635,7 @@ class PsramQpiAgent:
         self._memory = memory
         self._sck = sck
         self._ce_n = ce_n
+        self._rst_n = rst_n
         self._read_nibble = read_nibble
         self._drive_handle = drive
         self._oe_handle = oe
@@ -790,9 +841,28 @@ class PsramQpiAgent:
 
     # -- transaction framing ----------------------------------------------
 
+    def _txn_timing_stamp(self) -> "tuple[str, dict]":
+        """Return (TIMING_PROFILE name, shallow delay-manifest copy) for the log.
+
+        Prefers ``timing_params`` on the attached device when the delay wrapper
+        stuffed them; otherwise ``active_timing_params`` falls back to the
+        ideal resolved manifest (zeros until wrap stamps AC onto the device).
+        """
+        profile = os.environ.get("TIMING_PROFILE", "ideal")
+        params = getattr(self._memory, "timing_params", None)
+        if params is None:
+            params = active_timing_params(self._memory)
+        return profile, dict(params)
+
     def _begin_transaction(self) -> None:
         self._desel_drive_reported = False
-        self._txn = QpiTransaction(device_id=self._memory.device_id, ce_fall_ns=_now_ns())
+        timing_profile, timing_snapshot = self._txn_timing_stamp()
+        self._txn = QpiTransaction(
+            device_id=self._memory.device_id,
+            ce_fall_ns=_now_ns(),
+            timing_profile=timing_profile,
+            timing_snapshot=timing_snapshot,
+        )
         self._frame_token = self.pending.open(
             "",
             severity=SEV_DIAGNOSTIC,
@@ -818,16 +888,24 @@ class PsramQpiAgent:
         del txn.read_bytes[txn.data_nibbles // 2 :]
 
         view = TerminationView(txn=txn, command=self._command, phase=self._phase)
+        # Q-PHASE (CE# rose before command/address completed): nibble-count
+        # rules run here. Skip only on rst_n abort, where note_reset already
+        # audited pending phase/frame tokens as RESET-TRUNCATED.
         for rule in self._rules:
-            if rule.code == Q_PHASE:
+            if (
+                rule.code == Q_PHASE
+                and self._classification == CLASS_RESET_TRUNCATED
+            ):
                 continue
             if rule.applies(view) and rule.violated(view):
                 self._violation(rule.code, rule.detail(view))
 
-        if view.cmd_complete and view.addr_complete:
-            self.pending.resolve(self._phase_token)
-        elif self._phase_token is not None:
-            txn.faults.append(Q_PHASE)
+        # CE# rise already judged by termination rules; resolve ledger tokens
+        # so close_scope is not a second Q-PHASE (or incomplete-window note)
+        # for the same rise. Incomplete-window remains for dispose/stop of a
+        # still-open frame.
+        self.pending.resolve(self._frame_token)
+        self.pending.resolve(self._phase_token)
         self.pending.close_scope(self._memory.device_id, reason=REASON_SCOPE)
         self._frame_token = None
         self._phase_token = None
@@ -872,14 +950,29 @@ class PsramQpiAgent:
 
     # -- edge handlers -----------------------------------------------------
 
+    def _host_driven_sio(self) -> bool:
+        """True when this rising SCK must sample a host-driven SIO nibble.
+
+        ``Q-SIO-X`` (SIO must not be X/Z when sampled in a host-driven phase)
+        applies to command, address, and write data. Dummy and read-data
+        windows may legally float.
+        """
+        if self._phase in (PHASE_CMD, PHASE_ADDR):
+            return True
+        if self._phase == PHASE_DATA and self._command is not None:
+            return self._command.direction == DIR_WRITE
+        return False
+
     def _on_sck_rise(self) -> None:
         txn = self._txn
         if txn is None:
             return  # clocked while selected but never framed by a CE# fall
         nibble = self._read_nibble()
         if nibble is None:
-            self._violation(Q_SIO_X, f"unresolved SIO during {self._phase}")
-            return
+            if self._host_driven_sio():
+                self._violation(Q_SIO_X, f"unresolved SIO during {self._phase}")
+                return
+            nibble = 0  # legal dummy/read float; the clock still counts
 
         if self._phase == PHASE_CMD:
             txn.opcode = ((txn.opcode << 4) | nibble) & 0xFF
@@ -895,6 +988,8 @@ class PsramQpiAgent:
                 txn.start_address = txn.address
                 self._enter_data_phase()
         elif self._phase == PHASE_DUMMY:
+            # Count dummy rising SCKs; leave for DATA at exactly expected (six for
+            # 0xEB). Further clocks are data beats - Q-DUMMY is too-few only.
             txn.dummy_cycles += 1
             if txn.dummy_cycles == self._command.dummy_cycles:
                 self._phase = PHASE_DATA
@@ -920,19 +1015,52 @@ class PsramQpiAgent:
     async def _run(self) -> None:
         prev_ce = 1
         prev_sck = 0
+        prev_rst = None if self._rst_n is None else _level(self._rst_n)
 
         while True:
-            await First(self._sck.value_change, self._ce_n.value_change)
+            triggers = [self._sck.value_change, self._ce_n.value_change]
+            if self._rst_n is not None:
+                triggers.append(self._rst_n.value_change)
+            await First(*triggers)
+
+            # Falling rst_n aborts before CE#/SCK so a same-timestep CE# rise
+            # cannot retire the frame as an ordinary termination.
+            if self._rst_n is not None:
+                rst = _level(self._rst_n)
+                if prev_rst == 1 and rst == 0:
+                    self.note_reset()
+                prev_rst = rst
+
             ce = _level(self._ce_n)
             sck = _level(self._sck)
 
-            if ce is None or sck is None:
-                # Pre-reset X on the shared bus: stay released and resynchronize.
-                self._release_sio()
-                self._phase = PHASE_IDLE
-                self._txn = None
-                self._access = None
-                prev_ce, prev_sck = ce, sck
+            if ce is None:
+                # Unresolved CE# with a live frame: terminate so Q-PHASE (CE#
+                # rose before command/address completed) and related rules run
+                # as fail. Not RESET-TRUNCATED (in-reset/truncated sample; not a
+                # fail) unless rst_n already fell into note_reset above.
+                if self._txn is not None:
+                    self._ce_rise_ns = _now_ns()
+                    self._end_transaction()
+                else:
+                    # Pre-reset / idle X: stay released; do not invent a fail.
+                    self._release_sio()
+                    self._phase = PHASE_IDLE
+                if sck is not None:
+                    prev_sck = sck
+                prev_ce = None
+                continue
+
+            if sck is None:
+                # Unresolved SCK is not an edge; keep the txn and last known
+                # prev_sck. Still honor CE# framing on this evaluate.
+                if prev_ce != 0 and ce == 0:
+                    self._begin_transaction()
+                elif prev_ce == 0 and ce != 0:
+                    self._ce_rise_ns = _now_ns()
+                    self._end_transaction()
+                self._check_drive_while_deselected()
+                prev_ce = ce
                 continue
 
             if prev_ce != 0 and ce == 0:
@@ -988,6 +1116,7 @@ def _attach_psram_agents(
             read_nibble=read_nibble,
             drive=getattr(dut, f"psram{device_id}_sio_drive"),
             oe=getattr(dut, f"psram{device_id}_sio_oe"),
+            rst_n=dut.rst_n,
             strict=strict,
             violations=violations,
         )
@@ -1037,9 +1166,10 @@ def attach_engine_psram(
 
     Uses the L0 aliases ``psram_sck``, ``psram{N}_ce_n``, ``psram{N}_sio_drive``,
     ``psram{N}_sio_oe``, and samples SIO through :func:`sio_nibble_reader` on
-    ``resolved_sio``. *devices* may be ``0``, ``1``, or an iterable of those
-    ids; the return value is an ordered tuple of attached :class:`PsramDevice`
-    instances (each with ``.agent`` started).
+    ``bus_sio`` / ``sio_bus`` so ``_level()`` can return None on Z. *devices*
+    may be ``0``, ``1``, or an iterable of those ids; the return value is an
+    ordered tuple of attached :class:`PsramDevice` instances (each with
+    ``.agent`` started).
 
     The engine always drives both CE# outputs. Attaching a single device still
     leaves the unselected CE# observable on the wrapper; idle after reset keeps
@@ -1047,10 +1177,13 @@ def attach_engine_psram(
     :func:`monitors.qspi.start_shared_bus_monitor` for ownership checks.
     """
     device_ids = _normalize_device_ids(devices)
+    sio_handle = getattr(dut, "bus_sio", None)
+    if sio_handle is None:
+        sio_handle = dut.sio_bus
     return _attach_psram_agents(
         dut,
         device_ids,
-        read_nibble=sio_nibble_reader(dut.resolved_sio, dut=dut),
+        read_nibble=sio_nibble_reader(sio_handle, dut=dut),
         strict=strict,
         fill=fill,
         seed=seed,

@@ -25,22 +25,27 @@ explicit blocker rather than accidentally retesting nominal ``5.5 ns``.
 Test-case IDs:
     TC-LAUNCH-NOMINAL-PASS
     TC-LAUNCH-SCK-HIGH-VIOLATION
+    TC-LAUNCH-TSP-VIOLATION
+    TC-LAUNCH-THD-VIOLATION
+    TC-LAUNCH-THD-SAME-FS
+    TC-LAUNCH-OE0-SIO-IGNORED
     TC-RXEDGE-NOMINAL-PASS
-    TC-RXEDGE-TACLK-BOUNDARY
+    TC-RXEDGE-TACLK-PAST-CAPTURE
     TC-RXEDGE-PENDING-AT-STOP
     TC-PENDING-SURVIVES-CLEAR
     TC-TIMED-WRAPPER-STOP-ISOLATION
+    TC-RXEDGE-WRITE-ONLY-NA
 """
 
 import os
 
 import cocotb
 from cocotb.simtime import get_sim_time
-from cocotb.triggers import NextTimeStep, ReadOnly, RisingEdge, Timer
+from cocotb.triggers import FallingEdge, NextTimeStep, ReadOnly, RisingEdge, Timer
 
 from common.bringup import bring_up_engine
 from common.config import parse_run_config
-from common.constants import FILL
+from common.constants import DEFAULT_CLOCK_PERIOD_NS, FILL, RESULT_FAIL, RESULT_NA, RESULT_PASS
 from common.dispose import dispose_run, expect
 from common.engine_bfm import bytes_to_nibbles, engine_qpi_read, engine_qpi_write
 from monitors import timing
@@ -205,6 +210,48 @@ async def _inject_sio_change_while_sck_high(dut, *, timeout_edges: int = 128) ->
     raise AssertionError("TC-LAUNCH-SCK-HIGH-VIOLATION: no selected SCK rise")
 
 
+async def _selected_write_window(dut, *, timeout_edges: int = 128) -> None:
+    """Advance to a selected CE# with the engine driving SIO."""
+    for _ in range(timeout_edges):
+        await RisingEdge(dut.psram_sck)
+        await ReadOnly()
+        if int(dut.psram0_ce_n.value) != 0 and int(dut.psram1_ce_n.value) != 0:
+            continue
+        if int(dut.sio_oe.value) == 0:
+            continue
+        return
+    raise AssertionError("no selected write-phase SCK rise with SIO OE")
+
+
+async def _glitch_asic_oe(dut, *, hold_ns: float = 0.1) -> None:
+    """Force an ASIC SIO OE falling edge via the L0 fault overlay."""
+    dut.fault_sio_oe.value = 0xF
+    await Timer(hold_ns, unit="ns")
+    dut.fault_sio_oe.value = 0
+
+
+async def _inject_short_setup(dut, *, setup_ns: float = 0.5) -> None:
+    """Change driven OE late in the SCK-low half (short tSP)."""
+    await _selected_write_window(dut)
+    await FallingEdge(dut.psram_sck)
+    # Engine SCK is clk/2; low half equals one clk period.
+    await Timer(DEFAULT_CLOCK_PERIOD_NS - setup_ns, unit="ns")
+    await _glitch_asic_oe(dut)
+
+
+async def _inject_short_hold(dut, *, hold_ns: float = 0.5) -> None:
+    """Change driven OE shortly after a sampling rise (short or exact tHD).
+
+    Wait for a fall then the following rise so ``_check_launch_rise`` has
+    opened a hold window from the nibble launched in that low half.
+    """
+    await _selected_write_window(dut)
+    await FallingEdge(dut.psram_sck)
+    await RisingEdge(dut.psram_sck)
+    await Timer(hold_ns, unit="ns")
+    await _glitch_asic_oe(dut)
+
+
 @cocotb.test()
 async def qspi_launch_directed(dut):
     """TC-LAUNCH-NOMINAL-PASS plus TC-LAUNCH-SCK-HIGH-VIOLATION."""
@@ -238,6 +285,14 @@ async def qspi_launch_directed(dut):
         log=dut._log,
         repro=repro,
     )
+    assert monitor.results()[timing.Q_RXEDGE] == RESULT_NA, (
+        "TC-RXEDGE-WRITE-ONLY-NA: write-only traffic disposed Q-RXEDGE="
+        f"{monitor.results()[timing.Q_RXEDGE]!r}, expected na. {repro}"
+    )
+    assert monitor.results()[timing.Q_LAUNCH] == RESULT_PASS, (
+        "TC-LAUNCH-NOMINAL-PASS: Q-LAUNCH="
+        f"{monitor.results()[timing.Q_LAUNCH]!r} after a legal write. {repro}"
+    )
 
     monitor.clear()
     write_task = cocotb.start_soon(
@@ -253,6 +308,124 @@ async def qspi_launch_directed(dut):
         expect_fail=[expect(timing.Q_LAUNCH)],
         log=dut._log,
         repro=repro,
+    )
+
+
+@cocotb.test()
+async def qspi_launch_short_setup_hold(dut):
+    """TC-LAUNCH-TSP-VIOLATION, TC-LAUNCH-THD-VIOLATION, TC-LAUNCH-THD-SAME-FS."""
+    config = parse_run_config()
+    repro = _repro(config, "qspi_launch_short_setup_hold")
+    dut._log.info(repro)
+
+    bringup, monitor = await _bring_up_timing(dut)
+    write_task = cocotb.start_soon(
+        engine_qpi_write(
+            dut, device=0, address=_LAUNCH_ADDRESS + 0x40, payload=bytes((0x11, 0x22))
+        )
+    )
+    await _inject_short_setup(dut, setup_ns=0.5)
+    await write_task
+    dispose_run(
+        monitor,
+        test="TC-LAUNCH-TSP-VIOLATION",
+        expect_fail=[expect(timing.Q_LAUNCH)],
+        log=dut._log,
+        repro=repro,
+    )
+    details = [event.detail for event in monitor.violations_for(timing.Q_LAUNCH)]
+    assert any("setup=" in detail and "tSP=" in detail for detail in details), (
+        "TC-LAUNCH-TSP-VIOLATION: expected a tSP finding. "
+        f"details={details}. {repro}"
+    )
+
+    monitor.clear()
+    write_task = cocotb.start_soon(
+        engine_qpi_write(
+            dut, device=0, address=_LAUNCH_ADDRESS + 0x60, payload=bytes((0x33,))
+        )
+    )
+    await _inject_short_hold(dut, hold_ns=0.5)
+    await write_task
+    dispose_run(
+        monitor,
+        test="TC-LAUNCH-THD-VIOLATION",
+        expect_fail=[expect(timing.Q_LAUNCH)],
+        log=dut._log,
+        repro=repro,
+    )
+    details = [event.detail for event in monitor.violations_for(timing.Q_LAUNCH)]
+    assert any("hold=" in detail and "tHD=" in detail for detail in details), (
+        "TC-LAUNCH-THD-VIOLATION: expected a tHD finding. "
+        f"details={details}. {repro}"
+    )
+
+    monitor.clear()
+    thd_ns = bringup.timing_params["PSRAM_THD_NS"]
+    write_task = cocotb.start_soon(
+        engine_qpi_write(
+            dut, device=0, address=_LAUNCH_ADDRESS + 0x80, payload=bytes((0x44,))
+        )
+    )
+    await _inject_short_hold(dut, hold_ns=thd_ns)
+    await write_task
+    dispose_run(
+        monitor,
+        test="TC-LAUNCH-THD-SAME-FS",
+        expect_fail=[expect(timing.Q_LAUNCH)],
+        log=dut._log,
+        repro=repro,
+    )
+    details = [event.detail for event in monitor.violations_for(timing.Q_LAUNCH)]
+    assert any("hold=" in detail and "tHD=" in detail for detail in details), (
+        "TC-LAUNCH-THD-SAME-FS: same-fs / exact-tHD change must fail tHD. "
+        f"details={details}. {repro}"
+    )
+
+
+@cocotb.test()
+async def qspi_launch_oe0_sio_ignored(dut):
+    """TC-LAUNCH-OE0-SIO-IGNORED: SIO value changes while OE=0 are not launches."""
+    config = parse_run_config()
+    repro = _repro(config, "qspi_launch_oe0_sio_ignored")
+    dut._log.info(repro)
+
+    bringup, monitor = await _bring_up_timing(dut)
+    bringup.psram1.write(_RX_ADDRESS, _RX_PAYLOAD)
+    read_task = cocotb.start_soon(
+        engine_qpi_read(dut, device=1, address=_RX_ADDRESS, length=len(_RX_PAYLOAD))
+    )
+    flipped = False
+    for _ in range(256):
+        await RisingEdge(dut.psram_sck)
+        await ReadOnly()
+        if int(dut.psram1_ce_n.value) != 0:
+            continue
+        if int(dut.sio_oe.value) != 0:
+            continue
+        await NextTimeStep()
+        dut.sio_out.value = int(dut.sio_out.value) ^ 0xF
+        flipped = True
+        break
+    await read_task
+    assert flipped, (
+        "TC-LAUNCH-OE0-SIO-IGNORED: never saw OE=0 on a selected rising SCK. "
+        + repro
+    )
+    assert not monitor.violations_for(timing.Q_LAUNCH), (
+        "TC-LAUNCH-OE0-SIO-IGNORED: SIO change with OE=0 produced Q-LAUNCH "
+        f"{[str(event) for event in monitor.violations_for(timing.Q_LAUNCH)]}. "
+        + repro
+    )
+    dispose_run(
+        monitor,
+        test="TC-LAUNCH-OE0-SIO-IGNORED",
+        log=dut._log,
+        repro=repro,
+    )
+    assert monitor.results()[timing.Q_RXEDGE] == RESULT_PASS, (
+        "TC-LAUNCH-OE0-SIO-IGNORED: Q-RXEDGE="
+        f"{monitor.results()[timing.Q_RXEDGE]!r} after a timed read. {repro}"
     )
 
 
@@ -302,6 +475,10 @@ async def qspi_rxedge_directed(dut):
                     f"(must be > 0). {summary}"
                 )
     dispose_run(monitor, test=test, log=dut._log, repro=repro)
+    assert monitor.results()[timing.Q_RXEDGE] == RESULT_PASS, (
+        f"{test}: Q-RXEDGE={monitor.results()[timing.Q_RXEDGE]!r} after a timed "
+        f"read with {monitor._rx_captures} captures. {repro}"
+    )
 
 
 @cocotb.test()
@@ -474,4 +651,44 @@ async def qspi_timed_wrapper_stop_isolation(dut):
     assert old_wrapper.timing_events == events_before_stop, (
         "TC-TIMED-WRAPPER-STOP-ISOLATION: retired delayed response appended "
         "timing events after stop/re-bring-up"
+    )
+
+
+@cocotb.test()
+async def qspi_rxedge_taclk_past_capture(dut):
+    """TC-RXEDGE-TACLK-PAST-CAPTURE: tACLK longer than falling-to-rising SCK.
+
+    Functional sim, not STA. At 10 ns clk, SCK is 20 ns; capture is the next
+    rising SCK (~10 ns after the fall). ``PSRAM_TACLK_NS=12`` is past that
+    edge. Requires ``TIMING_PROFILE=sweep`` and that override.
+    """
+    config = parse_run_config()
+    repro = _repro(config, "qspi_rxedge_taclk_past_capture")
+    raw = os.environ.get("PSRAM_TACLK_NS")
+    if config["timing_profile"] != "sweep" or raw is None or float(raw) < 12.0:
+        dut._log.info(
+            "TC-RXEDGE-TACLK-PAST-CAPTURE skipped (need TIMING_PROFILE=sweep "
+            "PSRAM_TACLK_NS>=12). %s",
+            repro,
+        )
+        return
+
+    dut._log.info(repro)
+    bringup, monitor = await _bring_up_timing(dut)
+    taclk = bringup.timing_params["PSRAM_TACLK_NS"]
+    assert taclk >= 12.0, f"resolved tACLK={taclk} ns is not past capture. {repro}"
+    bringup.psram1.write(_RX_ADDRESS, _RX_PAYLOAD)
+    await engine_qpi_read(
+        dut, device=1, address=_RX_ADDRESS, length=len(_RX_PAYLOAD)
+    )
+    dispose_run(
+        monitor,
+        test="TC-RXEDGE-TACLK-PAST-CAPTURE",
+        expect_fail=[expect(timing.Q_RXEDGE)],
+        log=dut._log,
+        repro=repro,
+    )
+    assert monitor.results()[timing.Q_RXEDGE] == RESULT_FAIL, (
+        f"TC-RXEDGE-TACLK-PAST-CAPTURE: Q-RXEDGE="
+        f"{monitor.results()[timing.Q_RXEDGE]!r}, expected fail. {repro}"
     )

@@ -2,7 +2,11 @@
 
 The monitor observes the DUT-visible CE#/SCK plane.  It reports setup, hold,
 and read-termination margins using integer simulator time; the parser and
-``Q-RXEDGE`` own device-plane read-data timing.
+``Q-RXEDGE`` (each launched read nibble captured on the following rising SCK)
+own device-plane read-data timing. L0 matches ``rdata_valid`` pulse plus nibble.
+L1/L2 have no ``rdata_valid`` alias; the armed external rising SCK is the
+D16 capture and still applies ``tACLK`` / ``PSRAM_TACLK_NS`` (read data valid
+after falling SCK) independently of the wrapper.
 
 Defaults match APS6404L Table 10 as recorded in that doc:
 
@@ -30,7 +34,7 @@ from common.lifecycle import (
     REASON_STOP,
     SEV_FAIL,
 )
-from common.constants import RESULT_FAIL, RESULT_PASS
+from common.constants import RESULT_BLOCKED, RESULT_FAIL, RESULT_NA, RESULT_PASS
 
 Q_CEM = "Q-CEM"
 Q_CPH = "Q-CPH"
@@ -154,6 +158,7 @@ class CeTimingMonitor:
         self._tcph_fs = _ns_to_fs(self._tcph_ns)
         self._tcsp_fs = _ns_to_fs(self._tcsp_ns)
         self._tchd_fs = _ns_to_fs(self._tchd_ns)
+        self._taclk_fs = _ns_to_fs(self._taclk_ns)
         self._tsp_fs = _ns_to_fs(self._tsp_ns)
         self._thd_fs = _ns_to_fs(self._thd_ns)
         self._sck = sck
@@ -221,14 +226,19 @@ class CeTimingMonitor:
         self._launch_change_fs = None
         self._launch_change_kind = ""
         self._launch_hold_until_fs = None
+        self._launch_device = None
+        self._launch_hits = 0
         self._rx_pending = []
         self._rx_min_setup_ns = None
         self._rx_min_hold_ns = None
         self._rx_captures = 0
+        self._rx_launches = 0
         self._rx_expected_nibbles = {}
         self._samples = 0
         self._suppressed = 0
+        self._overflow_ids = set()
         self._active = True
+        self._cem_tasks: list = []
         self.pending = PendingLedger(
             owner=self.name,
             record=self._record_pending,
@@ -246,7 +256,20 @@ class CeTimingMonitor:
     def stop(self) -> None:
         """Soft-stop so a later test in the same module can re-attach."""
         self.pending.audit(reason=REASON_STOP)
+        self.cancel_tasks()
         self._active = False
+
+    def cancel_tasks(self) -> None:
+        """Cancel CE# ``tCEM`` deadline tasks and invalidate their generation.
+
+        ``tCEM`` is max CE# low time. Dispose/clear must not leave those
+        timers running into the next window.
+        """
+        for label in list(self._fall_gen):
+            self._fall_gen[label] += 1
+        tasks, self._cem_tasks = self._cem_tasks, []
+        for task in tasks:
+            task.cancel()
 
     def clear(self) -> None:
         """Drop recorded findings and edge history for a fresh directed window."""
@@ -254,6 +277,7 @@ class CeTimingMonitor:
         self.violations.clear()
         self.reset_truncated.clear()
         self._suppressed = 0
+        self._overflow_ids.clear()
         self._last_ce_rise_fs = None
         self._last_rise_label = None
         self._min_cem_margin_ns = None
@@ -275,11 +299,14 @@ class CeTimingMonitor:
         self._launch_change_fs = None
         self._launch_change_kind = ""
         self._launch_hold_until_fs = None
+        self._launch_device = None
+        self._launch_hits = 0
         self._rx_pending.clear()
         self.pending.clear()
         self._rx_min_setup_ns = None
         self._rx_min_hold_ns = None
         self._rx_captures = 0
+        self._rx_launches = 0
         self._rx_expected_nibbles.clear()
         self._timed_event_cursor = {id(device): 0 for device in self._timed_devices}
         for label, handle in self._ram_ce_n:
@@ -325,6 +352,7 @@ class CeTimingMonitor:
 
         if len(self.events) >= self._max_events:
             self._suppressed += 1
+            self._overflow_ids.add(event.check_id)
             return
 
         self.events.append(event)
@@ -490,6 +518,62 @@ class CeTimingMonitor:
             if edge == "rise":
                 self._on_ce_rise(label, now_fs=now_fs, in_reset=in_reset)
 
+    def _device_by_id(self, device_id):
+        for device in self._timed_devices:
+            if getattr(device, "device_id", None) == device_id:
+                return device
+        return None
+
+    def _selected_timed_device(self):
+        """Return the timed wrapper whose DUT-plane CE# is currently low."""
+        for label, handle in self._ram_ce_n:
+            if _level(handle) != 0:
+                continue
+            device_id = 0 if label == "PSRAM0" else 1
+            device = self._device_by_id(device_id)
+            if device is not None:
+                return device
+        return None
+
+    def _d_out_fs(self, signal: str, device=None) -> int:
+        """Per-device D_OUT_* (TB output delay toward that device)."""
+        if device is None:
+            device = self._selected_timed_device()
+        if device is None:
+            return 0
+        return _ns_to_fs(device.timing_params.get(f"D_OUT_{signal}_NS", 0.0))
+
+    def _asic_drives_sck(self) -> bool:
+        """True when Q-LAUNCH applies because the ASIC currently drives SCK.
+
+        L0 ``tb_engine`` has no ``asic_sck_oe``: the engine always owns SCK, so
+        a missing OE handle is treated as 1 only at L0. At L1/L2 a missing OE
+        is 0 (not driving), never a silent 1.
+        """
+        if self._sck_oe is None:
+            return str(self.level).upper().startswith("L0")
+        return _level(self._sck_oe) == 1
+
+    def _computed_rx_ready_fs(self, entry) -> "int | None":
+        """Independent tACLK ready time: device-plane fall + tACLK + TB_FLIGHT_IN.
+
+        ``PSRAM_TACLK_NS`` / ``tACLK`` is read data valid after falling SCK.
+        ``D_IN_SIO_NS`` carries ``TB_FLIGHT_IN`` (return-path delay to the DUT).
+        """
+        fall_fs = entry.get("device_fall_fs")
+        if fall_fs is None:
+            fall_fs = entry.get("source_fall_fs")
+        if fall_fs is None:
+            return None
+        device = self._device_by_id(entry.get("device_id"))
+        din_fs = 0
+        if device is not None:
+            params = device.timing_params
+            din_fs = _ns_to_fs(
+                params.get("D_IN_SIO_NS", params.get("TB_FLIGHT_IN_NS", 0.0))
+            )
+        return int(fall_fs) + self._taclk_fs + din_fs
+
     def _on_launch_source(self, *, now_fs: int, in_reset: bool) -> None:
         """Check DUT-plane launch legality and retain delayed setup/hold windows."""
         changed = []
@@ -503,49 +587,55 @@ class CeTimingMonitor:
             if value != self._prev_sio_oe:
                 self._prev_sio_oe = value
                 changed.append("OE")
+        # Q-LAUNCH ignores SIO value changes while OE=0 (not driving the bus).
+        if "SIO" in changed:
+            oe_now = _nibble(self._sio_oe) if self._sio_oe is not None else 0
+            if not oe_now:
+                changed = [kind for kind in changed if kind != "SIO"]
         if not changed:
             return
 
         sck = _level(self._sck) if self._sck is not None else None
-        # Missing SCK OE (L0 engine) means the ASIC owns SCK continuously.
-        sck_oe = _level(self._sck_oe) if self._sck_oe is not None else 1
-        kind = "+".join(changed)
         # Q-LAUNCH (driven SIO/OE changes only while SCK is low, with modeled
         # setup/hold) applies only while the ASIC drives SCK. Grant/park and
         # reset OE collapse with asic_sck_oe==0 are CHK-ARB-* / CHK-RST-OE, not
         # launch setup/hold. Fail only on known high SCK; X/Z/None means the
         # net is undriven or unresolved, not a high-half launch window.
-        if sck_oe != 1:
+        if not self._asic_drives_sck():
             return
+        self._launch_hits += 1
+        kind = "+".join(changed)
         if sck == 1:
             self._fail_edge(
                 Q_LAUNCH,
-                f"{kind} changed while external SCK={sck} sck_oe={sck_oe}; "
+                f"{kind} changed while external SCK={sck} sck_oe=1; "
                 f"required SCK low (DUT={now_fs / 1_000_000.0:.3f}ns)",
                 in_reset=in_reset,
             )
-        device_change_fs = now_fs + max(
-            _ns_to_fs(
-                self._timed_devices[0].timing_params.get("D_OUT_SIO_NS", 0.0)
-            )
-            if "SIO" in changed and self._timed_devices
-            else 0,
-            _ns_to_fs(
-                self._timed_devices[0].timing_params.get("D_OUT_OE_NS", 0.0)
-            )
-            if "OE" in changed and self._timed_devices
-            else 0,
-        )
-        if self._launch_hold_until_fs is not None and device_change_fs < self._launch_hold_until_fs:
-            observed = (device_change_fs - (self._launch_hold_until_fs - self._thd_fs)) / 1_000_000.0
+        device = self._selected_timed_device()
+        delays = []
+        if "SIO" in changed:
+            delays.append(self._d_out_fs("SIO", device))
+        if "OE" in changed:
+            delays.append(self._d_out_fs("OE", device))
+        device_change_fs = now_fs + (max(delays) if delays else 0)
+        # Inclusive hold: a same-fs change at the tHD deadline fails (tb-pin-07).
+        if (
+            self._launch_hold_until_fs is not None
+            and device_change_fs <= self._launch_hold_until_fs
+        ):
+            observed = (
+                device_change_fs - (self._launch_hold_until_fs - self._thd_fs)
+            ) / 1_000_000.0
             self._fail_edge(
                 Q_LAUNCH,
-                f"{kind} device-plane hold={observed:.3f}ns < tHD={self._thd_ns:.3f}ns "
+                f"{kind} device-plane hold={observed:.3f}ns <= tHD={self._thd_ns:.3f}ns "
                 f"(change={device_change_fs / 1_000_000.0:.3f}ns)",
                 in_reset=in_reset,
             )
         self._launch_change_fs = device_change_fs
         self._launch_change_kind = kind
+        self._launch_device = device
 
     def _collect_timed_events(self, *, in_reset: bool) -> None:
         for device in self._timed_devices:
@@ -569,6 +659,7 @@ class CeTimingMonitor:
                         scope=device.device_id,
                     )
                     self._rx_pending.append(entry)
+                    self._rx_launches += 1
                     if device.device_id not in self._rx_expected_nibbles:
                         byte_len = _nibble(self._byte_len)
                         if byte_len is not None:
@@ -617,6 +708,86 @@ class CeTimingMonitor:
                     ]
             self._timed_event_cursor[id(device)] = len(events)
 
+    def _resolve_rx_capture(
+        self,
+        expected,
+        now_fs: int,
+        *,
+        in_reset: bool,
+        captured_nibble: "int | None" = None,
+        require_rise_coincidence: bool = False,
+    ) -> None:
+        """Close one launched nibble at *now_fs* and apply Q-RXEDGE checks.
+
+        ``Q-RXEDGE`` (each launched read nibble captured on the following
+        rising SCK) requires return-plane data to be valid at or before this
+        capture. Validity is the wrapper ``read-input-valid`` timestamp when
+        present, and independently ``t_fall + tACLK + TB_FLIGHT_IN``.
+        """
+        expected["capture_fs"] = now_fs
+        token = expected.get("token")
+        if token is not None:
+            self.pending.resolve(token)
+        self._rx_captures += 1
+        required_rise_fs = expected.get("required_rise_fs")
+        if (
+            require_rise_coincidence
+            and required_rise_fs is not None
+            and now_fs != required_rise_fs
+        ):
+            self._fail_edge(
+                Q_RXEDGE,
+                f"capture at {now_fs / 1_000_000.0:.3f}ns did not coincide "
+                f"with required external rising edge at "
+                f"{required_rise_fs / 1_000_000.0:.3f}ns",
+                in_reset=in_reset,
+            )
+        input_valid_fs = expected.get("input_valid_fs")
+        computed_fs = self._computed_rx_ready_fs(expected)
+        if computed_fs is not None and computed_fs > now_fs:
+            self._fail_edge(
+                Q_RXEDGE,
+                f"capture at {now_fs / 1_000_000.0:.3f}ns before independent "
+                f"tACLK window (ready={computed_fs / 1_000_000.0:.3f}ns, "
+                f"tACLK={self._taclk_ns:.3f}ns) for nibble="
+                f"0x{expected['nibble']:X}",
+                in_reset=in_reset,
+            )
+        if input_valid_fs is None or input_valid_fs > now_fs:
+            shown_valid = (
+                "none"
+                if input_valid_fs is None
+                else f"{input_valid_fs / 1_000_000.0:.3f}ns"
+            )
+            self._fail_edge(
+                Q_RXEDGE,
+                f"capture at {now_fs / 1_000_000.0:.3f}ns before return data "
+                f"was valid for nibble=0x{expected['nibble']:X} "
+                f"(input-valid={shown_valid})",
+                in_reset=in_reset,
+            )
+        else:
+            setup_ns = (now_fs - input_valid_fs) / 1_000_000.0
+            self._rx_min_setup_ns = (
+                setup_ns
+                if self._rx_min_setup_ns is None
+                else min(self._rx_min_setup_ns, setup_ns)
+            )
+            if captured_nibble is not None and captured_nibble != expected["nibble"]:
+                shown = "?" if captured_nibble is None else f"0x{captured_nibble:X}"
+                self._fail_edge(
+                    Q_RXEDGE,
+                    f"capture nibble={shown} expected=0x{expected['nibble']:X} "
+                    f"(launch={expected['source_fall_fs'] / 1_000_000.0:.3f}ns "
+                    f"input-valid={input_valid_fs / 1_000_000.0:.3f}ns "
+                    f"capture={now_fs / 1_000_000.0:.3f}ns)",
+                    in_reset=in_reset,
+                )
+        for label, _ in self._ram_ce_n:
+            if self._fall_fs[label] is not None:
+                self._read_commits[label] += 1
+                self._last_read_commit_fs[label] = now_fs
+
     def _on_rdata_valid(self, now_fs: int, *, in_reset: bool) -> None:
         if self._rdata_valid is None:
             return
@@ -639,48 +810,14 @@ class CeTimingMonitor:
                 "rdata_valid asserted without a pending read-nibble rising edge",
                 in_reset=in_reset,
             )
-        else:
-            expected["capture_fs"] = now_fs
-            self.pending.resolve(expected["token"])
-            self._rx_captures += 1
-            if now_fs != expected["required_rise_fs"]:
-                self._fail_edge(
-                    Q_RXEDGE,
-                    f"capture at {now_fs / 1_000_000.0:.3f}ns did not coincide "
-                    f"with required external rising edge at "
-                    f"{expected['required_rise_fs'] / 1_000_000.0:.3f}ns",
-                    in_reset=in_reset,
-                )
-            input_valid_fs = expected["input_valid_fs"]
-            if input_valid_fs is None or input_valid_fs > now_fs:
-                self._fail_edge(
-                    Q_RXEDGE,
-                    f"capture at {now_fs / 1_000_000.0:.3f}ns before return data "
-                    f"was valid for nibble=0x{expected['nibble']:X}",
-                    in_reset=in_reset,
-                )
-            else:
-                setup_ns = (now_fs - input_valid_fs) / 1_000_000.0
-                self._rx_min_setup_ns = (
-                    setup_ns
-                    if self._rx_min_setup_ns is None
-                    else min(self._rx_min_setup_ns, setup_ns)
-                )
-                captured = _nibble(self._rdata)
-                if captured != expected["nibble"]:
-                    shown = "?" if captured is None else f"0x{captured:X}"
-                    self._fail_edge(
-                        Q_RXEDGE,
-                        f"capture nibble={shown} expected=0x{expected['nibble']:X} "
-                        f"(launch={expected['source_fall_fs'] / 1_000_000.0:.3f}ns "
-                        f"input-valid={input_valid_fs / 1_000_000.0:.3f}ns "
-                        f"capture={now_fs / 1_000_000.0:.3f}ns)",
-                        in_reset=in_reset,
-                    )
-        for label, _ in self._ram_ce_n:
-            if self._fall_fs[label] is not None:
-                self._read_commits[label] += 1
-                self._last_read_commit_fs[label] = now_fs
+            return
+        self._resolve_rx_capture(
+            expected,
+            now_fs,
+            in_reset=in_reset,
+            captured_nibble=_nibble(self._rdata),
+            require_rise_coincidence=True,
+        )
 
     def _on_sck(self, *, now_fs: int, in_reset: bool) -> None:
         if self._sck is None:
@@ -718,9 +855,7 @@ class CeTimingMonitor:
     def _check_launch_rise(self, *, now_fs: int, in_reset: bool) -> None:
         if self._launch_change_fs is None:
             return
-        sck_delay_fs = _ns_to_fs(
-            self._timed_devices[0].timing_params.get("D_OUT_SCK_NS", 0.0)
-        ) if self._timed_devices else 0
+        sck_delay_fs = self._d_out_fs("SCK", self._launch_device)
         device_rise_fs = now_fs + sck_delay_fs
         if self._launch_change_fs > device_rise_fs:
             return
@@ -737,6 +872,7 @@ class CeTimingMonitor:
         self._launch_hold_until_fs = device_rise_fs + self._thd_fs
         self._launch_change_fs = None
         self._launch_change_kind = ""
+        self._launch_device = None
 
     def _check_rx_rise(self, *, now_fs: int, in_reset: bool) -> None:
         pending_required = next(
@@ -755,7 +891,9 @@ class CeTimingMonitor:
                 in_reset=in_reset,
             )
             pending_required["capture_fs"] = -1
-            self.pending.resolve(pending_required["token"])
+            token = pending_required.get("token")
+            if token is not None:
+                self.pending.resolve(token)
         launch = next(
             (
                 item
@@ -765,8 +903,13 @@ class CeTimingMonitor:
             ),
             None,
         )
-        if launch is not None:
-            launch["required_rise_fs"] = now_fs
+        if launch is None:
+            return
+        launch["required_rise_fs"] = now_fs
+        # L1/L2 have no rdata_valid alias (tb-pin-06). The armed external
+        # rising SCK is the D16 capture; apply the same tACLK check as L0.
+        if self._rdata_valid is None:
+            self._resolve_rx_capture(launch, now_fs, in_reset=in_reset)
 
     def _on_ce_fall(self, label: str, *, now_fs: int, in_reset: bool) -> None:
         device_id = 0 if label == "PSRAM0" else 1
@@ -792,8 +935,12 @@ class CeTimingMonitor:
         self._last_read_commit_fs[label] = None
         self._fall_gen[label] += 1
         self._cem_reported[label] = False
-        cocotb.start_soon(
-            self._cem_deadline(label, fall_fs=now_fs, generation=self._fall_gen[label])
+        self._cem_tasks.append(
+            cocotb.start_soon(
+                self._cem_deadline(
+                    label, fall_fs=now_fs, generation=self._fall_gen[label]
+                )
+            )
         )
 
     def _on_ce_rise(self, label: str, *, now_fs: int, in_reset: bool) -> None:
@@ -974,10 +1121,38 @@ class CeTimingMonitor:
 
     def results(self) -> "dict[str, str]":
         counts = self.counts()
+        dispositions = {}
+        for check_id in CE_TIMING_CHECK_IDS:
+            if counts[check_id] or check_id in self._overflow_ids:
+                dispositions[check_id] = RESULT_FAIL
+            elif check_id == Q_RXEDGE:
+                if not self._timed_devices:
+                    dispositions[check_id] = RESULT_BLOCKED
+                elif not self._rx_launches:
+                    dispositions[check_id] = RESULT_NA
+                else:
+                    dispositions[check_id] = RESULT_PASS
+            elif check_id == Q_LAUNCH:
+                if not self._launch_hits:
+                    dispositions[check_id] = RESULT_NA
+                else:
+                    dispositions[check_id] = RESULT_PASS
+            else:
+                dispositions[check_id] = RESULT_PASS
+        return dispositions
+
+    def blocked_reasons(self) -> "dict[str, str]":
+        """Return why ``Q-RXEDGE`` is blocked when there is no timed stream."""
+        if self._timed_devices or self.counts()[Q_RXEDGE] or Q_RXEDGE in self._overflow_ids:
+            return {}
         return {
-            check_id: RESULT_FAIL if counts[check_id] else RESULT_PASS
-            for check_id in CE_TIMING_CHECK_IDS
+            Q_RXEDGE: "no timed read stream (timed_devices empty); cannot apply tACLK"
         }
+
+    @property
+    def suppressed(self) -> int:
+        """Count of findings dropped after ``max_events`` (tb-pin-09)."""
+        return self._suppressed
 
     def violations_for(self, check_id: str) -> "list[TimingViolation]":
         return [event for event in self.events if event.check_id == check_id]
@@ -1027,12 +1202,42 @@ def _first_optional(dut, *names):
     return None
 
 
+def resolve_ce_timing_thresholds(
+    timing_params=None,
+    *,
+    grade: str = "extended",
+    tcem_ns: "float | None" = None,
+    tcph_ns: "float | None" = None,
+) -> "tuple[float, float]":
+    """Return ``(tCEM_ns, tCPH_ns)`` from explicit args, else the profile manifest.
+
+    ``tCEM`` is max CE# low; ``tCPH`` is min CE# high between bursts. Explicit
+    arguments win. Profile keys ``PSRAM_TCEM_NS`` or ``PSRAM_TCEM_US_*`` and
+    ``PSRAM_TCPH_NS`` feed the monitor when args are omitted.
+    """
+    if grade not in ("extended", "standard"):
+        raise ValueError(f"grade must be 'extended' or 'standard', got {grade!r}")
+    params = {} if timing_params is None else dict(timing_params)
+    if tcem_ns is None:
+        if "PSRAM_TCEM_NS" in params and params["PSRAM_TCEM_NS"] is not None:
+            tcem_ns = float(params["PSRAM_TCEM_NS"])
+        else:
+            us_key = "PSRAM_TCEM_US_STD" if grade == "standard" else "PSRAM_TCEM_US_EXT"
+            if us_key in params and params[us_key] is not None:
+                tcem_ns = float(params[us_key]) * 1000.0
+            else:
+                tcem_ns = PSRAM_TCEM_NS_STD if grade == "standard" else PSRAM_TCEM_NS_EXT
+    if tcph_ns is None:
+        tcph_ns = float(params["PSRAM_TCPH_NS"]) if params.get("PSRAM_TCPH_NS") is not None else PSRAM_TCPH_NS
+    return float(tcem_ns), float(tcph_ns)
+
+
 def start_ce_timing_monitor(
     dut,
     *,
     strict: bool = False,
     tcem_ns: "float | None" = None,
-    tcph_ns: float = PSRAM_TCPH_NS,
+    tcph_ns: "float | None" = None,
     tcsp_ns: "float | None" = None,
     tchd_ns: "float | None" = None,
     taclk_ns: "float | None" = None,
@@ -1060,13 +1265,20 @@ def start_ce_timing_monitor(
 
     ``timed_devices`` is the wrapped device tuple returned by bring-up. It
     supplies the modeled falling-edge launch and return-plane valid timestamps
-    needed by ``Q-RXEDGE``. Without a timed wrapper, launch/RX checks remain
-    passive rather than inferring tACLK from the resolved SIO bus.
+    needed by ``Q-RXEDGE``. Without a timed wrapper, ``Q-RXEDGE`` is
+    ``blocked`` (cannot apply ``tACLK`` independently). Write-only traffic
+    with wrappers attached but no ``read-launch`` is ``na``, not pass.
+
+    L0 captures through ``rdata_valid`` plus nibble match. L1/L2 have no
+    ``rdata_valid`` alias on ``tb_top`` / ``tb_uio_bus.svh``; the armed
+    external rising SCK is the D16 capture. L0 ``tb_engine`` has no
+    ``asic_sck_oe`` because the engine always drives SCK; missing SCK OE is
+    treated as 1 only at L0. Per-device ``D_OUT_*`` delays apply to the
+    currently selected CE#; SIO value changes while OE=0 are not launches.
     """
-    if grade not in ("extended", "standard"):
-        raise ValueError(f"grade must be 'extended' or 'standard', got {grade!r}")
-    if tcem_ns is None:
-        tcem_ns = PSRAM_TCEM_NS_STD if grade == "standard" else PSRAM_TCEM_NS_EXT
+    tcem_ns, tcph_ns = resolve_ce_timing_thresholds(
+        timing_params, grade=grade, tcem_ns=tcem_ns, tcph_ns=tcph_ns
+    )
     timing_params = {} if timing_params is None else timing_params
     if tcsp_ns is None:
         tcsp_ns = timing_params.get("PSRAM_TCSP_NS", PSRAM_TCSP_NS)

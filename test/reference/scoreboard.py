@@ -43,7 +43,6 @@ from reference.tcd import ReferenceModelError, format_bytes
 
 AXIS_TRANSACTIONS = "transactions"
 AXIS_MEMORY = "memory"
-AXIS_REFERENCE = "reference"
 
 CLASS_MISSING_WRITE = "missing_write"
 CLASS_WRONG_DATA = "wrong_data"
@@ -295,6 +294,32 @@ class Scoreboard:
             return ""
         return f"active_fetch={active.device}:0x{active.address:06X} bytes=[{format_bytes(active.data)}]"
 
+    def _chunk_context(self, index: int) -> str:
+        """Return ``chunk=i/k`` among same-kind data records, plus the log index."""
+        total = len(self.expected_transactions)
+        if index < 0 or index >= total:
+            return f"record={index}/{total}"
+        kind = self.expected_transactions[index].kind
+        if kind not in (DATA_READ, DATA_WRITE):
+            return f"record={index}/{total}"
+        same = [i for i, txn in enumerate(self.expected_transactions) if txn.kind == kind]
+        return f"chunk={same.index(index) + 1}/{len(same)} record={index}/{total}"
+
+    def _chunk_for_address(self, device: int, address: int) -> str:
+        """Locate the DATA_WRITE whose span covers this destination byte."""
+        writes = [
+            (i, txn)
+            for i, txn in enumerate(self.expected_transactions)
+            if txn.kind == DATA_WRITE
+        ]
+        for pos, (i, txn) in enumerate(writes, start=1):
+            if txn.device == device and txn.address <= address < txn.address + txn.length:
+                return (
+                    f"chunk={pos}/{len(writes)} "
+                    f"record={i}/{len(self.expected_transactions)}"
+                )
+        return ""
+
     # -- axis 1: ordered transactions --------------------------------------
 
     def classify_observed(self, observed: Transaction, index: int) -> Transaction:
@@ -369,6 +394,9 @@ class Scoreboard:
         descriptor = self._descriptor_context(index)
         if descriptor:
             lines.append(descriptor)
+        chunk = self._chunk_context(index)
+        if chunk:
+            lines.append(chunk)
         lines += [
             "",
             "expected context:",
@@ -469,6 +497,9 @@ class Scoreboard:
         descriptor = self._descriptor_context(len(self.expected_transactions) - 1)
         if descriptor:
             lines.append(descriptor)
+        chunk = self._chunk_for_address(first.device, first.address)
+        if chunk:
+            lines.append(chunk)
         lines.append(
             "expected window: "
             + _hex_window(
@@ -509,11 +540,27 @@ class Scoreboard:
             observed_count=len(self.expected_transactions),
         )
 
-    def compare(self, observed, observed_memory=None) -> None:
-        """Run axis 1 then axis 2 for a normally completed epoch."""
+    def compare(self, observed, observed_memory=None, *, require_memory: "bool | None" = None) -> None:
+        """Run axis 1 then axis 2 for a normally completed epoch.
+
+        Observed memory is required for L1/L2 (and when the run context does
+        not name a level). L0 may omit it: pin/memory images can be absent by
+        construction. Pass ``require_memory=False`` only for a documented L0
+        exception; ``require_memory=True`` forces the check at L0 too.
+        """
         self.compare_transactions(observed)
-        if observed_memory is not None:
-            self.compare_memory(observed_memory)
+        if require_memory is None:
+            require_memory = str(self.context.level).upper() != "L0"
+        if observed_memory is None:
+            if require_memory:
+                self._fail(
+                    AXIS_MEMORY,
+                    "observed memory is required for L1/L2 compare "
+                    "(pass require_memory=False only for documented L0 exceptions)",
+                    0,
+                )
+            return
+        self.compare_memory(observed_memory)
 
     # -- reset-interrupted epochs ------------------------------------------
 
@@ -733,7 +780,6 @@ def _group_text(start: ByteMismatch, end: ByteMismatch) -> str:
 
 __all__ = [
     "AXIS_MEMORY",
-    "AXIS_REFERENCE",
     "AXIS_TRANSACTIONS",
     "CLASS_MISSING_WRITE",
     "CLASS_UNEXPECTED_WRITE",

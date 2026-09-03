@@ -41,8 +41,10 @@ from common.injection import (
     StartPulseRecord,
     capture_required_hold_ns,
     capture_uncertain_hold_ns,
+    classify_start_capture,
     classify_start_phase,
     has_live_ce_monitor,
+    landing_offset_cycles,
     offset_for_phase_bin,
     require_reset_truncated_policy,
     resolve_clk_period_ns,
@@ -86,6 +88,45 @@ def test_child_streams_are_independent():
     fresh = InjectionPlanner(17)
     assert fresh.stream(STREAM_START).random() == start_first
     assert child_random(17, STREAM_START).random() == start_first
+
+
+def test_injection_streams_independent_across_multiple_items():
+    """cov-refu-06: replay several items; perturb START, BUS_REQ, and reset independently."""
+
+    def collect(planner):
+        starts = [
+            planner.plan_start(capture=CAPTURE_REQUIRED).to_manifest() for _ in range(3)
+        ]
+        buses = [planner.plan_bus_req(target_state="FETCH").to_manifest() for _ in range(3)]
+        resets = [planner.plan_reset().to_manifest() for _ in range(3)]
+        return starts, buses, resets
+
+    seed = 23
+    baseline = collect(InjectionPlanner(seed))
+
+    start_only = InjectionPlanner(seed)
+    for _ in range(5):
+        start_only.stream(STREAM_START).random()
+    starts, buses, resets = collect(start_only)
+    assert buses == baseline[1]
+    assert resets == baseline[2]
+    assert starts != baseline[0]
+
+    bus_only = InjectionPlanner(seed)
+    for _ in range(5):
+        bus_only.stream(STREAM_BUS_REQ).random()
+    starts, buses, resets = collect(bus_only)
+    assert starts == baseline[0]
+    assert resets == baseline[2]
+    assert buses != baseline[1]
+
+    reset_only = InjectionPlanner(seed)
+    for _ in range(5):
+        reset_only.stream(STREAM_RESET).random()
+    starts, buses, resets = collect(reset_only)
+    assert starts == baseline[0]
+    assert buses == baseline[1]
+    assert resets != baseline[2]
 
 
 def test_same_seed_replays_start_plans():
@@ -180,6 +221,50 @@ def test_plan_bus_req_rejects_stall():
     with pytest.raises(InjectionError, match="STALL"):
         planner.plan_bus_req(target_state="STALL")
     assert "STALL" in BUS_REQ_EXCLUDED_STATES
+
+
+def test_one_cycle_region_rejects_middle_and_final_landing():
+    """tb-help-05 / tb-help-06: NEW_FETCH cannot use middle/final landing."""
+    planner = InjectionPlanner(6)
+    with pytest.raises(InjectionError, match="one-cycle"):
+        planner.plan_bus_req(target_state="NEW_FETCH", landing=LANDING_MIDDLE)
+    with pytest.raises(InjectionError, match="one-cycle"):
+        planner.plan_bus_req(target_state="UPDATE", landing=LANDING_FINAL)
+    with pytest.raises(InjectionError, match="one-cycle"):
+        landing_offset_cycles(LANDING_MIDDLE, one_cycle=True)
+    assert landing_offset_cycles(LANDING_START, one_cycle=True) == 0
+    start = planner.plan_bus_req(target_state="NEW_FETCH", landing=LANDING_START)
+    assert start.landing == LANDING_START
+    auto = planner.plan_bus_req(target_state="NEW_OP")
+    assert auto.landing == LANDING_START
+
+
+def test_capture_required_zero_edges_is_an_error():
+    """tb-help-02: capture-required START with zero sync edges is illegal."""
+    record = StartPulseRecord(
+        capture=CAPTURE_REQUIRED,
+        phase_bin=PHASE_EARLY,
+        assert_phase_ns=2.5,
+        deassert_phase_ns=0.0,
+        hold_ns=30.0,
+        clk_period_ns=10.0,
+        sync_edges=0,
+    )
+    with pytest.raises(InjectionError, match="zero synchronized"):
+        classify_start_capture(record)
+    record.sync_edges = 1
+    classify_start_capture(record)
+    uncertain = StartPulseRecord(
+        capture=CAPTURE_UNCERTAIN,
+        phase_bin=PHASE_EARLY,
+        assert_phase_ns=2.5,
+        deassert_phase_ns=0.0,
+        hold_ns=4.0,
+        clk_period_ns=10.0,
+        sync_edges=0,
+        idle_uncaptured=True,
+    )
+    classify_start_capture(uncertain)
 
 
 def test_plan_bus_req_targets_and_landings():

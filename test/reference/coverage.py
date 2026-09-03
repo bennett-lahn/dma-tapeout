@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 import os
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from reference.chain import ADDR_MAX, ChainResult
 from reference.constants import DMA_BUF_DEPTH_MAX, PAGE_SIZE
@@ -51,14 +51,15 @@ CLOSURE_SCHEMA = "dma-tapeout.coverage.closure.v1"
 FRAGMENT_FILENAME = "coverage.json"
 CLOSURE_FILENAME = "coverage_closure.json"
 
-# Architecture citation placeholder for recorded exclusions (Wave 3 pins the section).
+# Recorded-exclusion citations (08-stimulus-and-coverage.md; D22 STALL).
 EXCLUSION_CITATION = (
     "docs/llm/verification/08-stimulus-and-coverage.md "
-    "(Coverage closure and exclusions; Wave 3 to pin section / decision id)"
+    "(Coverage closure and exclusions; D22: BUS_REQ in IDLE enters STALL; "
+    "length-class collapse at DMA_BUF_DEPTH 1/2)"
 )
-# Policy fields required by 08-stimulus-and-coverage.md for each recorded exclusion.
-EXCLUSION_REVIEWER = "M5-close"
-EXCLUSION_DATE = "2026-08-16"
+# Reviewer stamp for recorded exclusions (regenerated merge 2026-08-25).
+EXCLUSION_REVIEWER = "tb-closure-2026-08-25"
+EXCLUSION_DATE = "2026-08-25"
 
 COV_LEN = "COV-LEN"
 COV_CHUNK = "COV-CHUNK"
@@ -414,8 +415,10 @@ def classify_address(address: int) -> "tuple[str, ...]":
     """Return every ``COV-ADDR`` class *address* belongs to (overlapping bins)."""
     if isinstance(address, bool) or not isinstance(address, int):
         raise CoverageError(f"address must be an int, got {address!r}")
-    if address < 0 or address > ADDR_MAX:
+    if address < 0:
         raise CoverageError(f"address 0x{address:X} is outside 0x000000..0x{ADDR_MAX:06X}")
+    # D35: ptr[23] is don't-care; COV-ADDR bins classify A[22:0] only.
+    address = address & ADDR_MAX
     hits = []
     if address == 0:
         hits.append(ADDR_ZERO)
@@ -682,21 +685,27 @@ def fragment_path(config: dict, *, filename: str = FRAGMENT_FILENAME) -> str:
 
 @dataclass
 class WindowRecord:
-    """One commit_window outcome (counted only when both oracles passed)."""
+    """One commit_window outcome (counted when checkers pass and scoreboard is ok or na)."""
 
     index: int
     checkers_ok: bool
     scoreboard_ok: bool
+    scoreboard_na: bool = False
 
     @property
     def counted(self) -> bool:
-        return self.checkers_ok and self.scoreboard_ok
+        if not self.checkers_ok:
+            return False
+        if self.scoreboard_na:
+            return True
+        return self.scoreboard_ok
 
     def as_dict(self) -> dict:
         return {
             "index": self.index,
             "checkers_ok": self.checkers_ok,
             "scoreboard_ok": self.scoreboard_ok,
+            "scoreboard_na": self.scoreboard_na,
             "counted": self.counted,
         }
 
@@ -738,6 +747,8 @@ class CoverageSampler:
         self._pending: "dict[str, dict[str, int]]" = defaultdict(lambda: defaultdict(int))
         self._hits: "dict[str, dict[str, int]]" = defaultdict(lambda: defaultdict(int))
         self._windows: "list[WindowRecord]" = []
+        self._absorbed_paths: "set[str]" = set()
+        self._sticky_failed = False
         self.exclusions = list(
             structural_exclusions(
                 depth,
@@ -827,15 +838,17 @@ class CoverageSampler:
             for chunk_name in classify_chunks(item.tcd.transfer_len, depth):
                 self._add(COV_CHUNK, chunk_name)
             for role, address in (
-                ("src", item.tcd.src_ptr),
-                ("dest", item.tcd.dest_ptr),
-                ("next", item.tcd.next_tcd),
+                ("src", item.tcd.src_ptr & ADDR_MAX),
+                ("dest", item.tcd.dest_ptr & ADDR_MAX),
+                ("next", item.tcd.next_tcd & ADDR_MAX),
             ):
                 for cls in classify_address(address):
                     self._add(COV_ADDR, f"{role}:{cls}")
             if item.tcd.transfer_len > 0:
                 payload = result.initial_memory.read(
-                    item.tcd.src_device, item.tcd.src_ptr, item.tcd.transfer_len
+                    item.tcd.src_device,
+                    item.tcd.src_ptr & ADDR_MAX,
+                    item.tcd.transfer_len,
                 )
                 pattern = classify_payload(payload)
                 if pattern is not None:
@@ -857,14 +870,38 @@ class CoverageSampler:
                 self.context = scoreboard.context
         self.record_chain(result, generated=generated)
 
-    def commit_window(self, *, checkers_ok: bool, scoreboard_ok: bool) -> bool:
-        """Promote pending hits iff both oracles passed. Always clears pending."""
+    def begin_window(self, *, test: "str | None" = None) -> None:
+        """Scope pending hits to *test*; leftover pending becomes a sticky failed window."""
+        if test is not None and test != self.context.test:
+            if self.pending_hits():
+                self.commit_window(checkers_ok=False, scoreboard_ok=False)
+            self.context = replace(self.context, test=test)
+
+    def commit_window(
+        self,
+        *,
+        checkers_ok: bool,
+        scoreboard_ok: bool = False,
+        scoreboard_na: bool = False,
+    ) -> bool:
+        """Promote pending hits iff checkers pass and scoreboard is ok or na.
+
+        Always clears pending. A failing window stays in ``windows`` (sticky)
+        and does not count hits. ``scoreboard_na`` is for windows with no
+        golden compare (injection/reset); do not pass ``scoreboard_ok=True``
+        without a compare.
+        """
+        if scoreboard_ok and scoreboard_na:
+            raise CoverageError("commit_window cannot set both scoreboard_ok and scoreboard_na")
         record = WindowRecord(
             index=len(self._windows),
             checkers_ok=bool(checkers_ok),
             scoreboard_ok=bool(scoreboard_ok),
+            scoreboard_na=bool(scoreboard_na),
         )
         self._windows.append(record)
+        if not record.counted:
+            self._sticky_failed = True
         if record.counted:
             for cov_id, bins in self._pending.items():
                 for name, count in bins.items():
@@ -919,11 +956,49 @@ class CoverageSampler:
         path = os.path.join(dest, filename)
         payload = self.fragment()
         payload["run"]["run_dir"] = dest
+        if os.path.isfile(path):
+            existing = load_fragment(path)
+            self._check_fragment_owner(existing)
+            abs_path = os.path.abspath(path)
+            if abs_path not in self._absorbed_paths:
+                self.absorb_fragment(path)
+                payload = self.fragment()
+                payload["run"]["run_dir"] = dest
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, sort_keys=True)
             handle.write("\n")
         self.run_dir = dest
+        self._absorbed_paths.add(os.path.abspath(path))
         return path
+
+    def _check_fragment_owner(self, payload: dict) -> None:
+        run = payload.get("run") or {}
+        disk_depth = run.get("depth")
+        if disk_depth is not None and int(disk_depth) != self.dma_buf_depth:
+            raise CoverageError(
+                f"coverage.json owned by depth {disk_depth}, this run is "
+                f"{self.dma_buf_depth}"
+            )
+        disk_seed = run.get("seed")
+        if (
+            disk_seed not in (None, "")
+            and self.context.seed not in (None, "")
+            and str(disk_seed) != str(self.context.seed)
+        ):
+            raise CoverageError(
+                f"coverage.json owned by seed {disk_seed}, this run is "
+                f"{self.context.seed}"
+            )
+        disk_sim = run.get("sim")
+        if (
+            disk_sim not in (None, "")
+            and self.context.sim not in (None, "")
+            and str(disk_sim) != str(self.context.sim)
+        ):
+            raise CoverageError(
+                f"coverage.json owned by sim {disk_sim}, this run is "
+                f"{self.context.sim}"
+            )
 
     def absorb_fragment(self, path: str) -> None:
         """Merge a previously written fragment so a later process can append hits.
@@ -953,6 +1028,7 @@ class CoverageSampler:
                     index=len(self._windows),
                     checkers_ok=bool(window.get("checkers_ok")),
                     scoreboard_ok=bool(window.get("scoreboard_ok")),
+                    scoreboard_na=bool(window.get("scoreboard_na", False)),
                 )
             )
         seen = {_exclusion_key(record) for record in self.exclusions}
@@ -962,6 +1038,7 @@ class CoverageSampler:
                 continue
             seen.add(key)
             self.exclusions.append(record)
+        self._absorbed_paths.add(os.path.abspath(path))
 
 
 @dataclass
@@ -1028,12 +1105,41 @@ def _merge_hits(accumulator: dict, hits: dict) -> None:
 
 
 def _exclusion_key(record: dict) -> tuple:
-    return (
-        record.get("id"),
-        record.get("bin"),
-        record.get("depth"),
-        record.get("reason"),
-    )
+    """Identity for recorded exclusions: ``(id, bin, depth)``.
+
+    Depth ``*`` is the only global wildcard. A depth-1 ``N-1`` exclusion
+    must not hide a depth-5 ``N-1`` requirement.
+    """
+    return (record.get("id"), str(record.get("bin")), record.get("depth"))
+
+
+def _bin_is_excluded(exclusions: "set[tuple]", cov_id: str, name: str, depths) -> bool:
+    """Return True when *name* is excluded for every depth that still requires it."""
+    key_star = (cov_id, str(name), "*")
+    if key_star in exclusions:
+        return True
+    if cov_id == COV_DEPTH:
+        try:
+            depth = int(name)
+        except (TypeError, ValueError):
+            return False
+        return (cov_id, str(name), depth) in exclusions
+    if cov_id in (COV_DEPTH_LEN, COV_DEPTH_DEVICE):
+        try:
+            depth = int(str(name).split(":", 1)[0])
+        except (TypeError, ValueError):
+            return False
+        return (cov_id, str(name), depth) in exclusions
+    needing = []
+    for depth in depths:
+        if cov_id == COV_LEN:
+            if name in applicable_len_bins(depth):
+                needing.append(depth)
+        else:
+            needing.append(depth)
+    if not needing:
+        return True
+    return all((cov_id, str(name), depth) in exclusions for depth in needing)
 
 
 def aggregate_fragments(sources) -> CoverageReport:
@@ -1093,12 +1199,13 @@ def aggregate_fragments(sources) -> CoverageReport:
         record["reviewer"] = policy["reviewer"]
         record["date"] = policy["date"]
 
-    excluded_bins = {(record["id"], str(record["bin"])) for record in exclusions}
+    excluded_bins = {_exclusion_key(record) for record in exclusions}
     missing = {}
+    merged_depths = sorted(depths) or list(DEPTH_BINS)
     for cov_id, bins in required.items():
         absent = []
         for name in bins:
-            if (cov_id, str(name)) in excluded_bins:
+            if _bin_is_excluded(excluded_bins, cov_id, str(name), merged_depths):
                 continue
             if hits.get(cov_id, {}).get(str(name), 0) <= 0:
                 absent.append(name)

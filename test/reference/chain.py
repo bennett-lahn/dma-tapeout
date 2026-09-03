@@ -1,9 +1,11 @@
-"""Pure-Python oracle for TCD chains.
+"""Firmware-side copy of the TCD-chain oracle, used on the MCU and in firmware pytest.
 
-Given an initial PSRAM memory layout, ``interpret_chain`` walks the TCD chain
-from the fixed head (PSRAM0 ``0x000000``) and returns what a correct DMA must
-produce: an ordered QPI transaction log and the final memory images. It models
-architecture only (fetch, chunked copy, quit, next-device links), no timing.
+Keep the firmware and ``test/reference`` copies aligned except import paths
+and the MicroPython dataclass shim. Given an initial PSRAM memory layout,
+``interpret_chain`` walks the TCD chain from the fixed head (PSRAM0
+``0x000000``) and returns what a correct DMA must produce: an ordered QPI
+transaction log and the final memory images. It models architecture only
+(fetch, chunked copy, quit, next-device links), no timing.
 
 Main types:
 
@@ -28,6 +30,8 @@ from dataclasses import dataclass, field, replace
 
 from reference.constants import (
     DEVICES,
+    DMA_BUF_DEPTH_MAX,
+    DMA_BUF_DEPTH_TAPEOUT,
     HEAD_ADDRESS,
     HEAD_DEVICE,
     OPCODE_READ,
@@ -67,10 +71,15 @@ WRITE_KINDS = (DATA_WRITE, OBSERVED_WRITE)
 ADDR_MAX = PTR_MAX
 
 DEFAULT_FETCH_BUDGET = 64
-DEFAULT_TXN_BUDGET = 4096
+# Worst-case at N=1: fetch_budget descriptors, each up to 255 bytes as 1-byte
+# chunks (one DATA_READ + one DATA_WRITE per byte) plus the fetch itself.
+# 64 * (1 + 2*255) = 32704; keep headroom.
+DEFAULT_TXN_BUDGET = 65536
 
-# V1 tapeout configuration; the oracle accepts the 1/2/4/8 sweep depths too.
-DEFAULT_DMA_BUF_DEPTH = 1
+# V1 tapeout on-chip scratch depth N (DMA_BUF_DEPTH). Overlap chunking uses
+# this default; pass dma_buf_depth=1 explicitly for the per-byte N=1 image.
+# The oracle still accepts the 1/2/4/8 sweep depths.
+DEFAULT_DMA_BUF_DEPTH = DMA_BUF_DEPTH_TAPEOUT
 
 
 class MemoryRangeError(ReferenceModelError):
@@ -420,8 +429,10 @@ def _check_depth(dma_buf_depth) -> int:
         raise ReferenceModelError(
             f"dma_buf_depth must be an int, got {dma_buf_depth!r}"
         )
-    if dma_buf_depth < 1:
-        raise ReferenceModelError(f"dma_buf_depth={dma_buf_depth} must be at least 1")
+    if dma_buf_depth < 1 or dma_buf_depth > DMA_BUF_DEPTH_MAX:
+        raise ReferenceModelError(
+            f"dma_buf_depth={dma_buf_depth} is outside 1..{DMA_BUF_DEPTH_MAX}"
+        )
     return dma_buf_depth
 
 

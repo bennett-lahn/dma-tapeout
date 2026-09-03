@@ -14,22 +14,28 @@ from reference.chain import (
     HEAD_ADDRESS,
     HEAD_DEVICE,
     interpret_chain,
+    ReferenceLimitError,
 )
 from reference.generator import (
     ADDR_HIGH,
     DEST_SENTINEL,
     LAYOUT_EQUAL,
+    LAYOUT_OVERLAP_BACKWARD,
     LAYOUT_OVERLAP_FORWARD,
     PATTERN_INCREMENT,
     REGION_DESCRIPTOR,
     REGION_DESTINATION,
     REGION_SOURCE,
+    STREAM_DEVICES,
+    STREAM_NEXT_DEVICE,
     STREAMS,
     ChainGenerator,
     GeneratorError,
     TcdSpec,
     build_directed_chain,
     len_addr_corner_specs,
+    multi_chunk_length,
+    one_chunk_length,
 )
 from reference.scoreboard import Scoreboard
 from reference.tcd import TCD_BYTES, decode_tcd, validate_tcd
@@ -128,11 +134,128 @@ def test_overlap_layout_keeps_the_source_payload():
                 data=b"\x01\x02\x03\x04",
                 layout=LAYOUT_OVERLAP_FORWARD,
             )
-        ]
+        ],
+        dma_buf_depth=1,
     )
     assert chain.memory.read(0, 0x001000, 4) == b"\x01\x02\x03\x04"
     result = chain.interpret()
     assert result.final_memory.read(0, 0x001000, 5) == b"\x01\x01\x01\x01\x01"
+
+
+def test_backward_overlap_layout_keeps_the_source_payload():
+    """cov-refu-08: backward overlap on PSRAM0."""
+    chain = build_directed_chain(
+        [
+            TcdSpec(
+                transfer_len=4,
+                src_addr=0x001001,
+                dest_addr=0x001000,
+                data=b"\x01\x02\x03\x04",
+                layout=LAYOUT_OVERLAP_BACKWARD,
+            )
+        ],
+        dma_buf_depth=1,
+    )
+    head = chain.tcds[0]
+    assert head.dest_ptr < head.src_ptr
+    result = chain.interpret()
+    assert result.final_memory.read(0, 0x001000, 4) == b"\x01\x02\x03\x04"
+
+
+def test_dest_psram1_overlap_is_honored():
+    """cov-refu-08: overlapping ranges on destination PSRAM1."""
+    chain = build_directed_chain(
+        [
+            TcdSpec(
+                transfer_len=6,
+                src_device=1,
+                dest_device=1,
+                src_addr=0x002000,
+                dest_addr=0x002001,
+                data=b"\x10\x11\x12\x13\x14\x15",
+                layout=LAYOUT_OVERLAP_FORWARD,
+            )
+        ],
+        dma_buf_depth=5,
+        seed=44,
+    )
+    head = chain.tcds[0]
+    assert head.src_device == 1 and head.dest_device == 1
+    src_range = set(range(head.src_ptr, head.src_ptr + head.transfer_len))
+    dest_range = set(range(head.dest_ptr, head.dest_ptr + head.transfer_len))
+    assert src_range & dest_range
+    result = chain.interpret(dma_buf_depth=5)
+    assert result.final_memory.read(1, head.dest_ptr, 1)
+
+
+def test_multi_chunk_length_derives_from_compile_n():
+    """tb-ref-02: directed length is N+1 so every depth has a multi-chunk case."""
+    assert multi_chunk_length(5) == 6
+    assert one_chunk_length(5) == 5
+    for depth in range(1, 9):
+        chain = build_directed_chain(
+            [TcdSpec(transfer_len=multi_chunk_length(depth))],
+            dma_buf_depth=depth,
+            seed=50 + depth,
+        )
+        result = chain.interpret(dma_buf_depth=depth)
+        reads = [txn for txn in result.transactions if txn.kind == DATA_READ]
+        assert len(reads) >= 2
+        control = build_directed_chain(
+            [TcdSpec(transfer_len=one_chunk_length(depth))],
+            dma_buf_depth=depth,
+            seed=60 + depth,
+        )
+        control_reads = [
+            txn
+            for txn in control.interpret(dma_buf_depth=depth).transactions
+            if txn.kind == DATA_READ
+        ]
+        assert len(control_reads) == 1
+
+
+def test_self_pointing_head_exhausts_fetch_budget():
+    """tb-ref-05: directed self-pointing head; legal random stays acyclic."""
+    chain = ChainGenerator(3).build_self_pointing_head(TcdSpec(transfer_len=0))
+    assert chain.tcds[0].next_tcd == HEAD_ADDRESS
+    assert chain.tcds[0].next_device == HEAD_DEVICE
+    assert not chain.tcds[0].quit
+    with pytest.raises(ReferenceLimitError, match="budget"):
+        chain.interpret(fetch_budget=8)
+    random_chain = ChainGenerator(3).build_chain()
+    locations = random_chain.descriptor_locations
+    for tcd, (device, address) in zip(random_chain.executable, locations):
+        nxt = (tcd.next_device, tcd.next_tcd)
+        assert nxt != (device, address)
+
+
+def test_quit_descriptor_retains_nonzero_unexecuted_fields():
+    """tb-ref-05: nonzero QUIT fields are stored but not executed."""
+    chain = build_directed_chain(
+        [TcdSpec(transfer_len=1)],
+        quit_spec=TcdSpec(
+            src_addr=0x001234,
+            dest_addr=0x005678,
+            transfer_len=0x22,
+            src_device=1,
+            dest_device=1,
+        ),
+    )
+    quit_tcd = chain.tcds[-1]
+    assert quit_tcd.quit
+    assert quit_tcd.transfer_len == 0x22
+    assert quit_tcd.src_ptr == 0x001234
+    assert quit_tcd.dest_device == 1
+    result = chain.interpret()
+    data_writes = [txn for txn in result.transactions if txn.kind == DATA_WRITE]
+    assert all(txn.address != 0x005678 for txn in data_writes)
+
+
+def test_parameterized_guard_bytes_are_written():
+    """tb-ref-04: guard size is a generator parameter, not a hard-coded 2."""
+    chain = build_directed_chain([TcdSpec(transfer_len=2)], seed=8, guard_bytes=4)
+    assert chain.guards
+    assert any(region.length == 4 for region in chain.guards)
 
 
 def test_guards_and_regions_are_recorded_and_defined():
@@ -208,6 +331,34 @@ def test_drawing_one_dimension_does_not_perturb_another():
         perturbed.transfer_length()
     assert [baseline.address_class() for _ in range(5)] == [
         perturbed.address_class() for _ in range(5)
+    ]
+
+
+def test_next_device_stream_is_isolated_from_device_tuple():
+    """tb-ref-03 / cov-refu-05: NEXT-device entropy does not share STREAM_DEVICES."""
+    assert STREAM_NEXT_DEVICE in STREAMS
+    assert STREAM_NEXT_DEVICE != STREAM_DEVICES
+
+    baseline = ChainGenerator(11)
+    extra_next = ChainGenerator(11)
+    for _ in range(20):
+        extra_next.next_device(0)
+    assert [baseline.device_tuple() for _ in range(8)] == [
+        extra_next.device_tuple() for _ in range(8)
+    ]
+
+    extra_tuple = ChainGenerator(11)
+    for _ in range(20):
+        extra_tuple.device_tuple()
+    assert [baseline.next_device(0) for _ in range(8)] == [
+        extra_tuple.next_device(0) for _ in range(8)
+    ]
+
+    drifted = ChainGenerator(11)
+    for _ in range(20):
+        drifted.next_device(0)
+    assert [drifted.next_device(1) for _ in range(8)] != [
+        ChainGenerator(11).next_device(1) for _ in range(8)
     ]
 
 
@@ -402,7 +553,8 @@ def test_overlap_payload_case_is_not_weakened_when_it_misses_descriptors():
                 data=b"\x01\x02\x03\x04",
                 layout=LAYOUT_OVERLAP_FORWARD,
             )
-        ]
+        ],
+        dma_buf_depth=1,
     )
     assert chain.tcds[0].dest_ptr == 0x001001
     result = chain.interpret()

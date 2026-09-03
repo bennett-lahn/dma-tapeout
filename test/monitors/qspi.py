@@ -1,16 +1,18 @@
 """Pin-level QPI decoder and ``CHK-PIN-*`` monitors.
 
 Relevant IDs: ``CHK-PIN-CS-MUTEX``, ``CHK-PIN-FLASH-HIGH``,
-``CHK-PIN-ADDR23-ZERO`` (retired D35), ``CHK-PIN-KNOWN``, ``CHK-PIN-SIO-OWN``,
-``CHK-PIN-SCK-PARK``, ``CHK-HS-OPCODE`` (wait-cycle count at pins).
+``CHK-PIN-KNOWN``, ``CHK-PIN-SIO-OWN``, ``CHK-PIN-SCK-PARK``,
+``CHK-HS-OPCODE`` (wait-cycle count at pins).
 
 :class:`SharedBusMonitor` owns the shared-bus ownership subset of that list and
-the timing-venue IDs mirroring it in ``04-timing-in-sim.md``:
+the timing-venue IDs mirroring it in ``04-timing-in-sim.md``. Dispose prints
+**dual rows** (CHK and Q) for each fired event; ``expect_fail=["Q-MUX"]``
+matches the Q row, not only a timing_id label:
 
 ===================== =============== ===================================
 ``CHK-*``             ``Q-*``         Condition
 ===================== =============== ===================================
-``CHK-PIN-CS-MUTEX``  ``Q-MUX``       both RAM CE# low at once
+``CHK-PIN-CS-MUTEX``  ``Q-MUX``       both RAM CE# low / ambiguous / OE dual-select
 ``CHK-PIN-FLASH-HIGH`` ``Q-MUX``      flash CS low while the ASIC owns the bus
 ``CHK-PIN-SIO-OWN``   ``Q-SIO-OWN``   two enabled drivers on one SIO net
 ``CHK-PIN-SCK-PARK``  ``Q-SCKIDLE``   SCK not parked low while all deselected
@@ -27,8 +29,8 @@ against the reference oracle:
                                      protocol requires a value
 ======================= ============ =====================================
 
-``CHK-PIN-ADDR23-ZERO`` / model ``Q-ADDR23`` are retired (D35): wire ``A[23]``
-is don't-care and is masked to ``A[22:0]``.
+Wire ``A[23]`` is don't-care (D35) and is masked to ``A[22:0]``; there is no
+live ADDR23 fail ID.
 
 The pin decode is deliberately independent of the PSRAM models: it reads the
 physical bus aliases (``bus_sck``, ``bus_ram_*_cs_n``, ``bus_sio``) and never
@@ -97,10 +99,14 @@ from reference.constants import (
 
 CHK_PIN_CS_MUTEX = "CHK-PIN-CS-MUTEX"
 CHK_PIN_FLASH_HIGH = "CHK-PIN-FLASH-HIGH"
-CHK_PIN_ADDR23_ZERO = "CHK-PIN-ADDR23-ZERO"  # retired D35; kept for historical IDs
 CHK_PIN_KNOWN = "CHK-PIN-KNOWN"
 CHK_PIN_SIO_OWN = "CHK-PIN-SIO-OWN"
 CHK_PIN_SCK_PARK = "CHK-PIN-SCK-PARK"
+
+Q_MUX = "Q-MUX"
+Q_SIO_OWN = "Q-SIO-OWN"
+Q_SCKIDLE = "Q-SCKIDLE"
+Q_SIO_X = "Q-SIO-X"
 
 SHARED_BUS_CHECK_IDS = (
     CHK_PIN_CS_MUTEX,
@@ -108,6 +114,9 @@ SHARED_BUS_CHECK_IDS = (
     CHK_PIN_SIO_OWN,
     CHK_PIN_SCK_PARK,
 )
+
+# Timing-venue twins printed as their own dispose rows (not labels only).
+SHARED_BUS_TWIN_IDS = (Q_MUX, Q_SIO_OWN, Q_SCKIDLE)
 
 # Catalog rows QspiPinMonitor decodes from the pins on its own.
 PIN_MONITOR_CHECK_IDS = (
@@ -120,17 +129,42 @@ MODEL_PIN_CHECK_IDS = PIN_MONITOR_CHECK_IDS
 # Twin per-device model ID for the same condition. Same pattern as
 # SharedBusMonitor: a run may report either name, so both are always printed.
 MODEL_DISPOSE_VIA = {
-    CHK_PIN_KNOWN: "Q-SIO-X",
+    CHK_PIN_KNOWN: Q_SIO_X,
 }
 
 # Timing-venue name for the same condition (04-timing-in-sim.md). A run may
-# report either ID; every message prints both.
+# report either ID; dispose emits both as rows for the shared-bus twins.
 TIMING_ID = {
-    CHK_PIN_CS_MUTEX: "Q-MUX",
-    CHK_PIN_FLASH_HIGH: "Q-MUX",
-    CHK_PIN_SIO_OWN: "Q-SIO-OWN",
-    CHK_PIN_SCK_PARK: "Q-SCKIDLE",
+    CHK_PIN_CS_MUTEX: Q_MUX,
+    CHK_PIN_FLASH_HIGH: Q_MUX,
+    CHK_PIN_SIO_OWN: Q_SIO_OWN,
+    CHK_PIN_SCK_PARK: Q_SCKIDLE,
 }
+
+# Bidirectional CHK <-> Q twins for dispose expect_fail. Expecting one ID
+# accepts the other as a declared finding; ownership twins also emit dual
+# findings so expecting Q-MUX fails if only CHK-PIN-CS-MUTEX ran.
+PIN_TWIN_GROUPS = (
+    (CHK_PIN_CS_MUTEX, Q_MUX),
+    (CHK_PIN_FLASH_HIGH, Q_MUX),
+    (CHK_PIN_SIO_OWN, Q_SIO_OWN),
+    (CHK_PIN_SCK_PARK, Q_SCKIDLE),
+    (CHK_PIN_KNOWN, Q_SIO_X),
+)
+
+# Q twins that SharedBusMonitor dual-emits as findings (not Q-SIO-X: the
+# model already records that ID, and a second pin finding would double-count).
+DUAL_FINDING_TWINS = frozenset(SHARED_BUS_TWIN_IDS)
+
+
+def twin_ids(check_id: str) -> "tuple[str, ...]":
+    """Return the other name(s) in the same CHK/Q twin group as *check_id*."""
+    twins = []
+    for group in PIN_TWIN_GROUPS:
+        if check_id in group:
+            twins.extend(name for name in group if name != check_id)
+    # Preserve order, drop duplicates (Q-MUX sits in two groups).
+    return tuple(dict.fromkeys(twins))
 
 # Driver classes for SIO ownership arbitration between actors.
 DRIVER_ASIC = "asic"
@@ -231,6 +265,7 @@ class SharedBusMonitor:
         flash_cs=None,
         asic_flash_oe=None,
         asic_flash_out=None,
+        ram_ce_drive=(),
         bus_gnt=None,
         rst_n=None,
         sck_oe_handles=(),
@@ -247,6 +282,7 @@ class SharedBusMonitor:
         self._flash_cs = flash_cs
         self._asic_flash_oe = asic_flash_oe
         self._asic_flash_out = asic_flash_out
+        self._ram_ce_drive = tuple(ram_ce_drive)
         self._bus_gnt = bus_gnt
         self._rst_n = rst_n
         self._sck_oe_handles = tuple(sck_oe_handles)
@@ -305,6 +341,10 @@ class SharedBusMonitor:
         handles += [handle for _, handle in self._ram_ce_n]
         handles += [driver.oe for driver in self._drivers]
         handles += list(self._sck_oe_handles)
+        for _label, oe, out in self._ram_ce_drive:
+            handles.append(oe)
+            if out is not None:
+                handles.append(out)
         for optional in (
             self._sio_bus,
             self._flash_cs,
@@ -336,7 +376,9 @@ class SharedBusMonitor:
             self.reset_truncated.append(event)
             return
 
-        if len(self.events) >= self._max_events:
+        # Per-id cap: later IDs still record until they hit *max_events*.
+        id_count = sum(1 for item in self.events if item.check_id == check_id)
+        if id_count >= self._max_events:
             self._suppressed += 1
             return
 
@@ -353,7 +395,9 @@ class SharedBusMonitor:
         self._samples += 1
 
         rst_n = 1 if self._rst_n is None else _level(self._rst_n)
-        in_reset = rst_n != 1
+        # Truncate only the known in-reset window (rst_n=0). The last sample
+        # with rst_n=1 stays an ordinary legal check (tb-pin-12).
+        in_reset = rst_n == 0
         bus_gnt = 0 if self._bus_gnt is None else _level(self._bus_gnt)
         asic_owns_bus = bus_gnt == 0
 
@@ -365,17 +409,40 @@ class SharedBusMonitor:
         self._check_sio_ownership(in_reset)
         self._check_sck_park(ce_levels, flash_cs, asic_owns_bus, in_reset)
 
+    def _oe_dual_select(self) -> "list[str]":
+        """RAM labels whose ASIC OE=1 and out=0 (driven selected)."""
+        selected = []
+        for label, oe, out in self._ram_ce_drive:
+            if _level(oe) == 1 and _level(out) == 0:
+                selected.append(label)
+        return selected
+
     def _check_cs_mutex(self, ce_levels, in_reset: bool) -> None:
-        """``CHK-PIN-CS-MUTEX`` / ``Q-MUX``: at most one RAM CE# low."""
-        selected = [label for label, level in ce_levels if level == 0]
+        """``CHK-PIN-CS-MUTEX`` / ``Q-MUX``: at most one RAM CE# selected.
+
+        Fails on two known-low CE# nets, on an ambiguous dual-select (a known
+        low plus X/Z, or two X/Z), and on both ASIC CE# OEs driving out=0.
+        """
+        known_low = [label for label, level in ce_levels if level == 0]
+        unresolved = [label for label, level in ce_levels if level is None]
+        oe_low = self._oe_dual_select()
+        ambiguous = len(known_low) + len(unresolved) > 1 and bool(unresolved)
+        dual = len(known_low) > 1 or ambiguous or len(oe_low) > 1
         levels = ", ".join(f"{label}={_show(level)}" for label, level in ce_levels)
-        self._report(
-            CHK_PIN_CS_MUTEX,
-            "cs-mutex",
-            len(selected) > 1,
-            f"{' and '.join(selected)} CE# low together ({levels})",
-            in_reset,
-        )
+        if len(oe_low) > 1:
+            detail = (
+                f"{' and '.join(oe_low)} ASIC CE# OE=1 with out=0 "
+                f"(resolved {levels})"
+            )
+        elif unresolved:
+            tagged = known_low + unresolved
+            detail = (
+                f"{' and '.join(tagged)} dual-select including unresolved CE# "
+                f"({levels})"
+            )
+        else:
+            detail = f"{' and '.join(known_low)} CE# low together ({levels})"
+        self._report(CHK_PIN_CS_MUTEX, "cs-mutex", dual, detail, in_reset)
 
     def _check_flash_high(self, flash_cs, asic_owns_bus: bool, in_reset: bool) -> None:
         """``CHK-PIN-FLASH-HIGH`` / ``Q-MUX``: ASIC never selects flash.
@@ -460,29 +527,38 @@ class SharedBusMonitor:
         return False
 
     def _check_sck_park(self, ce_levels, flash_cs, asic_owns_bus: bool, in_reset: bool) -> None:
-        """``CHK-PIN-SCK-PARK`` / ``Q-SCKIDLE``: SCK low while all deselected.
+        """``CHK-PIN-SCK-PARK`` / ``Q-SCKIDLE``: SCK low while no device selected.
 
         Deselected means every RAM CE# high plus, where the level has one,
         flash CS high. SCK high during that interval is an erroneous SCK cycle.
-        SCK floating is a violation only while the ASIC is the bus keeper: the
-        MCU may legally leave SCK high impedance in an idle gap under grant,
+        While the ASIC is bus keeper (``~BUS_GNT``, ``rst_n=1``) the park check
+        still runs if any CE# is X/Z: a clean CE#=1 is not required to judge
+        SCK idle. SCK floating is a violation only while the ASIC is keeper:
+        the MCU may legally leave SCK high impedance in an idle gap under grant,
         and reset floats it by design.
 
         When no actor enables SCK drive, treat a stuck 1 as float: Verilator
         often retains the last driven level on undriven multi-assign nets while
         Icarus resolves them to Z.
         """
-        deselected = all(level == 1 for _, level in ce_levels) and (
+        known_selected = any(level == 0 for _, level in ce_levels) or (
+            flash_cs == 0
+        )
+        all_known_high = all(level == 1 for _, level in ce_levels) and (
             self._flash_cs is None or flash_cs == 1
         )
+        asic_is_keeper = asic_owns_bus and not in_reset
+        # Fully deselected (any owner), or keeper with no known select (CE# X/Z).
+        should_park = all_known_high or (asic_is_keeper and not known_selected)
+
         sck = _level(self._sck)
         if sck == 1 and not self._sck_has_driver():
             sck = None
 
-        high_while_deselected = deselected and sck == 1
-        float_while_keeper = deselected and sck is None and asic_owns_bus and not in_reset
+        high_while_should_park = should_park and sck == 1
+        float_while_keeper = asic_is_keeper and not known_selected and sck is None
 
-        if high_while_deselected:
+        if high_while_should_park:
             detail = "SCK high while no device is selected (erroneous SCK cycle)"
         else:
             detail = "SCK unresolved while the ASIC is bus keeper and no device is selected"
@@ -490,7 +566,7 @@ class SharedBusMonitor:
         self._report(
             CHK_PIN_SCK_PARK,
             "sck-park",
-            high_while_deselected or float_while_keeper,
+            high_while_should_park or float_while_keeper,
             detail,
             in_reset,
         )
@@ -500,8 +576,12 @@ class SharedBusMonitor:
     def counts(self) -> "dict[str, int]":
         """Return the violation count for every ID this monitor disposes."""
         counts = {check_id: 0 for check_id in SHARED_BUS_CHECK_IDS}
+        for twin in SHARED_BUS_TWIN_IDS:
+            counts[twin] = 0
         for event in self.events:
-            counts[event.check_id] += 1
+            counts[event.check_id] = counts.get(event.check_id, 0) + 1
+            if event.timing_id in DUAL_FINDING_TWINS:
+                counts[event.timing_id] = counts.get(event.timing_id, 0) + 1
         return counts
 
     def results(self) -> "dict[str, str]":
@@ -513,6 +593,8 @@ class SharedBusMonitor:
                 dispositions[check_id] = RESULT_NA
             else:
                 dispositions[check_id] = RESULT_FAIL if counts[check_id] else RESULT_PASS
+        for twin in SHARED_BUS_TWIN_IDS:
+            dispositions[twin] = RESULT_FAIL if counts[twin] else RESULT_PASS
         return dispositions
 
     def violations_for(self, check_id: str) -> "list[BusViolation]":
@@ -655,6 +737,16 @@ def start_shared_bus_monitor(dut, *psram_agents, strict: bool = False, **kwargs)
         if handle is not None:
             sck_oe_handles.append(handle)
 
+    ram_ce_drive = []
+    for label, oe_name, out_name in (
+        ("PSRAM0", "asic_ram_a_cs_oe", "asic_ram_a_cs_out"),
+        ("PSRAM1", "asic_ram_b_cs_oe", "asic_ram_b_cs_out"),
+    ):
+        oe = _optional(dut, oe_name)
+        out = _optional(dut, out_name)
+        if oe is not None and out is not None:
+            ram_ce_drive.append((label, oe, out))
+
     monitor = SharedBusMonitor(
         sck=dut.bus_sck,
         ram_ce_n=(("PSRAM0", dut.bus_ram_a_cs_n), ("PSRAM1", dut.bus_ram_b_cs_n)),
@@ -663,6 +755,7 @@ def start_shared_bus_monitor(dut, *psram_agents, strict: bool = False, **kwargs)
         flash_cs=_optional(dut, "bus_flash_cs_n"),
         asic_flash_oe=_optional(dut, "asic_flash_cs_oe"),
         asic_flash_out=_optional(dut, "asic_flash_cs_out"),
+        ram_ce_drive=ram_ce_drive,
         bus_gnt=_optional(dut, "bus_gnt"),
         rst_n=_optional(dut, "rst_n"),
         sck_oe_handles=sck_oe_handles,
@@ -761,7 +854,7 @@ DIR_UNKNOWN = "unknown"
 
 # Decode faults. They keep an interval out of the normal transaction log; the
 # per-device model owns the matching Q-* catalog rows, so only CHK-PIN-KNOWN
-# also raises a CHK-PIN-* event here (CHK-PIN-ADDR23-ZERO retired by D35).
+# also raises a CHK-PIN-* event here. D35: wire A[23] is masked, not a fault.
 FAULT_CMD_TRUNCATED = "truncated-command"
 FAULT_ADDR_TRUNCATED = "truncated-address"
 FAULT_OPCODE = "unsupported-opcode"
@@ -1179,7 +1272,8 @@ class QspiPinMonitor:
             self.reset_truncated.append(event)
             return
 
-        if len(self.events) >= self._max_events:
+        id_count = sum(1 for item in self.events if item.check_id == check_id)
+        if id_count >= self._max_events:
             self._suppressed += 1
             return
 
@@ -1223,13 +1317,13 @@ class QspiPinMonitor:
             self.intervals.append(interval)
 
     def _close_frame(self, decoder: _PinDecoder, interval: "PinTransaction | None") -> None:
-        if (
-            interval is not None
-            and interval.cmd_nibbles >= CMD_NIBBLES
-            and interval.direction != DIR_UNKNOWN
-            and interval.addr_nibbles >= ADDR_NIBBLES
-        ):
-            self.pending.resolve(decoder._phase_token)
+        # CE# rise: end() already tagged truncation on the interval. Resolve
+        # pending tokens so close_scope is not a second Q-PHASE (CE# rose
+        # before command/address completed) for the same rise. Model
+        # termination rules own the labeled nibble-count fails; pin-axis
+        # Q-PHASE pending remains for dispose/stop of a still-open frame.
+        self.pending.resolve(decoder._pending_token)
+        self.pending.resolve(decoder._phase_token)
         self.pending.close_scope(decoder.device, reason=REASON_SCOPE)
         decoder._pending_token = None
         decoder._phase_token = None
@@ -1355,25 +1449,35 @@ class QspiPinMonitor:
     def counts(self) -> "dict[str, int]":
         """Return the ordinary violation count for every ID this monitor owns."""
         counts = {check_id: 0 for check_id in PIN_MONITOR_CHECK_IDS}
+        counts[Q_SIO_X] = 0
         for event in self.events:
-            counts[event.check_id] += 1
+            counts[event.check_id] = counts.get(event.check_id, 0) + 1
+        # Twin row: same count as CHK-PIN-KNOWN (model Q-SIO-X findings are
+        # separate; dispose does not dual-emit this twin to avoid double-count).
+        counts[Q_SIO_X] = counts[CHK_PIN_KNOWN]
         return counts
 
     def results(self) -> "dict[str, str]":
         """Return per-ID ``pass`` / ``fail`` / ``blocked`` disposition."""
         if self.blocked:
-            return {check_id: RESULT_BLOCKED for check_id in PIN_MONITOR_CHECK_IDS}
+            blocked = {check_id: RESULT_BLOCKED for check_id in PIN_MONITOR_CHECK_IDS}
+            blocked[Q_SIO_X] = RESULT_BLOCKED
+            return blocked
         counts = self.counts()
-        return {
+        dispositions = {
             check_id: RESULT_FAIL if counts[check_id] else RESULT_PASS
             for check_id in PIN_MONITOR_CHECK_IDS
         }
+        dispositions[Q_SIO_X] = dispositions[CHK_PIN_KNOWN]
+        return dispositions
 
     def blocked_reasons(self) -> "dict[str, str]":
         """Return the reason string behind every ``blocked`` row."""
         if not self.blocked:
             return {}
-        return {check_id: self.blocked_reason for check_id in PIN_MONITOR_CHECK_IDS}
+        reasons = {check_id: self.blocked_reason for check_id in PIN_MONITOR_CHECK_IDS}
+        reasons[Q_SIO_X] = self.blocked_reason
+        return reasons
 
     def violations_for(self, check_id: str) -> "list[BusViolation]":
         """Return recorded events for one catalog ID (negative-test helper)."""

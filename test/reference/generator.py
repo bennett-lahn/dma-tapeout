@@ -44,7 +44,7 @@ from reference.chain import (
     interpret_chain,
 )
 from reference.scoreboard import Region, guard_region
-from reference.constants import PAGE_SIZE
+from reference.constants import DMA_BUF_DEPTH_MAX, PAGE_SIZE
 from reference.tcd import (
     TCD_BYTES,
     TRANSFER_LEN_MAX,
@@ -55,8 +55,11 @@ from reference.tcd import (
 )
 
 # Stable child-stream names (Determinism section of 08-stimulus-and-coverage.md).
+# STREAM_NEXT_DEVICE is independent of STREAM_DEVICES so NEXT-device draws do
+# not consume source/destination entropy (tb-ref-03 / cov-refu-05).
 STREAM_CHAIN = "chain"
 STREAM_DEVICES = "devices"
+STREAM_NEXT_DEVICE = "next_device"
 STREAM_LENGTHS = "lengths"
 STREAM_ADDRESSES = "addresses"
 STREAM_PAYLOAD = "payload"
@@ -64,6 +67,7 @@ STREAM_LAYOUT = "layout"
 STREAMS = (
     STREAM_CHAIN,
     STREAM_DEVICES,
+    STREAM_NEXT_DEVICE,
     STREAM_LENGTHS,
     STREAM_ADDRESSES,
     STREAM_PAYLOAD,
@@ -386,7 +390,7 @@ class ChainGenerator:
 
     def next_device(self, current_device: int) -> int:
         """Return the next fetch device, biased to change device."""
-        choice = _weighted(self.stream(STREAM_DEVICES), self.bias["next_device"])
+        choice = _weighted(self.stream(STREAM_NEXT_DEVICE), self.bias["next_device"])
         return (1 - current_device) if choice == "change" else current_device
 
     def length_class(self) -> "int | str":
@@ -619,6 +623,65 @@ class ChainGenerator:
             specs, dma_buf_depth=depth, verify=verify, notes=(f"random seed={self.seed}",)
         )
 
+    def build_self_pointing_head(
+        self,
+        spec: "TcdSpec | None" = None,
+        *,
+        dma_buf_depth: "int | None" = None,
+    ) -> GeneratedChain:
+        """Directed D35 self-pointing head: NEXT targets the same slot, no QUIT.
+
+        Legal random chains stay acyclic. This layout is for reset-termination
+        experiments; :meth:`GeneratedChain.interpret` exhausts the fetch budget.
+        """
+        spec = spec or TcdSpec(transfer_len=0)
+        depth = self.dma_buf_depth if dma_buf_depth is None else dma_buf_depth
+        layout = _Layout(start=self.region_start, gap=self.region_gap)
+        memory = MemoryImage(fill=self.fill)
+        layout.reserve_descriptor(HEAD_DEVICE, HEAD_ADDRESS, TCD_BYTES)
+        src_address, dest_address = self._place_transfer(spec, layout)
+        length = spec.transfer_len
+        regions: "list[Region]" = [
+            Region(HEAD_DEVICE, HEAD_ADDRESS, TCD_BYTES, REGION_DESCRIPTOR),
+        ]
+        if length:
+            payload = (
+                self.payload(spec.pattern or self.payload_pattern(), length)
+                if spec.data is None
+                else bytes(spec.data)
+            )
+            if len(payload) != length:
+                raise GeneratorError(
+                    f"self-pointing head: data is {len(payload)} bytes but "
+                    f"transfer_len is {length}"
+                )
+            memory.fill_range(spec.dest_device, dest_address, length, self.dest_sentinel)
+            memory.write(spec.src_device, src_address, payload)
+            regions.append(Region(spec.src_device, src_address, length, REGION_SOURCE))
+            regions.append(Region(spec.dest_device, dest_address, length, REGION_DESTINATION))
+        tcd = Tcd(
+            src_ptr=src_address,
+            dest_ptr=dest_address,
+            transfer_len=length,
+            next_tcd=HEAD_ADDRESS,
+            quit=False,
+            src_device=spec.src_device,
+            dest_device=spec.dest_device,
+            next_device=HEAD_DEVICE,
+            reserved=spec.reserved,
+        )
+        memory.write(HEAD_DEVICE, HEAD_ADDRESS, encode_tcd(tcd))
+        return GeneratedChain(
+            tcds=(tcd,),
+            descriptor_locations=((HEAD_DEVICE, HEAD_ADDRESS),),
+            memory=memory,
+            regions=tuple(regions),
+            guards=(),
+            seed=self.seed,
+            dma_buf_depth=depth,
+            notes=("self-pointing head; interpret exhausts fetch budget",),
+        )
+
     # -- layout internals --------------------------------------------------
 
     def _descriptor_locations(self, specs, layout: _Layout):
@@ -815,6 +878,22 @@ def len_addr_corner_specs(depth: int) -> "tuple[TcdSpec, ...]":
     return tuple(specs)
 
 
+def multi_chunk_length(depth: int) -> int:
+    """Smallest ``transfer_len`` that needs more than one chunk at *depth*."""
+    n = int(depth)
+    if n < 1 or n > DMA_BUF_DEPTH_MAX:
+        raise GeneratorError(f"depth={depth} is outside 1..{DMA_BUF_DEPTH_MAX}")
+    return n + 1
+
+
+def one_chunk_length(depth: int) -> int:
+    """Largest ``transfer_len`` that still fits in a single chunk at *depth*."""
+    n = int(depth)
+    if n < 1 or n > DMA_BUF_DEPTH_MAX:
+        raise GeneratorError(f"depth={depth} is outside 1..{DMA_BUF_DEPTH_MAX}")
+    return n
+
+
 def build_directed_chain(specs, *, seed: int = 0, **kwargs) -> GeneratedChain:
     """Convenience wrapper: one generator, one directed chain."""
     build_kwargs = {
@@ -849,10 +928,14 @@ __all__ = [
     "REGION_GUARD",
     "REGION_SOURCE",
     "STREAMS",
+    "STREAM_DEVICES",
+    "STREAM_NEXT_DEVICE",
     "ChainGenerator",
     "GeneratedChain",
     "GeneratorError",
     "TcdSpec",
     "build_directed_chain",
     "len_addr_corner_specs",
+    "multi_chunk_length",
+    "one_chunk_length",
 ]
