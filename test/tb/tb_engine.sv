@@ -1,6 +1,8 @@
 // L0 cocotb wrapper: qspi_engine + one PSRAM model attachment hooks.
 // Contract: docs/llm/verification/02-platform.md, 03-psram-model.md (L0 section).
 // No protocol logic here; Python models and tests drive/monitor ports.
+// Q-SIO-X: SIO must not be X when sampled in a host-driven phase. Dummy/read
+// data may legally float; models sample sio_bus so Z is visible (no Z->0).
 
 `default_nettype none
 `timescale 1ns / 1ps
@@ -73,6 +75,7 @@ module tb_engine;
    // Shared-bus resolution (L0: ASIC SIO OE vs PSRAM model drive)
    // Wired tristate: an undriven listen window floats, and dual drive of
    // disagreeing levels resolves to x. L0 has no board keeper on SIO.
+   // Models sample sio_bus / bus_sio; Z is not mapped to 0.
    // -------------------------------------------------------------------------
    wire     [3:0] sio_bus;
    wire     [3:0] asic_sio_oe = sio_oe & ~fault_sio_oe;
@@ -90,18 +93,9 @@ module tb_engine;
    // DUT sees the physical plane, including z during its own listen windows.
    wire     [3:0] sio_in = sio_bus;
 
-   // Model plane: wrapper idle value for z only, mirroring tb_top. x from dual
-   // drive stays x so the parser still sees contention where a value is needed.
-   wire     [3:0] resolved_sio;
-   generate
-      for (gi = 0; gi < 4; gi = gi + 1) begin : gen_model_plane
-         assign resolved_sio[gi] = (sio_bus[gi] === 1'bz) ? 1'b0 : sio_bus[gi];
-      end
-   endgenerate
-
    // -------------------------------------------------------------------------
    // Scalar pin aliases for the Python PSRAM models (same names as tb_top).
-   // Engine always drives SCK/CE#, so these are direct wires, not resolved_uio.
+   // Engine always drives SCK/CE#, so these are direct wires.
    // -------------------------------------------------------------------------
    wire psram_sck   = sclk;
    wire psram0_ce_n = ram_a_cs_n;
@@ -143,13 +137,16 @@ module tb_engine;
    );
 
    // -------------------------------------------------------------------------
-   // Waveform dump (FST; path matches test/Makefile waves target)
+   // Waveform dump (FST; path matches test/Makefile waves target). Honor the
+   // same WAVES_DISABLE as L1 (WAVES=never).
    // -------------------------------------------------------------------------
+`ifndef WAVES_DISABLE
    initial begin
       $dumpfile("dump.fst");
       $dumpvars(0, tb_engine);
       #1;
    end
+`endif
 
 endmodule
 

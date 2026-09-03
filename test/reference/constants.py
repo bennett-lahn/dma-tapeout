@@ -33,7 +33,7 @@ CTRL_DEST_DEVICE_BIT = 6
 CTRL_NEXT_DEVICE_BIT = 7
 CTRL_RESERVED_SHIFT = 0
 
-# --- Buffer (types.svh DMA_BUF_DEPTH_MAX / tapeout N; not the chain default 1) ---
+# --- Buffer (types.svh DMA_BUF_DEPTH_MAX / tapeout N; chain default is N=5) ---
 
 DMA_BUF_DEPTH_MAX = 8
 DMA_BUF_DEPTH_TAPEOUT = 5
