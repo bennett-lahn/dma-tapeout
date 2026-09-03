@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Copy the N=5 unpowered netlist and run the L2 directed subset.
-# Prefer ttihp-verilog-template/runs/wokwi/final/nl/tt_um_lahnb_sgdma.nl.v
+# Copy the designated N=5 unpowered netlist and run the L2 directed subset.
+# Designated artifact: test/gate_level_netlist.189-aug18.v (189-DFF tapeout N=5).
+# Do not silently fall back to a ttihp template or other untracked netlist.
 # Requires PDK_ROOT (or a discoverable IHP cell-model tree).
 # Missing netlist is a hard fail, not a pass.
 # SDF remains blocked: this is zero-delay functional GL, not an SDF pass.
@@ -19,32 +20,45 @@ mkdir -p "$RUNS_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 LOG="$RUNS_DIR/run_gl-${STAMP}.log"
 
+EXPECTED_NETLIST_SHA256_N5="9a769ad4bcc09d7cff699e8f178acab4fb5b7228e242cfdf7d027ed2274beb7a"
+DESIGNATED_NL="$TEST_DIR/gate_level_netlist.189-aug18.v"
+DEST_NL="$TEST_DIR/gate_level_netlist.v"
+
+if [ -n "${SDF:-}" ]; then
+    echo "run_gl: SDF is blocked (zero-delay functional GL is not an SDF pass)." >&2
+    echo "run_gl: unset SDF and rerun. This is not a pass." >&2
+    exit 1
+fi
+
 if [ -z "${VIRTUAL_ENV:-}" ]; then
     # shellcheck disable=SC1091
     source "$TEST_DIR/env.sh"
 fi
 
-PREFERRED_NL="$REPO_ROOT/ttihp-verilog-template/runs/wokwi/final/nl/tt_um_lahnb_sgdma.nl.v"
-DEST_NL="$TEST_DIR/gate_level_netlist.v"
-
 if [ -n "${NETLIST_SRC:-}" ] && [ -f "$NETLIST_SRC" ]; then
     SRC_NL="$NETLIST_SRC"
-elif [ -f "$PREFERRED_NL" ]; then
-    SRC_NL="$PREFERRED_NL"
-elif [ -f "$DEST_NL" ]; then
-    SRC_NL="$DEST_NL"
+elif [ -f "$DESIGNATED_NL" ]; then
+    SRC_NL="$DESIGNATED_NL"
 else
-    echo "run_gl: netlist missing." >&2
-    echo "run_gl: expected unpowered N=5 nl view at:" >&2
-    echo "  $PREFERRED_NL" >&2
-    echo "  or existing $DEST_NL" >&2
+    echo "run_gl: designated N=5 netlist missing." >&2
+    echo "run_gl: expected 189-DFF artifact at:" >&2
+    echo "  $DESIGNATED_NL" >&2
     echo "run_gl: L2 is blocked until that file exists. This is not a pass." >&2
     exit 1
 fi
 
-if [ "$SRC_NL" != "$DEST_NL" ]; then
-    cp -f "$SRC_NL" "$DEST_NL"
+cp -f "$SRC_NL" "$DEST_NL"
+
+SHA="$(sha256sum "$DEST_NL" | awk '{print $1}')"
+if [ "$SHA" != "$EXPECTED_NETLIST_SHA256_N5" ]; then
+    echo "run_gl: NETLIST SHA256 mismatch." >&2
+    echo "run_gl: expected $EXPECTED_NETLIST_SHA256_N5" >&2
+    echo "run_gl: got      $SHA" >&2
+    echo "run_gl: src=$SRC_NL dest=$DEST_NL" >&2
+    echo "run_gl: refuse to run an untracked netlist. This is not a pass." >&2
+    exit 1
 fi
+export NETLIST_SHA256="$SHA"
 
 _resolve_pdk_root() {
     local candidate
@@ -81,14 +95,13 @@ if [ ! -f "$PDK_ROOT/ihp-sg13g2/libs.ref/sg13g2_io/verilog/sg13g2_io.v" ] \
     exit 1
 fi
 
-SHA="$(sha256sum "$DEST_NL" | awk '{print $1}')"
-
 {
     echo "=== run_gl (L2 functional, zero-delay; SDF blocked) ==="
     echo "repo=$REPO_ROOT"
     echo "netlist_src=$SRC_NL"
     echo "netlist_dest=$DEST_NL"
     echo "netlist_sha256=$SHA"
+    echo "expected_sha256=$EXPECTED_NETLIST_SHA256_N5"
     echo "PDK_ROOT=$PDK_ROOT"
     echo "SDF=<unset> (zero-delay functional GL is not an SDF pass)"
     echo "args: $*"
@@ -98,7 +111,7 @@ SHA="$(sha256sum "$DEST_NL" | awk '{print $1}')"
 
 cd "$TEST_DIR"
 set +e
-make gl_test NETLIST=gate_level_netlist.v "$@" 2>&1 | tee -a "$LOG"
+make gl_test NETLIST=gate_level_netlist.v EXPECTED_NETLIST_SHA256="$EXPECTED_NETLIST_SHA256_N5" "$@" 2>&1 | tee -a "$LOG"
 exit=${PIPESTATUS[0]}
 set -e
 

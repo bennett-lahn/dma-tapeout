@@ -37,6 +37,8 @@ TIMING_PROFILE      ?= ideal
 WAVES               ?= auto
 TOPLEVEL_LANG       ?= verilog
 NETLIST             ?= gate_level_netlist.v
+EXPECTED_NETLIST_SHA256 ?= 9a769ad4bcc09d7cff699e8f178acab4fb5b7228e242cfdf7d027ed2274beb7a
+VERILATOR_X         ?=
 
 # TT-compatible gate selector (unset, or yes)
 GATES               ?=
@@ -206,10 +208,12 @@ ifeq ($(GATES),yes)
   export NETLIST_SHA256
   export PDK_ROOT
 
+  ifneq ($(NETLIST_SHA256),$(EXPECTED_NETLIST_SHA256))
+    $(error L2 netlist SHA256 mismatch: expected designated 189-DFF N=5 artifact sha256=$(EXPECTED_NETLIST_SHA256), got $(NETLIST_SHA256). Copy test/gate_level_netlist.189-aug18.v via test/scripts/run_gl.sh)
+  endif
+
   ifneq ($(SDF),)
-    # SDF remains blocked until a qualified annotation run exists.
-    # Defining this does not make a zero-delay GL run an SDF pass.
-    COMPILE_ARGS    += -DSDF_ANNOTATE=\"$(SDF)\"
+    $(error SDF is blocked for this campaign (zero-delay functional GL is not an SDF pass). Unset SDF)
   endif
 
   VERILOG_SOURCES   += $(TB_DIR)/tb_gl.sv
@@ -244,6 +248,9 @@ else ifeq ($(SIM),verilator)
   # Verilator 5.051 (OSS CAD Suite) timing support for HDL delays and cocotb clocks.
   COMPILE_ARGS      += --timing
   # X-propagation settings recorded per-run in M6; not defaulted here.
+  ifeq ($(VERILATOR_X),yes)
+    COMPILE_ARGS    += --x-assign unique --x-initial unique
+  endif
 else
   $(warning SIM=$(SIM) is not in the primary matrix (icarus, verilator))
 endif
@@ -262,6 +269,7 @@ _print_config:
 	@echo "LEVEL=$(LEVEL) ($(DUT_LEVEL))  TOPLEVEL=$(TOPLEVEL)  SIM=$(SIM)"
 	@echo "SEED=$(SEED)  DMA_BUF_DEPTH=$(DMA_BUF_DEPTH)  TIMING_PROFILE=$(TIMING_PROFILE)"
 	@echo "WAVES=$(WAVES)  GATES=$(GATES)  TEST_FILTER=$(TEST_FILTER)"
+	@echo "VERILATOR_X=$(VERILATOR_X)"
 	@echo "RUN_DIR=$(RUN_DIR)"
 	@echo "SIM_BUILD=$(SIM_BUILD)"
 	@echo "COCOTB_TEST_MODULES=$(COCOTB_TEST_MODULES)"
@@ -295,7 +303,7 @@ doctor:
 # Primary targets (02-platform.md)
 # ---------------------------------------------------------------------------
 
-.PHONY: default test smoke directed depth random regression formal waves gl_test
+.PHONY: default test smoke directed depth random regression formal waves gl_test injection verilator_x
 
 # Helper rules (_ensure_run_dir, etc.) appear earlier in this file. Without an
 # explicit default goal, GNU make would run the first of those and succeed
@@ -333,23 +341,44 @@ gl_test:
 		RUN_DIR="$(PWD)/runs/gl/icarus/n5/ideal/seed-$(SEED)" \
 		SIM_BUILD="$(PWD)/sim_build/gl/icarus/n5/ideal"
 
-# M2 directed cases in tests.test_dma_directed.
-# COV-DEPTH filled by make depth.
-# Run the whole module; cocotb filters fullname module.name.
+# M2/M5 directed coverage modules: DMA happy-path, reset/bus, injection DUT.
+# COV-DEPTH filled by make depth. QSPI suites stay on their own modules.
+# Run the listed modules; cocotb filters fullname module.name.
+DIRECTED_MODULES ?= tests.test_dma_directed,tests.test_reset_and_bus,tests.test_injection_dut
 directed:
 	$(MAKE) test \
-		COCOTB_TEST_MODULES=tests.test_dma_directed \
+		COCOTB_TEST_MODULES=$(DIRECTED_MODULES) \
 		TEST_FILTER=$(if $(TEST_FILTER),$(TEST_FILTER),)
 
-# TC-DEPTH harness: isolated directed build per depth in 1..DMA_BUF_DEPTH_MAX.
+# Injection DUT proofs (sync latency, START capture, FETCH/READ/WRITE reset).
+# Included in make directed; this target runs them alone.
+injection:
+	$(MAKE) test LEVEL=top \
+		COCOTB_TEST_MODULES=tests.test_injection_dut \
+		TEST_FILTER=$(if $(TEST_FILTER),$(TEST_FILTER),)
+
+# Verilator X-assign/X-initial unique campaign (not four-state; not an SDF pass).
+# M6 stays open until Icarus L2 + this campaign + SDF disposition are all met.
+verilator_x:
+	$(MAKE) test LEVEL=top SIM=verilator VERILATOR_X=yes \
+		COCOTB_TEST_MODULES=tests.test_smoke \
+		TEST_FILTER=$(if $(TEST_FILTER),$(TEST_FILTER),smoke) \
+		RUN_DIR="$(PWD)/runs/top/verilator/n$(DMA_BUF_DEPTH)/$(TIMING_PROFILE)/x-unique/seed-$(SEED)" \
+		SIM_BUILD="$(PWD)/sim_build/top/verilator/n$(DMA_BUF_DEPTH)/$(TIMING_PROFILE)/x-unique"
+
+# TC-DEPTH harness: isolated DMA-directed build per depth in 1..DMA_BUF_DEPTH_MAX.
 # Compile-time parameter; not a single cocotb process that recompiles.
+# Reset/bus and injection stay on `make directed` at the compile N (tapeout 5);
+# they are not re-run at every depth.
 # Pass RUN_DIR/SIM_BUILD explicitly: parent exports RUN_DIR for the default
 # depth, and `?=` would otherwise keep that sticky path across the loop.
 depth:
 	@set -euo pipefail; \
 	 for n in $$(seq 1 $(DMA_BUF_DEPTH_MAX)); do \
 	   echo "=== TC-DEPTH: DMA_BUF_DEPTH=$$n / $(DMA_BUF_DEPTH_MAX) ==="; \
-	   $(MAKE) directed DMA_BUF_DEPTH=$$n \
+	   $(MAKE) test DMA_BUF_DEPTH=$$n \
+	     COCOTB_TEST_MODULES=tests.test_dma_directed \
+	     TEST_FILTER=$(if $(TEST_FILTER),$(TEST_FILTER),) \
 	     RUN_DIR="$(PWD)/runs/$(LEVEL)/$(SIM)/n$$n/$(TIMING_PROFILE)/seed-$(SEED)" \
 	     SIM_BUILD="$(PWD)/sim_build/$(LEVEL)/$(SIM)/n$$n/$(TIMING_PROFILE)"; \
 	 done; \

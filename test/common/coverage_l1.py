@@ -8,9 +8,9 @@ Points recorded here:
 
 * ``COV-CTRL-STATE`` - controller state reached (all eight ``sys_control_state_t`` encodings)
 * ``COV-QPI-PHASE`` - QPI phase reached (all ten ``qspi_state_t`` encodings; READ_DATA and WRITE_DATA separate)
-* ``COV-BUS-STATE`` - BUS_REQ synchronized assertion x controller state (STALL excluded)
-* ``COV-BUS-PHASE`` - BUS_REQ synchronized assertion x active QPI phase
-* ``COV-BUS-RESUME`` - stall origin x resumed action
+* ``COV-BUS-STATE`` - BUS_REQ synchronized assertion in a controller state (STALL excluded)
+* ``COV-BUS-PHASE`` - BUS_REQ synchronized assertion in an active QPI phase (1-D enum)
+* ``COV-BUS-RESUME`` - stall origin after leaving STALL (1-D enum)
 * ``COV-RESET-STATE`` - reset assertion x controller state
 * ``COV-RESET-PHASE`` - reset assertion x external QPI phase
 * ``COV-START-PHASE`` - raw START assertion phase

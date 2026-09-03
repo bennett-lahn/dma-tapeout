@@ -1,7 +1,9 @@
 // L2 cocotb wrapper: gate-level tt_um_lahnb_sgdma (TT GATES=yes flow).
 // Contract: docs/llm/verification/02-platform.md, 09-gate-level-and-x.md.
 // Netlist and IHP cell models are supplied by test/Makefile when GATES=yes.
-// Same external environment as tb_top; no RTL hierarchy references.
+// Same external environment as tb_top (tb_uio_bus.svh); no RTL hierarchy
+// references. DMA_BUF_DEPTH N is on-chip scratch bytes; the flattened netlist
+// is tapeout N=5 and this parameter does not resynthesize.
 
 `default_nettype none
 `timescale 1ns / 1ps
@@ -9,6 +11,15 @@
 module tb_gl #(
    parameter int unsigned DMA_BUF_DEPTH = 5
 );
+
+   generate
+      if (DMA_BUF_DEPTH != 5) begin : g_depth_mismatch
+         initial $error(
+            "tb_gl: DMA_BUF_DEPTH=%0d does not resynthesize the flattened N=5 netlist (tapeout N=5 on-chip scratch). Makefile must not pass -Ptb_gl.DMA_BUF_DEPTH.",
+            DMA_BUF_DEPTH
+         );
+      end
+   endgenerate
 
    // -------------------------------------------------------------------------
    // Clock / reset / TT dedicated pins (cocotb drives unless noted)
@@ -23,7 +34,9 @@ module tb_gl #(
    logic  [7:0] uio_oe;
 
    // -------------------------------------------------------------------------
-   // MCU pass-through hooks when BUS_GNT (cocotb drives)
+   // MCU pass-through hooks. Host OE stays ungated in SV so negatives can drive
+   // illegally. Python follows D26 (ASIC bus keeper while ~BUS_GNT) unless the
+   // test is a negative.
    // -------------------------------------------------------------------------
    logic  [7:0] host_uio_drive;
    logic  [7:0] host_uio_oe;
@@ -40,107 +53,13 @@ module tb_gl #(
    logic  [7:0] fault_uio_drive;
    logic  [7:0] fault_uio_oe;
 
-   initial begin
-      host_uio_drive  = '0;
-      host_uio_oe     = '0;
-      fault_uio_drive = '0;
-      fault_uio_oe    = '0;
-   end
-
-   // -------------------------------------------------------------------------
-   // Shared uio bus (physical plane), identical to tb_top: wired tristate with
-   // board pull-ups on the three CS nets only.
-   // TODO(M6): verify resolved nets remain sufficient when internal hierarchy
-   //           is flattened; L2 pass criteria are top-observable only.
-   // -------------------------------------------------------------------------
-   wire   [7:0] uio_bus;
-   wire   [7:0] asic_uio_oe = uio_oe & ~fault_uio_oe;
-
-   genvar gi;
-   generate
-      for (gi = 0; gi < 8; gi = gi + 1) begin : gen_uio_drivers
-         assign uio_bus[gi] = asic_uio_oe[gi]  ? uio_out[gi]         : 1'bz;
-         assign uio_bus[gi] = fault_uio_oe[gi] ? fault_uio_drive[gi] : 1'bz;
-         assign uio_bus[gi] = host_uio_oe[gi]  ? host_uio_drive[gi]  : 1'bz;
-      end
-   endgenerate
-
-   assign uio_bus[1] = psram0_sio_oe[0] ? psram0_sio_drive[0] : 1'bz;
-   assign uio_bus[2] = psram0_sio_oe[1] ? psram0_sio_drive[1] : 1'bz;
-   assign uio_bus[4] = psram0_sio_oe[2] ? psram0_sio_drive[2] : 1'bz;
-   assign uio_bus[5] = psram0_sio_oe[3] ? psram0_sio_drive[3] : 1'bz;
-
-   assign uio_bus[1] = psram1_sio_oe[0] ? psram1_sio_drive[0] : 1'bz;
-   assign uio_bus[2] = psram1_sio_oe[1] ? psram1_sio_drive[1] : 1'bz;
-   assign uio_bus[4] = psram1_sio_oe[2] ? psram1_sio_drive[2] : 1'bz;
-   assign uio_bus[5] = psram1_sio_oe[3] ? psram1_sio_drive[3] : 1'bz;
-
-   pullup pu_flash_cs (uio_bus[0]);
-   pullup pu_ram_a_cs (uio_bus[6]);
-   pullup pu_ram_b_cs (uio_bus[7]);
-
-   wire   [7:0] uio_in = uio_bus;
-
-   // Model plane: wrapper idle value for z only (see tb_top).
-   localparam logic [7:0] BUS_IDLE_LEVEL = 8'b1100_0001; // CS high, SIO/SCK low
-
-   wire   [7:0] resolved_uio;
-   generate
-      for (gi = 0; gi < 8; gi = gi + 1) begin : gen_model_plane
-         assign resolved_uio[gi] = (uio_bus[gi] === 1'bz) ? BUS_IDLE_LEVEL[gi]
-                                                          : uio_bus[gi];
-      end
-   endgenerate
-
-   // -------------------------------------------------------------------------
-   // Scalar pin aliases for the Python PSRAM models (identical to tb_top).
-   // -------------------------------------------------------------------------
-   wire psram_sck   = resolved_uio[3];
-   wire psram0_ce_n = resolved_uio[6];
-   wire psram1_ce_n = resolved_uio[7];
-
-   // -------------------------------------------------------------------------
-   // Ownership view for test/monitors/qspi.py (identical names to tb_top).
-   // -------------------------------------------------------------------------
-   wire       bus_flash_cs_n  = uio_bus[0];
-   wire       bus_sck         = uio_bus[3];
-   wire       bus_ram_a_cs_n  = uio_bus[6];
-   wire       bus_ram_b_cs_n  = uio_bus[7];
-   wire [3:0] bus_sio         = {uio_bus[5], uio_bus[4], uio_bus[2], uio_bus[1]};
-
-   wire [3:0] asic_sio_oe     = {asic_uio_oe[5], asic_uio_oe[4],
-                                 asic_uio_oe[2], asic_uio_oe[1]};
-   wire [3:0] asic_sio_out    = {uio_out[5], uio_out[4], uio_out[2], uio_out[1]};
-   wire       asic_flash_cs_oe  = asic_uio_oe[0];
-   wire       asic_flash_cs_out = uio_out[0];
-   wire       asic_sck_oe       = asic_uio_oe[3];
-   wire       asic_sck_out      = uio_out[3];
-   wire       asic_ram_a_cs_oe  = asic_uio_oe[6];
-   wire       asic_ram_a_cs_out = uio_out[6];
-   wire       asic_ram_b_cs_oe  = asic_uio_oe[7];
-   wire       asic_ram_b_cs_out = uio_out[7];
-
-   wire [3:0] host_sio_oe     = {host_uio_oe[5], host_uio_oe[4],
-                                 host_uio_oe[2], host_uio_oe[1]};
-   wire [3:0] host_sio_drive  = {host_uio_drive[5], host_uio_drive[4],
-                                 host_uio_drive[2], host_uio_drive[1]};
-   wire       host_sck_oe     = host_uio_oe[3];
-
-   wire [3:0] fault_sio_oe    = {fault_uio_oe[5], fault_uio_oe[4],
-                                 fault_uio_oe[2], fault_uio_oe[1]};
-   wire [3:0] fault_sio_drive = {fault_uio_drive[5], fault_uio_drive[4],
-                                 fault_uio_drive[2], fault_uio_drive[1]};
-   wire       fault_sck_oe    = fault_uio_oe[3];
-
-   // Host status view (identical to tb_top).
-   wire       done            = uo_out[0];
-   wire       bus_gnt         = uo_out[1];
+`include "tb_uio_bus.svh"
 
    // -------------------------------------------------------------------------
    // Gate-level DUT
    // Makefile adds: -DGL_TEST -DFUNCTIONAL -DSIM, NETLIST, sg13g2_io/stdcell.
-   // Flattened N=5 netlist: no DMA_BUF_DEPTH parameter. Makefile must not
-   // pass -Ptb_gl.DMA_BUF_DEPTH as if that resynthesizes the gate DUT.
+   // Flattened N=5 netlist: no DMA_BUF_DEPTH parameter on the instance.
+   // Makefile must not pass -Ptb_gl.DMA_BUF_DEPTH as if that resynthesizes.
    // SDF remains blocked; this wrapper has no $sdf_annotate. A zero-delay
    // functional GL run is not an SDF pass (09-gate-level-and-x.md).
    // -------------------------------------------------------------------------

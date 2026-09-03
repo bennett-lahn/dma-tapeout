@@ -82,6 +82,9 @@ LANDING_CYCLES = {
 }
 
 # Catalog / coverage aliases accepted by the targeted injectors.
+# One-cycle controller/QPI bins cannot use middle/final landing offsets.
+ONE_CYCLE_CTRL_STATES = frozenset({"NEW_FETCH", "NEW_OP", "UPDATE"})
+ONE_CYCLE_QPI_PHASES = frozenset({"CS_ON", "SEND_CMD_1", "SEND_CMD_2"})
 _CTRL_ALIASES = {
     "IDLE": "SYS_CTRL_IDLE",
     "SYS_CTRL_IDLE": "SYS_CTRL_IDLE",
@@ -129,6 +132,42 @@ class InjectionError(ValueError):
 def _weighted(rng: random.Random, pairs) -> object:
     items, weights = zip(*pairs)
     return rng.choices(items, weights=weights, k=1)[0]
+
+
+def landing_offset_cycles(landing: str, *, one_cycle: bool = False) -> int:
+    """Return the extra wait for a landing bin; reject middle/final on 1-cycle regions."""
+    if landing not in BUS_LANDINGS:
+        raise InjectionError(f"landing must be one of {BUS_LANDINGS}, got {landing!r}")
+    if one_cycle and landing in (LANDING_MIDDLE, LANDING_FINAL):
+        raise InjectionError(
+            f"landing={landing} is illegal on a one-cycle BUS_REQ region; use {LANDING_START}"
+        )
+    return LANDING_CYCLES[landing]
+
+
+def _region_is_one_cycle(target_state, target_phase) -> bool:
+    return target_state in ONE_CYCLE_CTRL_STATES or target_phase in ONE_CYCLE_QPI_PHASES
+
+
+def classify_start_capture(record: "StartPulseRecord") -> None:
+    """Enforce capture-required vs uncertain synchronized-edge counts."""
+    edges = 0 if record.sync_edges is None else int(record.sync_edges)
+    if record.capture == CAPTURE_REQUIRED and edges == 0:
+        raise InjectionError(
+            "capture-required START produced zero synchronized edges"
+        )
+    if record.capture == CAPTURE_UNCERTAIN and edges > 1:
+        raise InjectionError(
+            f"capture-uncertain START produced {edges} synchronized "
+            "edges (at most one is legal)"
+        )
+
+
+def _check_bus_landing(record: "BusReqRecord") -> None:
+    landing_offset_cycles(
+        record.landing,
+        one_cycle=_region_is_one_cycle(record.target_state, record.target_phase),
+    )
 
 
 def _near_edge_ns(period_ns: float) -> float:
@@ -318,6 +357,7 @@ class StartPulseRecord:
     assert_time_ns: "float | None" = None
     deassert_time_ns: "float | None" = None
     sync_edges: "int | None" = None
+    idle_uncaptured: bool = False
 
     def to_manifest(self) -> dict:
         return asdict(self)
@@ -456,14 +496,17 @@ class InjectionPlanner:
             codes = resolve_qpi_phase(target_phase)
             phase_name = QPI_STATE_BY_CODE[codes[0]] if len(codes) == 1 else str(target_phase)
         if landing is None:
-            chosen_landing = _weighted(rng, _LANDING_WEIGHTS)
+            if _region_is_one_cycle(state_name, phase_name):
+                chosen_landing = LANDING_START
+            else:
+                chosen_landing = _weighted(rng, _LANDING_WEIGHTS)
         elif landing in BUS_LANDINGS:
             chosen_landing = landing
         else:
             raise InjectionError(
                 f"landing must be one of {BUS_LANDINGS}, got {landing!r}"
             )
-        return BusReqRecord(
+        record = BusReqRecord(
             target_state=state_name,
             target_phase=phase_name,
             landing=chosen_landing,
@@ -471,6 +514,8 @@ class InjectionPlanner:
             host_hold_cycles=int(_weighted(rng, _HOST_HOLD_WEIGHTS)),
             clk_period_ns=self.clk_period_ns,
         )
+        _check_bus_landing(record)
+        return record
 
     def plan_reset(
         self,
@@ -565,7 +610,7 @@ def _resolve_bus_plan(plan, planner, target_state, target_phase, landing, clk_pe
     chosen = landing if landing is not None else LANDING_START
     if chosen not in BUS_LANDINGS:
         raise InjectionError(f"landing must be one of {BUS_LANDINGS}, got {chosen!r}")
-    return BusReqRecord(
+    record = BusReqRecord(
         target_state=state_name,
         target_phase=phase_name,
         landing=chosen,
@@ -573,6 +618,8 @@ def _resolve_bus_plan(plan, planner, target_state, target_phase, landing, clk_pe
         host_hold_cycles=1,
         clk_period_ns=period,
     )
+    _check_bus_landing(record)
+    return record
 
 
 def _resolve_reset_plan(
@@ -907,12 +954,17 @@ async def _wait_raw_assert_slot(dut, record: BusReqRecord, *, timeout_cycles: in
     """
     from cocotb.triggers import NextTimeStep, ReadOnly, RisingEdge
 
-    extra = LANDING_CYCLES[record.landing]
+    extra = landing_offset_cycles(
+        record.landing,
+        one_cycle=_region_is_one_cycle(record.target_state, record.target_phase),
+    )
+    missed = 0
     for _ in range(timeout_cycles):
         await RisingEdge(dut.clk)
         await ReadOnly()
         until = _cycles_until_targets(dut, record)
         if until is None:
+            missed += 1
             await NextTimeStep()
             continue
         wait = until + extra - SYNC_LATENCY_CYCLES
@@ -928,6 +980,7 @@ async def _wait_raw_assert_slot(dut, record: BusReqRecord, *, timeout_cycles: in
             phase_codes = (
                 set(resolve_qpi_phase(record.target_phase)) if need_phase else None
             )
+            drifted = False
             for _ in range(wait):
                 await RisingEdge(dut.clk)
                 await ReadOnly()
@@ -936,19 +989,25 @@ async def _wait_raw_assert_slot(dut, record: BusReqRecord, *, timeout_cycles: in
                     and int(controller.curr_state.value) not in state_codes
                     and _ctrl_next_name(dut) != record.target_state
                 ):
+                    drifted = True
                     await NextTimeStep()
                     break
                 if (
                     phase_codes is not None
                     and int(engine.curr_state.value) not in phase_codes
                 ):
+                    drifted = True
                     await NextTimeStep()
                     break
                 await NextTimeStep()
+            if drifted:
+                missed += 1
+                continue
         return
     raise InjectionError(
         f"never reached raw-assert slot for state={record.target_state!r} "
-        f"phase={record.target_phase!r} within {timeout_cycles} cycles"
+        f"phase={record.target_phase!r} within {timeout_cycles} cycles "
+        f"({missed} missed candidate slot(s))"
     )
 
 
@@ -983,6 +1042,28 @@ async def _complete_bus_req_cycle(
             await NextTimeStep()
         else:
             raise InjectionError("BUS_GNT never asserted after BUS_REQ")
+        parked = True
+        if hasattr(dut, "uio_oe"):
+            parked = False
+            known = False
+            for _ in range(GRANT_TIMEOUT_CYCLES):
+                await RisingEdge(dut.clk)
+                await ReadOnly()
+                try:
+                    oe = int(dut.uio_oe.value)
+                except (ValueError, TypeError, AttributeError):
+                    oe = None
+                if oe is None:
+                    await NextTimeStep()
+                    continue
+                known = True
+                if oe == 0:
+                    parked = True
+                    await NextTimeStep()
+                    break
+                await NextTimeStep()
+            if known and not parked:
+                raise InjectionError("ASIC uio_oe did not park after BUS_GNT")
         for _ in range(record.host_hold_cycles):
             await RisingEdge(dut.clk)
     if release:
@@ -990,13 +1071,6 @@ async def _complete_bus_req_cycle(
         await assert_bus_req(dut, hold=False)
         record.release_time_ns = _now_ns()
     return record
-
-
-async def accepted_start(dut, hold_cycles: int = 2) -> None:
-    """Issue one accepted START pulse via :func:`common.host.pulse_start`."""
-    from common.host import pulse_start
-
-    await pulse_start(dut, hold_cycles=hold_cycles)
 
 
 async def jitter_start(
@@ -1064,11 +1138,10 @@ async def jitter_start(
     await RisingEdge(dut.clk)
     await counter
     record.sync_edges = edges["n"]
-    if record.capture == CAPTURE_UNCERTAIN and record.sync_edges > 1:
-        raise InjectionError(
-            f"capture-uncertain START produced {record.sync_edges} synchronized "
-            "edges (at most one is legal)"
-        )
+    record.idle_uncaptured = (
+        record.capture == CAPTURE_UNCERTAIN and record.sync_edges == 0
+    )
+    classify_start_capture(record)
     return record
 
 
@@ -1138,7 +1211,7 @@ async def inject_bus_req_at_new_fetch(
     ``tests.test_reset_and_bus``. Raw assertion is
     ``SYNC_LATENCY_CYCLES`` before the synchronized NEW_FETCH cycle.
     """
-    from cocotb.triggers import RisingEdge
+    from cocotb.triggers import NextTimeStep, ReadOnly, RisingEdge
     from common.host import BUS_REQ_BIT, START_BIT
 
     period = resolve_clk_period_ns(clk_period_ns)
@@ -1155,10 +1228,14 @@ async def inject_bus_req_at_new_fetch(
     current = int(dut.ui_in.value)
     dut.ui_in.value = current & ~(1 << START_BIT) & 0xFF
     await RisingEdge(dut.clk)
-    # Synchronized bus_req lands this cycle while curr_state is NEW_FETCH;
-    # the NBA into STALL is the accepted catch, not the coverage sample.
-    _, observed_phase = _sample_names(dut)
-    record.observed_state = "NEW_FETCH"
+    await ReadOnly()
+    observed_state, observed_phase = _sample_names(dut)
+    await NextTimeStep()
+    if observed_state != "NEW_FETCH":
+        raise InjectionError(
+            f"NEW_FETCH helper synchronized on {observed_state!r}, not NEW_FETCH"
+        )
+    record.observed_state = observed_state
     record.observed_phase = observed_phase
     return await _complete_bus_req_cycle(
         dut, record, wait_grant=wait_grant, release=release
@@ -1265,16 +1342,17 @@ __all__ = [
     "InjectionPlanner",
     "ResetPulseRecord",
     "StartPulseRecord",
-    "accepted_start",
     "await_controller_state",
     "await_engine_state",
     "capture_required_hold_ns",
     "capture_uncertain_hold_ns",
+    "classify_start_capture",
     "classify_start_phase",
     "has_live_ce_monitor",
     "inject_bus_req",
     "inject_bus_req_at_new_fetch",
     "jitter_start",
+    "landing_offset_cycles",
     "offset_for_phase_bin",
     "pulse_reset",
     "release_reset",

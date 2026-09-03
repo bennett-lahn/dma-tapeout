@@ -28,8 +28,10 @@ from common.artifacts import run_dir
 from common.bringup import bring_up_top
 from common.config import parse_run_config
 from common.coverage_l1 import L1CoverageAdapter
+from common.constants import BUS_GNT_MASK, GRANT_TIMEOUT_CYCLES
 from common.directed import (
     auto_timeout_ns,
+    coverage_sampler,
     install_chain,
     read_back,
     run_context,
@@ -48,7 +50,7 @@ from common.injection import (
     resolve_clk_period_ns,
 )
 from reference.chain import ADDR_MAX, HEAD_ADDRESS, HEAD_DEVICE
-from reference.coverage import FRAGMENT_FILENAME, CoverageError, CoverageSampler
+from reference.coverage import BUS_RESUME_BINS, FRAGMENT_FILENAME, CoverageSampler
 from reference.generator import STREAMS, ChainGenerator
 from reference.scoreboard import Scoreboard
 from reference.tcd import TCD_BYTES, format_bytes, validate_tcd
@@ -106,16 +108,24 @@ def schedule_start_edges(base_seed: int, *, clk_period_ns=None) -> list:
     return [planner.plan_start(capture=CAPTURE_REQUIRED)]
 
 
-def schedule_bus_req_edges(base_seed: int, *, clk_period_ns=None) -> list:
+def schedule_bus_req_edges(base_seed: int, *, clk_period_ns=None, chain=None) -> list:
     """Adapter: ``InjectionPlanner.plan_bus_req`` on stream ``bus_req``.
 
-    Target FETCH (always present on a legal chain, including quit-only) so
-    the generic early-assert driver can land ``COV-BUS-STATE``.
+    Diversify among FETCH / READ / WRITE when the chain has payload; quit-only
+    chains stay on FETCH. One-cycle NEW_FETCH / UPDATE landings stay directed.
     """
     planner = InjectionPlanner(
         base_seed, clk_period_ns=resolve_clk_period_ns(clk_period_ns)
     )
-    return [planner.plan_bus_req(target_state="FETCH")]
+    rng = planner.stream(STREAM_BUS_REQ)
+    has_data = False
+    if chain is not None:
+        has_data = any((not tcd.quit) and tcd.transfer_len > 0 for tcd in chain.tcds)
+    if has_data:
+        target = rng.choice(("FETCH", "READ", "WRITE"))
+    else:
+        target = "FETCH"
+    return [planner.plan_bus_req(target_state=target)]
 
 
 def schedule_reset_edges(base_seed: int, *, clk_period_ns=None) -> list:
@@ -164,6 +174,19 @@ async def apply_bus_req_edges(dut, edges, *, adapter=None, clk_period_ns=None) -
         record = await inject_bus_req(dut, edge, clk_period_ns=period)
         if adapter is not None and record.observed_state is not None:
             adapter.record_bus_assertion(record.observed_state, record.observed_phase)
+        for _ in range(GRANT_TIMEOUT_CYCLES):
+            await RisingEdge(dut.clk)
+            try:
+                gnt = int(dut.uo_out.value) & BUS_GNT_MASK
+            except (ValueError, TypeError):
+                gnt = 1
+            if gnt == 0:
+                break
+        if adapter is not None and record.observed_state is not None:
+            origin = record.observed_state
+            resume_name = "IDLE" if origin in ("IDLE", "SYS_CTRL_IDLE") else origin
+            if resume_name in BUS_RESUME_BINS:
+                adapter.record_bus_resume(origin)
         driven.append(record)
     return driven
 
@@ -295,12 +318,16 @@ def _optional_child(parent, name):
 
 
 async def sample_l1_states(dut, adapter: L1CoverageAdapter, running) -> None:
-    """Record ``COV-CTRL-STATE`` / ``COV-QPI-PHASE`` the first time each encoding appears."""
+    """Record ``COV-CTRL-STATE`` / ``COV-QPI-PHASE`` on every state transition.
+
+    Unknown encodings re-raise ``CoverageError`` (no swallow). Same-encoding
+    cycles are skipped so hit counts stay one per visit, not one per clock.
+    """
     inner = _optional_child(dut, "dut")
     controller = _optional_child(inner, "sys_controller")
     engine = _optional_child(inner, "qspi_engine")
-    seen_ctrl = set()
-    seen_qpi = set()
+    prev_ctrl = object()
+    prev_qpi = object()
     while running[0]:
         await RisingEdge(dut.clk)
         if controller is not None:
@@ -308,23 +335,17 @@ async def sample_l1_states(dut, adapter: L1CoverageAdapter, running) -> None:
                 state = int(controller.curr_state.value)
             except (ValueError, TypeError, AttributeError):
                 state = None
-            if state is not None and state not in seen_ctrl:
-                try:
-                    adapter.record_ctrl_state(state)
-                    seen_ctrl.add(state)
-                except CoverageError:
-                    pass
+            if state is not None and state != prev_ctrl:
+                adapter.record_ctrl_state(state)
+                prev_ctrl = state
         if engine is not None:
             try:
                 phase = int(engine.curr_state.value)
             except (ValueError, TypeError, AttributeError):
                 phase = None
-            if phase is not None and phase not in seen_qpi:
-                try:
-                    adapter.record_qpi_phase(phase)
-                    seen_qpi.add(phase)
-                except CoverageError:
-                    pass
+            if phase is not None and phase != prev_qpi:
+                adapter.record_qpi_phase(phase)
+                prev_qpi = phase
 
 
 @cocotb.test()
@@ -344,9 +365,7 @@ async def random_legal_chain(dut):
     )
     dut._log.info(repro)
 
-    cov_config = dict(config)
-    cov_config["test"] = test
-    cov = CoverageSampler.from_config(cov_config)
+    cov = coverage_sampler(config, test=test)
     adapter = L1CoverageAdapter(cov)
 
     generator = ChainGenerator(config["seed"], dma_buf_depth=config["dma_buf_depth"])
@@ -357,12 +376,33 @@ async def random_legal_chain(dut):
 
     clk_period_ns = resolve_clk_period_ns()
     start_edges = schedule_start_edges(config["seed"], clk_period_ns=clk_period_ns)
-    bus_edges = schedule_bus_req_edges(config["seed"], clk_period_ns=clk_period_ns)
+    bus_edges = schedule_bus_req_edges(
+        config["seed"], clk_period_ns=clk_period_ns, chain=chain
+    )
     reset_edges = schedule_reset_edges(config["seed"], clk_period_ns=clk_period_ns)
 
     bringup = await bring_up_top(dut)
     bringup.clear()
     install_chain(bringup, chain)
+
+    idle_bus = await inject_bus_req(
+        dut,
+        target_state="SYS_CTRL_IDLE",
+        clk_period_ns=clk_period_ns,
+        wait_grant=True,
+        release=True,
+    )
+    if idle_bus.observed_state is not None:
+        adapter.record_bus_assertion(idle_bus.observed_state, idle_bus.observed_phase)
+    for _ in range(GRANT_TIMEOUT_CYCLES):
+        await RisingEdge(dut.clk)
+        try:
+            gnt = int(dut.uo_out.value) & BUS_GNT_MASK
+        except (ValueError, TypeError):
+            gnt = 1
+        if gnt == 0:
+            break
+    adapter.record_bus_resume("SYS_CTRL_IDLE")
 
     running = [True]
     cocotb.start_soon(sample_l1_states(dut, adapter, running))

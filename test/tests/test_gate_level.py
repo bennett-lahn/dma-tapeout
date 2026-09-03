@@ -4,22 +4,25 @@ Reuses L1 directed helpers (``common.directed`` / ``common.bringup``) with
 top-pin-only pass criteria. No RTL hierarchy, source enums, internal register
 names, or synthesis instance names.
 
-Test-case IDs from ``09-gate-level-and-x.md``:
-    TC-SMOKE: same-device PSRAM0-to-PSRAM0 length-1 then quit
-    TC-TCD-BE: known 11-byte descriptor encoding and flag decode
-    TC-SAME-0 / TC-SAME-1: both PSRAM CE# paths and shared SIO mapping
-    TC-CROSS-01 / TC-CROSS-10: device-select muxing in both directions
-    TC-CHAIN / TC-QUIT / TC-RESTART: chain control and reset-to-fixed-head
-    TC-BUS-IDLE / TC-BUS-ACTIVE / TC-BUS-REPEAT: grant polarity, atomic
+Test-case IDs are ``TC-GL-*`` so L2 rows are not double-counted as L1 closure
+(``09-gate-level-and-x.md``):
+    TC-GL-SMOKE: same-device PSRAM0-to-PSRAM0 length-1 then quit
+    TC-GL-TCD-BE: known 11-byte descriptor encoding and flag decode
+    TC-GL-SAME-0 / TC-GL-SAME-1: both PSRAM CE# paths and shared SIO mapping
+    TC-GL-CROSS-01 / TC-GL-CROSS-10: device-select muxing in both directions
+    TC-GL-CHAIN / TC-GL-QUIT / TC-GL-RESTART: chain control and reset-to-fixed-head
+    TC-GL-BUS-IDLE / TC-GL-BUS-ACTIVE / TC-GL-BUS-REPEAT: grant polarity, atomic
         completion, OE release, and resume (pin-observable only)
-    TC-RESET-IDLE / TC-RESET-ACTIVE: initialization and reset recovery
+    TC-GL-RESET-IDLE / TC-GL-RESET-ACTIVE: initialization and reset recovery
         across gate storage (pin-observable only)
+    TC-GL-RESET-RANDOM: seed-derived pin-observable reset campaign (M6 open)
 
 Always-on ``CHK-*`` (runtime monitors) still dispose via ``dispose_run``.
-L2 hierarchy rows are ``na``.
+L2 hierarchy rows are ``na``. SDF remains blocked.
 """
 
 import os
+import random
 import zlib
 
 import cocotb
@@ -65,6 +68,10 @@ def _repro(config: dict, test_filter: str) -> str:
     ).format(seed=config["seed"], test_filter=test_filter)
 
 
+EXPECTED_NETLIST_SHA256_N5 = "9a769ad4bcc09d7cff699e8f178acab4fb5b7228e242cfdf7d027ed2274beb7a"
+DESIGNATED_NETLIST = "gate_level_netlist.189-aug18.v"
+
+
 def _require_l2(config: dict, *, repro: str) -> None:
     if config["level"] != "gl" or config["dut_level"] != "L2":
         raise AssertionError(
@@ -76,6 +83,18 @@ def _require_l2(config: dict, *, repro: str) -> None:
         raise AssertionError(
             f"L2 netlist is flattened at DMA_BUF_DEPTH={DMA_BUF_DEPTH_TAPEOUT} "
             f"(got {config['dma_buf_depth']}). " + repro
+        )
+    sha = os.environ.get("NETLIST_SHA256", "")
+    if sha != EXPECTED_NETLIST_SHA256_N5:
+        raise AssertionError(
+            "L2 netlist SHA256 mismatch: expected the designated 189-DFF N=5 "
+            f"artifact {DESIGNATED_NETLIST} sha256={EXPECTED_NETLIST_SHA256_N5}, "
+            f"got {sha or '<unset>'}. " + repro
+        )
+    if os.environ.get("SDF"):
+        raise AssertionError(
+            "SDF is blocked for this campaign (zero-delay functional GL is not "
+            "an SDF pass). Unset SDF. " + repro
         )
 
 
@@ -184,6 +203,8 @@ async def _assert_reset_safe(dut, *, window: str, repro: str, cycles: int = _RES
 
 
 async def _release_reset(dut) -> None:
+    """Release ``rst_n`` away from a rising ``clk`` edge, then settle two clocks."""
+    await Timer(10, unit="ns")
     dut.rst_n.value = 1
     dut.ui_in.value = 0
     dut.host_uio_drive.value = 0
@@ -284,7 +305,7 @@ async def _assert_no_resume(dut, *, window: str, repro: str, txn_count: int, bri
 async def gate_same_device_smoke(dut):
     """TC-SMOKE: one PSRAM0-to-PSRAM0 copy, length 1, then quit."""
     config = parse_run_config()
-    test = "TC-SMOKE"
+    test = "TC-GL-SMOKE"
     repro = _repro(config, "gate_same_device_smoke")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
@@ -306,7 +327,7 @@ async def gate_same_device_smoke(dut):
 async def gate_tcd_big_endian_flags(dut):
     """TC-TCD-BE: known 11-byte descriptor encoding and flag decode."""
     config = parse_run_config()
-    test = "TC-TCD-BE"
+    test = "TC-GL-TCD-BE"
     repro = _repro(config, "gate_tcd_big_endian_flags")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
@@ -343,7 +364,7 @@ async def gate_tcd_big_endian_flags(dut):
 async def gate_same_device_psram0(dut):
     """TC-SAME-0: PSRAM0 to PSRAM0 copy."""
     config = parse_run_config()
-    test = "TC-SAME-0"
+    test = "TC-GL-SAME-0"
     repro = _repro(config, "gate_same_device_psram0")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
@@ -353,8 +374,10 @@ async def gate_same_device_psram0(dut):
     chain = build_directed_chain(
         [TcdSpec(transfer_len=8, src_device=0, dest_device=0)], seed=1002
     )
-    await run_directed_window(dut, bringup, chain, test=test, config=config, repro=repro)
-    observed_devices = {txn.device for txn in bringup.pin.transactions()}
+    golden, report = await run_directed_window(
+        dut, bringup, chain, test=test, config=config, repro=repro
+    )
+    observed_devices = {txn.device for txn in report.pin_transactions}
     assert observed_devices == {0}, (
         f"{test}: expected only PSRAM0, observed {sorted(observed_devices)}. " + repro
     )
@@ -364,7 +387,7 @@ async def gate_same_device_psram0(dut):
 async def gate_same_device_psram1(dut):
     """TC-SAME-1: PSRAM1 to PSRAM1 copy after head fetch on PSRAM0."""
     config = parse_run_config()
-    test = "TC-SAME-1"
+    test = "TC-GL-SAME-1"
     repro = _repro(config, "gate_same_device_psram1")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
@@ -374,11 +397,24 @@ async def gate_same_device_psram1(dut):
     chain = build_directed_chain(
         [TcdSpec(transfer_len=8, src_device=1, dest_device=1)], seed=1003
     )
-    golden, _ = await run_directed_window(
+    golden, report = await run_directed_window(
         dut, bringup, chain, test=test, config=config, repro=repro
     )
-    fetch_devices = {descriptor.device for descriptor in golden.descriptors}
-    data_devices = {txn.device for txn in golden.data_transactions()}
+    pin = list(report.pin_transactions)
+    expected = list(golden.transactions)
+    assert len(pin) == len(expected), (
+        f"{test}: pin log length {len(pin)} != golden {len(expected)}. " + repro
+    )
+    fetch_devices = {
+        obs.device
+        for obs, exp in zip(pin, expected)
+        if exp.kind == FETCH_READ
+    }
+    data_devices = {
+        obs.device
+        for obs, exp in zip(pin, expected)
+        if exp.kind in (DATA_READ, DATA_WRITE)
+    }
     assert fetch_devices == {0}, (
         f"{test}: descriptor fetches must stay on PSRAM0, observed {fetch_devices}. "
         + repro
@@ -393,7 +429,7 @@ async def gate_same_device_psram1(dut):
 async def gate_cross_device_0_to_1(dut):
     """TC-CROSS-01: PSRAM0 source to PSRAM1 destination."""
     config = parse_run_config()
-    test = "TC-CROSS-01"
+    test = "TC-GL-CROSS-01"
     repro = _repro(config, "gate_cross_device_0_to_1")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
@@ -403,11 +439,21 @@ async def gate_cross_device_0_to_1(dut):
     chain = build_directed_chain(
         [TcdSpec(transfer_len=8, src_device=0, dest_device=1)], seed=1004
     )
-    golden, _ = await run_directed_window(
+    golden, report = await run_directed_window(
         dut, bringup, chain, test=test, config=config, repro=repro
     )
-    reads = {txn.device for txn in golden.transactions if txn.kind == DATA_READ}
-    writes = {txn.device for txn in golden.transactions if txn.kind == DATA_WRITE}
+    pin = list(report.pin_transactions)
+    expected = list(golden.transactions)
+    reads = {
+        obs.device
+        for obs, exp in zip(pin, expected)
+        if exp.kind == DATA_READ
+    }
+    writes = {
+        obs.device
+        for obs, exp in zip(pin, expected)
+        if exp.kind == DATA_WRITE
+    }
     assert reads == {0} and writes == {1}, (
         f"{test}: expected reads on PSRAM0 and writes on PSRAM1, "
         f"observed reads={reads} writes={writes}. " + repro
@@ -418,7 +464,7 @@ async def gate_cross_device_0_to_1(dut):
 async def gate_cross_device_1_to_0(dut):
     """TC-CROSS-10: PSRAM1 source to PSRAM0 destination."""
     config = parse_run_config()
-    test = "TC-CROSS-10"
+    test = "TC-GL-CROSS-10"
     repro = _repro(config, "gate_cross_device_1_to_0")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
@@ -428,11 +474,21 @@ async def gate_cross_device_1_to_0(dut):
     chain = build_directed_chain(
         [TcdSpec(transfer_len=8, src_device=1, dest_device=0)], seed=1005
     )
-    golden, _ = await run_directed_window(
+    golden, report = await run_directed_window(
         dut, bringup, chain, test=test, config=config, repro=repro
     )
-    reads = {txn.device for txn in golden.transactions if txn.kind == DATA_READ}
-    writes = {txn.device for txn in golden.transactions if txn.kind == DATA_WRITE}
+    pin = list(report.pin_transactions)
+    expected = list(golden.transactions)
+    reads = {
+        obs.device
+        for obs, exp in zip(pin, expected)
+        if exp.kind == DATA_READ
+    }
+    writes = {
+        obs.device
+        for obs, exp in zip(pin, expected)
+        if exp.kind == DATA_WRITE
+    }
     assert reads == {1} and writes == {0}, (
         f"{test}: expected reads on PSRAM1 and writes on PSRAM0, "
         f"observed reads={reads} writes={writes}. " + repro
@@ -443,7 +499,7 @@ async def gate_cross_device_1_to_0(dut):
 async def gate_multi_tcd_chain(dut):
     """TC-CHAIN: at least three executable TCDs followed by quit."""
     config = parse_run_config()
-    test = "TC-CHAIN"
+    test = "TC-GL-CHAIN"
     repro = _repro(config, "gate_multi_tcd_chain")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
@@ -474,7 +530,7 @@ async def gate_multi_tcd_chain(dut):
 async def gate_quit_descriptor_priority(dut):
     """TC-QUIT: quit TCD with nonzero pointer and length fields."""
     config = parse_run_config()
-    test = "TC-QUIT"
+    test = "TC-GL-QUIT"
     repro = _repro(config, "gate_quit_descriptor_priority")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
@@ -511,7 +567,7 @@ async def gate_quit_descriptor_priority(dut):
 async def gate_restart_after_completion(dut):
     """TC-RESTART: complete a chain then issue a new START."""
     config = parse_run_config()
-    test = "TC-RESTART"
+    test = "TC-GL-RESTART"
     repro = _repro(config, "gate_restart_after_completion")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
@@ -543,7 +599,7 @@ async def gate_restart_after_completion(dut):
 async def gate_bus_req_from_idle(dut):
     """TC-BUS-IDLE: BUS_REQ in IDLE; START while req/grant high is ignored."""
     config = parse_run_config()
-    test = "TC-BUS-IDLE"
+    test = "TC-GL-BUS-IDLE"
     repro = _repro(config, "gate_bus_req_from_idle")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
@@ -583,7 +639,7 @@ async def gate_bus_req_from_idle(dut):
 async def gate_bus_req_during_transaction(dut):
     """TC-BUS-ACTIVE: BUS_REQ while a QPI transaction is on the pins."""
     config = parse_run_config()
-    test = "TC-BUS-ACTIVE"
+    test = "TC-GL-BUS-ACTIVE"
     repro = _repro(config, "gate_bus_req_during_transaction")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
@@ -616,7 +672,7 @@ async def gate_bus_req_during_transaction(dut):
 async def gate_bus_req_repeat_cycles(dut):
     """TC-BUS-REPEAT: multiple request/grant/release cycles in one chain."""
     config = parse_run_config()
-    test = "TC-BUS-REPEAT"
+    test = "TC-GL-BUS-REPEAT"
     repro = _repro(config, "gate_bus_req_repeat_cycles")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
@@ -656,7 +712,7 @@ async def gate_bus_req_repeat_cycles(dut):
 async def gate_reset_from_idle(dut):
     """TC-RESET-IDLE: reset from IDLE and while BUS_GNT is active."""
     config = parse_run_config()
-    test = "TC-RESET-IDLE"
+    test = "TC-GL-RESET-IDLE"
     repro = _repro(config, "gate_reset_from_idle")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
@@ -678,8 +734,20 @@ async def gate_reset_from_idle(dut):
     chain = build_directed_chain(
         [TcdSpec(transfer_len=3, pattern=PATTERN_INCREMENT)], seed=5001
     )
-    await run_directed_window(
+    golden, report = await run_directed_window(
         dut, bringup, chain, test=f"{test}[idle]", config=config, repro=repro
+    )
+    pin = list(report.pin_transactions)
+    assert pin, f"{test}[idle]: pin log empty after off-edge reset recovery. {repro}"
+    head = pin[0]
+    assert (
+        head.device == HEAD_DEVICE
+        and head.address == HEAD_ADDRESS
+        and head.length == TCD_BYTES
+    ), (
+        f"{test}[idle]: expected 11-byte head fetch on PSRAM0 0x000000 after "
+        f"off-edge reset release, pin {head.device}:0x{head.address:06X} "
+        f"len={head.length}. {repro}"
     )
 
     bringup2 = await _bring_up_l2(dut, config, window=f"{test}[granted]", repro=repro)
@@ -715,7 +783,7 @@ async def gate_reset_from_idle(dut):
 async def gate_reset_during_activity(dut):
     """TC-RESET-ACTIVE: reset during pin-observable active QPI / grant."""
     config = parse_run_config()
-    test = "TC-RESET-ACTIVE"
+    test = "TC-GL-RESET-ACTIVE"
     repro = _repro(config, "gate_reset_during_activity")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
@@ -738,7 +806,6 @@ async def gate_reset_during_activity(dut):
         install_chain(bringup, chain)
         bringup.clear()
         await prepare(dut, bringup, window)
-        txn_count = 0 if bringup.pin is None else len(bringup.pin.transactions())
         for agent in bringup.agents:
             agent.note_reset()
         dut.rst_n.value = 0
@@ -747,9 +814,11 @@ async def gate_reset_during_activity(dut):
             bringup, test=window, log=dut._log, reset_truncated=REVIEW, repro=repro
         )
         await _release_reset(dut)
+        txn_after = 0 if bringup.pin is None else len(bringup.pin.transactions())
         await _assert_no_resume(
-            dut, window=window, repro=repro, txn_count=txn_count, bringup=bringup
+            dut, window=window, repro=repro, txn_count=txn_after, bringup=bringup
         )
+        bringup.stop()
 
     async def _prep_ce_low(dut, bringup, window):
         await pulse_start(dut)
@@ -775,6 +844,83 @@ async def gate_reset_during_activity(dut):
     await _reset_window("ce-low", _prep_ce_low)
     await _reset_window("inter-txn", _prep_gap)
     await _reset_window("granted", _prep_grant)
+
+
+@cocotb.test()
+async def gate_reset_random(dut):
+    """TC-GL-RESET-RANDOM: seed-derived pin-observable reset, then 11-byte head fetch.
+
+    M6 stays open: this is a feasible Icarus L2 reset campaign, not Verilator-X
+    four-state coverage and not an SDF pass.
+    """
+    config = parse_run_config()
+    test = "TC-GL-RESET-RANDOM"
+    repro = _repro(config, "gate_reset_random")
+    _require_l2(config, repro=repro)
+    _log_netlist(dut, config)
+    rng = random.Random(int(config["seed"]))
+    mode = rng.choice(("idle", "ce-low", "granted"))
+    dut._log.info("%s mode=%s %s", test, mode, repro)
+
+    window = f"{test}[{mode}]"
+    bringup = await _bring_up_l2(dut, config, window=window, repro=repro)
+    chain = build_directed_chain(
+        [
+            TcdSpec(
+                transfer_len=16,
+                src_device=0,
+                dest_device=1,
+                pattern=PATTERN_INCREMENT,
+            )
+        ],
+        seed=5200 + int(config["seed"]),
+    )
+    install_chain(bringup, chain)
+    bringup.clear()
+    if mode == "idle":
+        await RisingEdge(dut.clk)
+    elif mode == "ce-low":
+        await pulse_start(dut)
+        await _wait_done_low(dut, window=window, repro=repro)
+        await _wait_ce_low(dut, window=window, repro=repro)
+    else:
+        await pulse_start(dut)
+        await _wait_done_low(dut, window=window, repro=repro)
+        await _wait_ce_low(dut, window=window, repro=repro)
+        await assert_bus_req(dut, hold=True)
+        await _wait_bus_gnt(dut, want=1, window=window, repro=repro)
+
+    for agent in bringup.agents:
+        agent.note_reset()
+    dut.rst_n.value = 0
+    await _assert_reset_safe(dut, window=window, repro=repro)
+    dispose_run(bringup, test=window, log=dut._log, reset_truncated=REVIEW, repro=repro)
+    await _release_reset(dut)
+    txn_after = 0 if bringup.pin is None else len(bringup.pin.transactions())
+    await _assert_no_resume(
+        dut, window=window, repro=repro, txn_count=txn_after, bringup=bringup
+    )
+    bringup.stop()
+
+    recovery = await _bring_up_l2(dut, config, window=f"{test}[recover]", repro=repro)
+    recover_chain = build_directed_chain(
+        [TcdSpec(transfer_len=3, pattern=PATTERN_INCREMENT)], seed=5300
+    )
+    golden, report = await run_directed_window(
+        dut, recovery, recover_chain, test=f"{test}[recover]", config=config, repro=repro
+    )
+    pin = list(report.pin_transactions)
+    assert pin, f"{test}[recover]: pin log empty after randomized reset. {repro}"
+    head = pin[0]
+    assert (
+        head.device == HEAD_DEVICE
+        and head.address == HEAD_ADDRESS
+        and head.length == TCD_BYTES
+    ), (
+        f"{test}[recover]: expected 11-byte head fetch after randomized L2 reset, "
+        f"pin {head.device}:0x{head.address:06X} len={head.length}. {repro}"
+    )
+    assert golden is not None
 
 
 def zlib_seed(label: str) -> int:

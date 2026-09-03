@@ -14,6 +14,8 @@ from reference.chain import (
     ADDR_MAX,
     DATA_READ,
     DATA_WRITE,
+    DEFAULT_DMA_BUF_DEPTH,
+    DEFAULT_TXN_BUDGET,
     FETCH_READ,
     HEAD_ADDRESS,
     HEAD_DEVICE,
@@ -30,7 +32,15 @@ from reference.chain import (
     transaction,
 )
 from common.constants import DST_ADDR, QUIT_ADDR, SRC_ADDR
-from reference.tcd import TCD_BYTES, Tcd, TcdError, encode_tcd
+from reference.constants import DMA_BUF_DEPTH_MAX, DMA_BUF_DEPTH_TAPEOUT
+from reference.tcd import PTR_BIT23, TCD_BYTES, Tcd, TcdError, encode_tcd
+from reference.tcd import ReferenceModelError
+
+
+def test_default_depth_is_tapeout_n5():
+    """tb-ref-01 / cov-dma-07: oracle default is tapeout N=5, not N=1."""
+    assert DEFAULT_DMA_BUF_DEPTH == 5
+    assert DEFAULT_DMA_BUF_DEPTH == DMA_BUF_DEPTH_TAPEOUT
 
 
 def image(fill: int = 0x00) -> MemoryImage:
@@ -200,7 +210,7 @@ def test_same_device_one_copy_on_psram1():
     )
     place(memory, 0, QUIT_ADDR, Tcd(quit=True))
     memory.write(1, SRC_ADDR, b"\x11\x22")
-    result = interpret_chain(memory)
+    result = interpret_chain(memory, dma_buf_depth=1)
 
     assert positions(result, DATA_READ) == [(1, SRC_ADDR, 1), (1, SRC_ADDR + 1, 1)]
     assert positions(result, DATA_WRITE) == [(1, DST_ADDR, 1), (1, DST_ADDR + 1, 1)]
@@ -296,7 +306,7 @@ def test_read_and_write_alternate_strictly():
     )
     place(memory, 0, QUIT_ADDR, Tcd(quit=True))
     memory.write(0, SRC_ADDR, b"\x0A\x0B\x0C\x0D")
-    result = interpret_chain(memory)
+    result = interpret_chain(memory, dma_buf_depth=1)
     assert kinds(result) == [FETCH_READ] + [DATA_READ, DATA_WRITE] * 4 + [FETCH_READ]
 
 
@@ -374,7 +384,7 @@ def test_later_fetch_reads_current_memory():
     memory.write(0, SRC_ADDR, encode_tcd(Tcd(quit=True)))
     memory.write(0, 0x004000, b"\x77" * 8)
 
-    result = interpret_chain(memory)
+    result = interpret_chain(memory, dma_buf_depth=1)
     assert result.descriptors[1].tcd.quit is True
     assert result.final_memory.read(0, 0x005000, 1) == b"\x00"
     assert positions(result, DATA_WRITE) == [
@@ -435,6 +445,87 @@ def test_chunk_reads_all_bytes_before_its_own_write():
     assert result.final_memory.read(0, SRC_ADDR, 5) == b"\x01\x01\x02\x02\x04"
 
 
+def test_n5_forward_overlap_uses_more_than_one_chunk():
+    """tb-ref-02 / cov-refu-01: N=5, transfer_len > 5 is multi-chunk sequential copy."""
+    memory = image()
+    payload = bytes(range(1, 9))  # 8 bytes -> chunks of 5 then 3
+    place(
+        memory,
+        0,
+        0x000000,
+        Tcd(src_ptr=SRC_ADDR, dest_ptr=SRC_ADDR + 1, transfer_len=8, next_tcd=QUIT_ADDR),
+    )
+    place(memory, 0, QUIT_ADDR, Tcd(quit=True))
+    memory.write(0, SRC_ADDR, payload + b"\x00")
+    result = interpret_chain(memory, 5)
+    reads = positions(result, DATA_READ)
+    writes = positions(result, DATA_WRITE)
+    assert [item[2] for item in reads] == [5, 3]
+    assert [item[2] for item in writes] == [5, 3]
+    # Chunk 1 writes 01..05 onto SRC+1; chunk 2 then reads the mutated tail.
+    assert result.final_memory.read(0, SRC_ADDR, 9) == b"\x01\x01\x02\x03\x04\x05\x05\x07\x08"
+
+
+def test_n5_backward_overlap_uses_more_than_one_chunk():
+    """tb-ref-02 / cov-refu-01: N=5 backward overlap with transfer_len > 5."""
+    memory = image()
+    payload = bytes(range(1, 10))
+    place(
+        memory,
+        0,
+        0x000000,
+        Tcd(src_ptr=SRC_ADDR + 1, dest_ptr=SRC_ADDR, transfer_len=8, next_tcd=QUIT_ADDR),
+    )
+    place(memory, 0, QUIT_ADDR, Tcd(quit=True))
+    memory.write(0, SRC_ADDR, payload)
+    result = interpret_chain(memory, 5)
+    assert [item[2] for item in positions(result, DATA_READ)] == [5, 3]
+    # First chunk copies src+1..src+5 onto dest; second chunk sees the shift.
+    assert result.final_memory.read(0, SRC_ADDR, 9) == b"\x02\x03\x04\x05\x06\x07\x08\x09\x09"
+
+
+def test_n5_one_chunk_control_stays_single_transaction():
+    """tb-ref-02: transfer_len <= N is one DATA_READ / DATA_WRITE pair."""
+    memory = image()
+    place(
+        memory,
+        0,
+        0x000000,
+        Tcd(src_ptr=SRC_ADDR, dest_ptr=DST_ADDR, transfer_len=5, next_tcd=QUIT_ADDR),
+    )
+    place(memory, 0, QUIT_ADDR, Tcd(quit=True))
+    memory.write(0, SRC_ADDR, b"\x11\x22\x33\x44\x55")
+    result = interpret_chain(memory, 5)
+    assert positions(result, DATA_READ) == [(0, SRC_ADDR, 5)]
+    assert positions(result, DATA_WRITE) == [(0, DST_ADDR, 5)]
+    assert result.final_memory.read(0, DST_ADDR, 5) == b"\x11\x22\x33\x44\x55"
+
+
+def test_dest_device1_pointer_bit23_masks_to_a22_0():
+    """cov-refu-02 / cov-refu-07: dest device 1 with ptr[23]=1 accesses A[22:0]."""
+    dest = DST_ADDR
+    memory = image()
+    place(
+        memory,
+        0,
+        0x000000,
+        Tcd(
+            src_ptr=SRC_ADDR,
+            dest_ptr=dest | PTR_BIT23,
+            transfer_len=4,
+            next_tcd=QUIT_ADDR,
+            dest_device=1,
+        ),
+    )
+    place(memory, 0, QUIT_ADDR, Tcd(quit=True))
+    memory.write(0, SRC_ADDR, b"\xAA\xBB\xCC\xDD")
+    result = interpret_chain(memory)
+    assert result.final_memory.read(1, dest, 4) == b"\xAA\xBB\xCC\xDD"
+    writes = [txn for txn in result.transactions if txn.kind == DATA_WRITE]
+    assert writes[0].device == 1
+    assert writes[0].address == dest
+
+
 def test_equal_source_and_destination_is_a_no_op_in_value():
     memory = image()
     place(
@@ -445,7 +536,7 @@ def test_equal_source_and_destination_is_a_no_op_in_value():
     )
     place(memory, 0, QUIT_ADDR, Tcd(quit=True))
     memory.write(0, SRC_ADDR, b"\x09\x08\x07")
-    result = interpret_chain(memory)
+    result = interpret_chain(memory, dma_buf_depth=1)
     assert result.final_memory.read(0, SRC_ADDR, 3) == b"\x09\x08\x07"
     assert len(positions(result, DATA_WRITE)) == 3
 
@@ -558,12 +649,38 @@ def test_undefined_source_byte_is_a_reference_error():
         interpret_chain(memory)
 
 
-@pytest.mark.parametrize("depth", [0, -1, True, 1.0])
+@pytest.mark.parametrize("depth", [0, -1, True, 1.0, 9])
 def test_depth_must_be_a_positive_int(depth):
     memory = image()
     place(memory, 0, 0x000000, Tcd(quit=True))
     with pytest.raises(Exception):
         interpret_chain(memory, depth)
+
+
+def test_depth_nine_is_rejected():
+    """tb-ref-07: V1 elaboration is 1..8; N=9 is not a legal dma_buf_depth."""
+    memory = image()
+    place(memory, 0, 0x000000, Tcd(quit=True))
+    with pytest.raises(ReferenceModelError, match="1..8"):
+        interpret_chain(memory, 9)
+    assert DMA_BUF_DEPTH_MAX == 8
+
+
+def test_max_chain_fits_raised_txn_budget_at_n1():
+    """tb-ref-07: 8 x 255-byte descriptors at N=1 fit DEFAULT_TXN_BUDGET."""
+    from reference.generator import TcdSpec, build_directed_chain
+
+    assert DEFAULT_TXN_BUDGET >= 65536
+    chain = build_directed_chain(
+        [TcdSpec(transfer_len=255) for _ in range(8)],
+        seed=7,
+        dma_buf_depth=1,
+    )
+    result = chain.interpret(dma_buf_depth=1)
+    # 8 fetches + quit + 8*255 read/write pairs
+    assert result.fetch_count == 9
+    data_reads = [txn for txn in result.transactions if txn.kind == DATA_READ]
+    assert len(data_reads) == 8 * 255
 
 
 def test_interpreter_does_not_mutate_the_input_image():

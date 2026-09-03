@@ -17,6 +17,7 @@ from cocotb.triggers import RisingEdge, Timer
 
 from common.constants import (
     BUS_REQ_BIT,
+    DONE_MASK,
     SCK_PERIOD_NS,
     SIO_UIO_BITS,
     START_BIT,
@@ -26,9 +27,21 @@ from common.constants import (
 )
 from reference.constants import ADDR_NIBBLES, CMD_NIBBLES
 
+# Capture-required START must remain high across three rising clk edges after
+# the first possible sample (two-flop sync plus edge detect).
+START_HOLD_CYCLES = 3
+BUS_REQ_SYNC_CYCLES = 2
 
-async def pulse_start(dut, hold_cycles: int = 2) -> None:
-    """Issue one accepted START rising-edge pulse after ``BUS_GNT`` is low."""
+
+async def pulse_start(
+    dut, hold_cycles: int = START_HOLD_CYCLES, *, wait_ack: bool = False
+) -> None:
+    """Issue one START rising-edge pulse after ``BUS_GNT`` is low.
+
+    Default *hold_cycles* is 3 so a capture-required pulse survives the
+    two-flop synchronizer. Pass ``hold_cycles=1`` only via
+    :func:`pulse_start_one_cycle` for one-cycle state injection.
+    """
     current = int(dut.ui_in.value)
     dut.ui_in.value = current | (1 << START_BIT)
     for _ in range(hold_cycles):
@@ -36,16 +49,47 @@ async def pulse_start(dut, hold_cycles: int = 2) -> None:
     current = int(dut.ui_in.value)
     dut.ui_in.value = current & ~(1 << START_BIT) & 0xFF
     await RisingEdge(dut.clk)
+    if wait_ack:
+        for _ in range(10_000):
+            if (int(dut.uo_out.value) & DONE_MASK) == 0:
+                return
+            await RisingEdge(dut.clk)
+        raise AssertionError("pulse_start wait_ack: DONE never fell")
 
 
-async def assert_bus_req(dut, hold: bool = True) -> None:
-    """Assert or release raw ``BUS_REQ`` with host release-before-seize model."""
+async def pulse_start_one_cycle(dut) -> None:
+    """One-cycle raw START for state-machine injection, not capture-required."""
+    await pulse_start(dut, hold_cycles=1)
+
+
+async def assert_bus_req(dut, hold: bool = True, *, wait_sync: bool = True) -> None:
+    """Assert or release raw ``BUS_REQ`` with host release-before-seize model.
+
+    After asserting, wait the two-flop synchronizer so a visible ``bus_req``
+    (when hierarchy exposes it) is high on return. Release stays one clock.
+    """
     current = int(dut.ui_in.value)
     if hold:
         dut.ui_in.value = current | (1 << BUS_REQ_BIT)
     else:
         dut.ui_in.value = current & ~(1 << BUS_REQ_BIT) & 0xFF
     await RisingEdge(dut.clk)
+    if hold and wait_sync:
+        for _ in range(BUS_REQ_SYNC_CYCLES):
+            await RisingEdge(dut.clk)
+        inner = getattr(dut, "dut", None)
+        for block in (inner, dut):
+            if block is None:
+                continue
+            handle = getattr(block, "bus_req", None)
+            if handle is None:
+                continue
+            try:
+                level = int(handle.value)
+            except (ValueError, TypeError, AttributeError):
+                break
+            assert level == 1, "assert_bus_req returned before synchronized bus_req was high"
+            break
 
 
 class QpiPassthroughMaster:
