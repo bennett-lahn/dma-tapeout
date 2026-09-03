@@ -15,15 +15,24 @@ traffic and would mis-classify as CTRL/HS failures. Shared-bus IDs
 (``Q-MUX``, ``Q-SIO-OWN``, ``Q-SCKIDLE``, flash CS) belong to the bus-level
 monitor and are not exercised here. CE# AC thresholds are off for this
 module: MCU pass-through frames leave less than ``tCPH`` between bursts.
+ASIC-selected illegal SIO (monitors attached) is ``TC-QPI-ASIC-SIO-X`` in
+``tests.test_qspi``.
 
 Test-case IDs:
     TC-QNEG-BASELINE
     TC-QNEG-OPCODE
     TC-QNEG-PHASE
     TC-QNEG-DUMMY
+    TC-QNEG-DUMMY-EXTRA
     TC-QNEG-NIBBLE-ODD
+    TC-QNEG-PAGE
     TC-ADDR23-DONTCARE
     TC-QNEG-SIO-X
+    TC-QNEG-SIO-Z
+    TC-QNEG-SIO-Z-READ-OK
+    TC-QNEG-SCK-HIZ
+    TC-QNEG-SCK-FLOAT-GRANT-RST
+    TC-QNEG-CE-X
     TC-QNEG-ADDR-RANGE
     TC-QNEG-DRIVE-DESEL
     TC-QNEG-STRICT
@@ -34,16 +43,20 @@ from cocotb.triggers import RisingEdge, Timer
 
 from common.bringup import bring_up_top
 from common.config import parse_run_config
-from common.constants import FILL
-from common.dispose import dispose_run, expect
+from common.constants import FILL, UIO_PSRAM_CE_BITS, UIO_SCK_BIT
+from common.dispose import REVIEW, dispose_run, expect
 from common.host import QpiPassthroughMaster, assert_bus_req
 from models.psram import (
+    CLASS_FAIL,
+    CLASS_RESET_TRUNCATED,
     PSRAM_ADDR_MASK,
+    PSRAM_PAGE_SIZE,
     Q_ADDR_RANGE,
     Q_DRIVE_DESEL,
     Q_DUMMY,
     Q_NIBBLE_ODD,
     Q_OPCODE,
+    Q_PAGE,
     Q_PHASE,
     Q_SIO_X,
     QSPI_CMD_FAST_READ,
@@ -51,7 +64,7 @@ from models.psram import (
     SIO_UIO_BITS,
     format_violations,
 )
-from monitors.qspi import CHK_PIN_KNOWN
+from monitors.qspi import CHK_PIN_KNOWN, CHK_PIN_SCK_PARK
 
 QSPI_CMD_QUAD_WRITE = 0x38  # device-supported, outside the frozen V1 allowlist
 
@@ -129,6 +142,19 @@ def _model_records(bringup) -> list:
     return records
 
 
+def _level(handle) -> "int | None":
+    try:
+        return int(handle.value)
+    except ValueError:
+        return None
+
+
+def _read_launches(device) -> int:
+    """Count wrapper ``read-launch`` events (falling SCK that sourced a nibble)."""
+    events = getattr(device, "timing_events", ())
+    return sum(1 for event in events if event.get("kind") == "read-launch")
+
+
 def _sio_uio_mask(*sio_indices: int) -> int:
     indices = sio_indices if sio_indices else range(len(SIO_UIO_BITS))
     mask = 0
@@ -203,7 +229,13 @@ async def qpi_negative_unsupported_opcode(dut):
 
 @cocotb.test()
 async def qpi_negative_truncated_phases(dut):
-    """TC-QNEG-PHASE: CE# rises inside the command phase, then inside address."""
+    """TC-QNEG-PHASE: CE# rises inside the command phase, then inside address.
+
+    Model axis records both truncations as ``Q-PHASE`` (CE# rose before the
+    command or address phase completed) with nibble-count details. Pin-axis
+    ``Q-PHASE`` pending is for dispose/stop of a still-open CE# frame only; a
+    completed CE# rise does not double-count via the pin ledger.
+    """
     config = parse_run_config()
     repro = _repro(config, "phase")
     dut._log.info(repro)
@@ -212,12 +244,16 @@ async def qpi_negative_truncated_phases(dut):
     await master.frame(0, QSPI_CMD_FAST_READ, None, cmd_nibbles=1)
     await master.frame(1, QSPI_CMD_FAST_READ, 0x000100, addr_nibbles=3)
 
-    records = _model_records(bringup)
-    details = " | ".join(record.detail for record in records)
+    phase_records = [r for r in _model_records(bringup) if r.code == Q_PHASE]
+    details = " | ".join(record.detail for record in phase_records)
+    assert len(phase_records) == 2, (
+        f"expected 2 model Q-PHASE (command + address truncation), got "
+        f"{len(phase_records)}: {details or '<none>'}"
+    )
     assert "1/2 command nibbles" in details, f"command nibble count missing: {details}"
     assert "3/6 address nibbles" in details, f"address nibble count missing: {details}"
     dut._log.info(
-        "TC-QNEG-PHASE recorded: %s", format_violations(records) or "<none>"
+        "TC-QNEG-PHASE recorded: %s", format_violations(phase_records) or "<none>"
     )
 
     await _finish(
@@ -226,6 +262,7 @@ async def qpi_negative_truncated_phases(dut):
         dut,
         test="TC-QNEG-PHASE",
         repro=repro,
+        # count=2 is the two labeled model truncations (not model+pin of one).
         expect_fail=[expect(Q_PHASE, count=2)],
     )
 
@@ -259,6 +296,45 @@ async def qpi_negative_wrong_dummy_count(dut):
 
 
 @cocotb.test()
+async def qpi_negative_dummy_then_extra_clock(dut):
+    """TC-QNEG-DUMMY-EXTRA: extra dummy cycles are treated as data.
+
+    After six dummy cycles the parser is in DATA; the extra clock is a data
+    nibble (``Q-NIBBLE-ODD``: odd data-nibble count at CE# rise), not an extra
+    dummy cycle.
+    """
+    config = parse_run_config()
+    repro = _repro(config, "dummy_extra")
+    dut._log.info(repro)
+    bringup, master = await _bring_up_passthrough(dut)
+    psram0 = bringup.psram0
+
+    await master.frame(
+        0, QSPI_CMD_FAST_READ, 0x000210, dummy_cycles=6, read_nibbles=1
+    )
+
+    txn = psram0.agent.transactions[-1]
+    assert txn.dummy_cycles == 6, f"expected six dummy cycles, saw {txn.dummy_cycles}"
+    assert txn.data_nibbles >= 1, f"extra clock must count as data, saw {txn.data_nibbles}"
+    records = _model_records(bringup)
+    assert not any(record.code == Q_DUMMY for record in records), (
+        f"extra post-dummy clock must not fire Q-DUMMY: {format_violations(records)}"
+    )
+    dut._log.info(
+        "TC-QNEG-DUMMY-EXTRA recorded: %s", format_violations(records) or "<none>"
+    )
+
+    await _finish(
+        bringup,
+        master,
+        dut,
+        test="TC-QNEG-DUMMY-EXTRA",
+        repro=repro,
+        expect_fail=[expect(Q_NIBBLE_ODD, count=1)],
+    )
+
+
+@cocotb.test()
 async def qpi_negative_odd_data_nibble(dut):
     """TC-QNEG-NIBBLE-ODD: half-transferred byte on a write and on a read."""
     config = parse_run_config()
@@ -285,6 +361,65 @@ async def qpi_negative_odd_data_nibble(dut):
 
 
 @cocotb.test()
+async def qpi_negative_page_crossings(dut):
+    """TC-QNEG-PAGE: more than one ``PSRAM_PAGE_SIZE`` (1K) crossing fails ``Q-PAGE``.
+
+    Linear Burst may occupy at most two pages per CE# (chip enable, active low)
+    pulse: one crossing is legal; two crossings (three pages) fail once.
+    """
+    config = parse_run_config()
+    repro = _repro(config, "page")
+    dut._log.info(repro)
+    bringup, master = await _bring_up_passthrough(dut)
+    psram0 = bringup.psram0
+
+    # Start at last byte of a 1K page so the first advance crosses once.
+    page_end = PSRAM_PAGE_SIZE - 1  # addr & 0x3FF == 1023
+    assert page_end & 0x3FF == 1023
+
+    # Control: two bytes → one crossing (two pages); Q-PAGE must not fire.
+    await master.frame(0, QSPI_CMD_WRITE, page_end, write_data=b"\xA5\x5A")
+    legal = psram0.agent.transactions[-1]
+    assert legal.page_crossings == 1, (
+        f"expected one page crossing, saw {legal.page_crossings}. " + repro
+    )
+    assert not any(record.code == Q_PAGE for record in _model_records(bringup)), (
+        "one page crossing must not fail Q-PAGE. " + repro
+    )
+
+    # Fail: enough bytes for two crossings (third page occupied).
+    # page_end + 1025 bytes covers [page_end .. 2*PSRAM_PAGE_SIZE - 1].
+    two_cross_len = PSRAM_PAGE_SIZE + 1
+    await master.frame(
+        0,
+        QSPI_CMD_WRITE,
+        page_end,
+        write_data=bytes((i & 0xFF) for i in range(two_cross_len)),
+    )
+    illegal = psram0.agent.transactions[-1]
+    assert illegal.page_crossings == 2, (
+        f"expected two page crossings, saw {illegal.page_crossings}. " + repro
+    )
+    records = [r for r in _model_records(bringup) if r.code == Q_PAGE]
+    assert len(records) == 1, (
+        f"expected one Q-PAGE, saw {len(records)}: {format_violations(records)}. "
+        + repro
+    )
+    dut._log.info(
+        "TC-QNEG-PAGE recorded: %s", format_violations(records) or "<none>"
+    )
+
+    await _finish(
+        bringup,
+        master,
+        dut,
+        test="TC-QNEG-PAGE",
+        repro=repro,
+        expect_fail=[expect(Q_PAGE, count=1)],
+    )
+
+
+@cocotb.test()
 async def qpi_address_bit23_dontcare(dut):
     """TC-ADDR23-DONTCARE: ``A[23]`` is masked; access proceeds on ``A[22:0]`` (D35)."""
     config = parse_run_config()
@@ -298,9 +433,6 @@ async def qpi_address_bit23_dontcare(dut):
     assert psram0.read(0x000040, 1) == b"\x5A", (
         "D35: A[23] must be ignored and the write must land at A[22:0]=0x000040. "
         + repro
-    )
-    assert not any(record.code == "Q-ADDR23" for record in _model_records(bringup)), (
-        "D35: Q-ADDR23 must not fire. " + repro
     )
     dut._log.info("TC-ADDR23-DONTCARE: write at 0x800040 reached 0x000040")
 
@@ -317,9 +449,10 @@ async def qpi_address_bit23_dontcare(dut):
 async def qpi_negative_unresolved_sio(dut):
     """TC-QNEG-SIO-X: unresolved SIO (X) during a host-driven write beat.
 
-    ``tb_top``'s model plane replaces floating ``z`` with idle 0, so a released
-    SIO does not reach the parser. Dual-drive X on SIO0 is preserved through
-    that plane and fires ``Q-SIO-X``, which disposes ``CHK-PIN-KNOWN=fail``.
+    Dual-drive X on SIO0 is preserved on the physical bus and fires
+    ``Q-SIO-X`` (SIO must not be X when sampled in a host-driven phase),
+    which disposes ``CHK-PIN-KNOWN=fail``. Host-driven Hi-Z is a sibling
+    (``TC-QNEG-SIO-Z``); legal read dummy/data float must not fire this ID.
     """
     config = parse_run_config()
     repro = _repro(config, "sio_x")
@@ -354,6 +487,287 @@ async def qpi_negative_unresolved_sio(dut):
         repro=repro,
         expect_fail=[
             expect(Q_SIO_X, count=1),
+            expect(CHK_PIN_KNOWN, count=1),
+        ],
+    )
+
+
+@cocotb.test()
+async def qpi_negative_host_driven_sio_z(dut):
+    """TC-QNEG-SIO-Z: host-driven write beat with SIO Hi-Z fires Q-SIO-X."""
+    config = parse_run_config()
+    repro = _repro(config, "sio_z")
+    dut._log.info(repro)
+    bringup, master = await _bring_up_passthrough(dut)
+
+    await master.open(0)
+    await master.send_opcode(QSPI_CMD_WRITE)
+    await master.send_address(0x0000D0)
+    await master.float_clocks(1)
+    await master.close()
+
+    records = [r for r in _model_records(bringup) if r.code == Q_SIO_X]
+    assert records, "TC-QNEG-SIO-Z: expected Q-SIO-X on host-driven write float. " + repro
+    assert "DATA" in records[0].detail, f"phase missing: {records[0]}"
+    dut._log.info(
+        "TC-QNEG-SIO-Z recorded: %s", format_violations(records) or "<none>"
+    )
+
+    await _finish(
+        bringup,
+        master,
+        dut,
+        test="TC-QNEG-SIO-Z",
+        repro=repro,
+        expect_fail=[
+            expect(Q_SIO_X, count=1),
+            expect(CHK_PIN_KNOWN, count=1),
+        ],
+    )
+
+
+@cocotb.test()
+async def qpi_negative_read_float_not_sio_x(dut):
+    """TC-QNEG-SIO-Z-READ-OK: legal 0xEB dummy/data float must not fire Q-SIO-X."""
+    config = parse_run_config()
+    repro = _repro(config, "sio_z_read_ok")
+    dut._log.info(repro)
+    bringup, master = await _bring_up_passthrough(dut)
+    psram0 = bringup.psram0
+    psram0.write(0x000300, b"\xA5\x5A")
+
+    await master.frame(
+        0, QSPI_CMD_FAST_READ, 0x000300, dummy_cycles=6, read_bytes=2
+    )
+
+    sio_x = [r for r in _model_records(bringup) if r.code == Q_SIO_X]
+    assert not sio_x, (
+        "legal read dummy/data float must not fire Q-SIO-X: "
+        + format_violations(sio_x)
+        + ". "
+        + repro
+    )
+    read = psram0.agent.transactions[-1]
+    assert read.complete, f"legal read not complete: {read}. {repro}"
+    assert read.dummy_cycles == 6, f"dummy_cycles={read.dummy_cycles}. {repro}"
+    assert bytes(read.read_bytes) == b"\xA5\x5A", f"payload mismatch. {repro}"
+
+    await _finish(
+        bringup, master, dut, test="TC-QNEG-SIO-Z-READ-OK", repro=repro
+    )
+
+
+@cocotb.test()
+async def qpi_negative_sck_hiz_is_not_fall(dut):
+    """TC-QNEG-SCK-HIZ: 1->Z is not a falling SCK; 1->Z->driven 0 is a real fall.
+
+    Wrapper ``_TimedPsramDevice._run`` treats unresolved SCK as no-edge and
+    keeps last known prev_sck, so Hi-Z after a high half must not launch an
+    extra read nibble, and the later driven 0 must still count as a fall.
+    Pin/bus monitors are off: SCK Z while selected is the stimulus, not a
+    ``CHK-PIN-KNOWN`` target. Closing mid-byte expects ``Q-NIBBLE-ODD``.
+    """
+    config = parse_run_config()
+    repro = _repro(config, "sck_hiz")
+    dut._log.info(repro)
+    bringup, master = await _bring_up_passthrough(
+        dut, pin_monitor=False, bus_monitor=False
+    )
+    psram0 = bringup.psram0
+    psram0.write(0x000400, b"\x11\x22")
+
+    await master.open(0)
+    await master.send_opcode(QSPI_CMD_FAST_READ)
+    await master.send_address(0x000400)
+    await master.float_clocks(6)
+    txn = psram0.agent._txn
+    assert txn is not None, "read frame never opened. " + repro
+    assert psram0.agent.phase == "DATA", (
+        f"expected DATA after six dummy cycles, got {psram0.agent.phase} "
+        f"dummy={txn.dummy_cycles}. {repro}"
+    )
+
+    falls = {"n": 0}
+    orig_fall = psram0._on_device_fall
+
+    def _count_fall(source_fall_fs: int) -> None:
+        falls["n"] += 1
+        orig_fall(source_fall_fs)
+
+    psram0._on_device_fall = _count_fall
+
+    master._set_bit(UIO_SCK_BIT, 1)
+    master._apply()
+    await Timer(10, unit="ns")
+    before_launches = _read_launches(psram0)
+    before_falls = falls["n"]
+
+    master._oe &= ~(1 << UIO_SCK_BIT) & 0xFF
+    master._apply()
+    await Timer(10, unit="ns")
+    assert _level(dut.bus_sck) is None, f"SCK not physical Z after host OE clear. {repro}"
+    assert falls["n"] == before_falls, (
+        f"1->Z fabricated a falling SCK (falls {before_falls} -> {falls['n']}). {repro}"
+    )
+    assert _read_launches(psram0) == before_launches, (
+        f"1->Z launched an extra read nibble "
+        f"({before_launches} -> {_read_launches(psram0)}). {repro}"
+    )
+
+    master._set_bit(UIO_SCK_BIT, 0)
+    master._apply()
+    await Timer(10, unit="ns")
+    assert falls["n"] == before_falls + 1, (
+        f"1->Z->driven 0 must still be a fall (falls {before_falls} -> {falls['n']}). "
+        + repro
+    )
+    assert _read_launches(psram0) == before_launches + 1, (
+        f"1->Z->driven 0 must launch one read nibble "
+        f"({before_launches} -> {_read_launches(psram0)}). {repro}"
+    )
+    master._set_bit(UIO_SCK_BIT, 1)
+    master._apply()
+    await Timer(10, unit="ns")
+    master._set_bit(UIO_SCK_BIT, 0)
+    master._apply()
+    await Timer(10, unit="ns")
+    await master.close()
+    psram0._on_device_fall = orig_fall
+
+    await _finish(
+        bringup,
+        master,
+        dut,
+        test="TC-QNEG-SCK-HIZ",
+        repro=repro,
+        expect_fail=[expect(Q_NIBBLE_ODD, count=1)],
+    )
+
+
+@cocotb.test()
+async def qpi_negative_grant_reset_sck_float(dut):
+    """TC-QNEG-SCK-FLOAT-GRANT-RST: grant/reset OE-clear is physical Z, not forced 0.
+
+    ``Q-SCKIDLE`` (SCK idle low while deselected) watches physical ``bus_sck``
+    plus ``asic_sck_oe``: OE=0 + Z is float; parked-low is OE=1 and out=0.
+    Grant/reset with ASIC ``uio_oe`` clear must not fabricate a SCK fall, and
+    must not pass park solely because a resolver forced 0.
+    """
+    config = parse_run_config()
+    repro = _repro(config, "sck_float_grant_rst")
+    dut._log.info(repro)
+    bringup = await bring_up_top(
+        dut,
+        fill=FILL,
+        controller_monitor=False,
+        handshake_monitor=False,
+        ce_monitor=False,
+    )
+    bringup.clear()
+    await _await_bus_gnt(dut)
+    await Timer(20, unit="ns")
+
+    assert _level(dut.bus_gnt) == 1, f"BUS_GNT not high. {repro}"
+    assert int(dut.uio_oe.value) == 0, f"ASIC uio_oe not clear under grant. {repro}"
+    assert int(dut.host_uio_oe.value) == 0, f"host OE not clear. {repro}"
+    assert _level(dut.asic_sck_oe) == 0, f"asic_sck_oe not 0 under grant. {repro}"
+    assert _level(dut.bus_sck) is None, (
+        "grant SCK must be physical Z, not a resolver 0. " + repro
+    )
+    assert _read_launches(bringup.psram0) == 0
+    assert _read_launches(bringup.psram1) == 0
+    dispose_run(
+        bringup,
+        test="TC-QNEG-SCK-FLOAT-GRANT",
+        log=dut._log,
+        repro=repro,
+    )
+    assert bringup.bus.results()[CHK_PIN_SCK_PARK] != "fail", (
+        "Q-SCKIDLE / CHK-PIN-SCK-PARK must not fail on grant float. " + repro
+    )
+
+    dut.rst_n.value = 0
+    await Timer(20, unit="ns")
+    assert int(dut.uio_oe.value) == 0, f"ASIC uio_oe not clear in reset. {repro}"
+    assert _level(dut.asic_sck_oe) == 0, f"asic_sck_oe not 0 in reset. {repro}"
+    assert _level(dut.bus_sck) is None, (
+        "reset SCK must be physical Z, not a resolver 0. " + repro
+    )
+    assert _read_launches(bringup.psram0) == 0
+    dispose_run(
+        bringup,
+        test="TC-QNEG-SCK-FLOAT-GRANT-RST",
+        log=dut._log,
+        reset_truncated=REVIEW,
+        repro=repro,
+    )
+
+
+@cocotb.test()
+async def qpi_negative_unresolved_ce(dut):
+    """TC-QNEG-CE-X: unresolved CE# (X) aborts a live frame via termination.
+
+    Mid-command dual-drive X on RAM A CE# must call ``_end_transaction`` so
+    ``Q-PHASE`` (CE# rose before command/address completed) is logged as fail,
+    not dropped, and not ``RESET-TRUNCATED`` (in-reset/truncated sample; not a
+    fail). Pin ``CHK-PIN-KNOWN`` also fires for the unresolved framing pin.
+    """
+    config = parse_run_config()
+    repro = _repro(config, "ce_x")
+    dut._log.info(repro)
+    bringup, master = await _bring_up_passthrough(dut)
+    psram0 = bringup.psram0
+    ce_bit = UIO_PSRAM_CE_BITS[0]
+
+    await master.open(0)
+    await master.send_opcode(QSPI_CMD_WRITE, nibbles=1)
+    assert psram0.agent._txn is not None, "write frame never opened. " + repro
+    before = len(psram0.agent.transactions)
+
+    # Host still drives CE# low; fault drives high → X on the framing pin.
+    dut.fault_uio_drive.value = 1 << ce_bit
+    dut.fault_uio_oe.value = 1 << ce_bit
+    await Timer(20, unit="ns")
+
+    assert len(psram0.agent.transactions) == before + 1, (
+        "unresolved CE# dropped the in-flight txn without _end_transaction. "
+        + repro
+    )
+    assert psram0.agent._txn is None, "parser still holds an open txn after CE# X"
+    phase_records = [
+        r for r in _model_records(bringup) if r.code == Q_PHASE
+    ]
+    assert len(phase_records) == 1, (
+        f"expected 1 model Q-PHASE after CE# X, got {len(phase_records)}: "
+        f"{format_violations(phase_records) or '<none>'}"
+    )
+    assert phase_records[0].classification == CLASS_FAIL, (
+        f"CE# X abort must be fail, not {phase_records[0].classification!r}. "
+        + repro
+    )
+    assert phase_records[0].classification != CLASS_RESET_TRUNCATED
+    assert "1/2 command nibbles" in phase_records[0].detail, (
+        f"command nibble count missing: {phase_records[0]}"
+    )
+    dut._log.info(
+        "TC-QNEG-CE-X recorded: %s", format_violations(phase_records) or "<none>"
+    )
+
+    # Raise host CE# while fault still drives 1 so the bus resolves high
+    # without an X→0 re-select, then clear the injector.
+    await master.close()
+    dut.fault_uio_oe.value = 0
+    dut.fault_uio_drive.value = 0
+    await Timer(10, unit="ns")
+
+    await _finish(
+        bringup,
+        master,
+        dut,
+        test="TC-QNEG-CE-X",
+        repro=repro,
+        expect_fail=[
+            expect(Q_PHASE, count=1),
             expect(CHK_PIN_KNOWN, count=1),
         ],
     )

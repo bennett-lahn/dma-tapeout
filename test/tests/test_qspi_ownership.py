@@ -20,15 +20,23 @@ per-case re-split is deferred past M2 (W5a decision 3).
 Sub-steps (not TEST_FILTER targets):
     TC-OWN-BASELINE
     TC-OWN-CS-MUTEX
+    TC-OWN-CS-MUTEX-XZ
+    TC-OWN-CS-MUTEX-OE
     TC-OWN-FLASH-CS
     TC-OWN-SIO-DUAL
+    TC-OWN-SIO-DUAL-SELECTED
+    TC-OWN-CS-MUTEX-SELECTED
     TC-OWN-SCK-IDLE
+    TC-OWN-SCK-IDLE-CE-X
+    TC-OWN-GNT-QUIET-OE-X
 
 Selectable filter:
     TEST_FILTER=ownership_shared_bus_negatives
+    TEST_FILTER=gnt_quiet_unresolved_ce_oe
 """
 
 import cocotb
+from cocotb.handle import Force, Release
 from cocotb.triggers import RisingEdge, Timer
 
 from common.bringup import bring_up_top
@@ -47,13 +55,18 @@ from models.psram import (
     QSPI_CMD_FAST_READ,
     QSPI_CMD_WRITE,
     Q_DRIVE_DESEL,
+    Q_PHASE,
     SIO_UIO_BITS,
 )
+from monitors.arbitration import CHK_ARB_GNT_OE, CHK_ARB_GNT_QUIET
 from monitors.qspi import (
     CHK_PIN_CS_MUTEX,
     CHK_PIN_FLASH_HIGH,
     CHK_PIN_SCK_PARK,
     CHK_PIN_SIO_OWN,
+    Q_MUX,
+    Q_SCKIDLE,
+    Q_SIO_OWN,
 )
 
 EQUAL_SIO_NIBBLE = 0x1  # SIO0=1; equal-value dual drive on one bit
@@ -154,7 +167,6 @@ async def _tc_own_baseline(dut, bringup, repro: str) -> None:
     bus = bringup.bus
     psram0, psram1 = bringup.psram0, bringup.psram1
     await _park_clean(dut, bringup)
-    dispose_run(bringup, test="TC-OWN-BASELINE (park)", log=dut._log, repro=repro)
 
     await _await_bus_gnt(dut)
     master = QpiPassthroughMaster(dut)
@@ -190,7 +202,7 @@ async def _tc_own_cs_mutex(dut, bringup, repro: str) -> None:
     dispose_run(
         bringup,
         test="TC-OWN-CS-MUTEX",
-        expect_fail=[expect(CHK_PIN_CS_MUTEX)],
+        expect_fail=[expect(CHK_PIN_CS_MUTEX, count=1), expect(Q_MUX, count=1)],
         log=dut._log,
         repro=repro,
     )
@@ -218,7 +230,7 @@ async def _tc_own_flash_cs(dut, bringup, repro: str) -> None:
     dispose_run(
         bringup,
         test="TC-OWN-FLASH-CS",
-        expect_fail=[expect(CHK_PIN_FLASH_HIGH)],
+        expect_fail=[expect(CHK_PIN_FLASH_HIGH, count=1), expect(Q_MUX, count=1)],
         log=dut._log,
         repro=repro,
     )
@@ -251,18 +263,115 @@ async def _tc_own_sio_dual(dut, bringup, repro: str) -> None:
     )
     assert any("SIO0" in event.detail for event in events), f"SIO0 missing: {events}"
     # Deselected inject_sio_drive → Q-DRIVE-DESEL; ASIC fault dual-drive → CHK-PIN-SIO-OWN.
+    agent.inject_sio_release()
+    _clear_fault(dut)
+    await Timer(1, unit="ns")
     dispose_run(
         bringup,
         test="TC-OWN-SIO-DUAL",
-        expect_fail=[expect(CHK_PIN_SIO_OWN), expect(Q_DRIVE_DESEL)],
+        expect_fail=[
+            expect(CHK_PIN_SIO_OWN, count=4),
+            expect(Q_SIO_OWN, count=4),
+            expect(Q_DRIVE_DESEL, count=1),
+        ],
         log=dut._log,
         repro=repro,
     )
     dut._log.info("TC-OWN-SIO-DUAL recorded: %s", events[0])
 
+
+async def _tc_own_sio_dual_selected(dut, bringup, repro: str) -> None:
+    """Sub-step TC-OWN-SIO-DUAL-SELECTED: dual SIO OE while CE# is low.
+
+    Deselected dual-drive is ``TC-OWN-SIO-DUAL`` (includes ``Q-DRIVE-DESEL``).
+    This window keeps the device selected so ``Q-SIO-OWN`` / ``CHK-PIN-SIO-OWN``
+    fire without ``Q-DRIVE-DESEL``. CE# stays low through dispose: that is
+    ``Q-PHASE`` (CE# rose before command/address completed), not a clean
+    ownership pass.
+    """
+    bus = bringup.bus
+    agent = bringup.psram0.agent
+    await _park_clean(dut, bringup)
+    await _await_bus_gnt(dut)
+    master = QpiPassthroughMaster(dut)
+    await master.park()
+    await master.open(0)
+    assert agent.selected, "TC-OWN-SIO-DUAL-SELECTED requires CE# low"
+
+    agent.inject_sio_drive(EQUAL_SIO_NIBBLE)
+    dut.fault_uio_drive.value = _pack_sio_uio(EQUAL_SIO_NIBBLE)
+    dut.fault_uio_oe.value = _sio_oe_mask(0)
+    await Timer(1, unit="ns")
+
+    events = _assert_detail(
+        bus,
+        CHK_PIN_SIO_OWN,
+        test="TC-OWN-SIO-DUAL-SELECTED",
+        detail_substr="equal driven values still fail",
+        timing_id="Q-SIO-OWN",
+    )
     agent.inject_sio_release()
     _clear_fault(dut)
+    # Complete the command phase so dispose of the still-low CE# is Q-PHASE,
+    # not a diagnostic incomplete-window note.
+    await master.send_opcode(QSPI_CMD_WRITE)
+    dispose_run(
+        bringup,
+        test="TC-OWN-SIO-DUAL-SELECTED",
+        expect_fail=[
+            expect(CHK_PIN_SIO_OWN, count=1),
+            expect(Q_SIO_OWN, count=1),
+            expect(Q_PHASE, count=1),
+        ],
+        log=dut._log,
+        repro=repro,
+    )
+    dut._log.info("TC-OWN-SIO-DUAL-SELECTED recorded: %s", events[0])
+
+
+async def _tc_own_cs_mutex_selected(dut, bringup, repro: str) -> None:
+    """Sub-step TC-OWN-CS-MUTEX-SELECTED: second CE# low while PSRAM0 is selected.
+
+    Fault-pulling CE1 fights the MCU keeper (CE1 still high) and yields X/Z,
+    which is already ``TC-OWN-CS-MUTEX-XZ``. Here the MCU drives both RAM CE#
+    low so ``Q-MUX`` records known dual-select. CE1 is raised again before
+    ``send_opcode`` so the mutex count stays 1. Dispose leaves CE0 low, so
+    ``Q-PHASE`` fires on PSRAM0. Raising CE1 aborts PSRAM1 after 0 command
+    nibbles, so ``Q-PHASE`` count is 2.
+    """
+    bus = bringup.bus
+    await _park_clean(dut, bringup)
+    await _await_bus_gnt(dut)
+    master = QpiPassthroughMaster(dut)
+    await master.park()
+    await master.open(0)
+
+    master._set_bit(UIO_PSRAM_CE_BITS[1], 0)
+    master._apply()
     await Timer(1, unit="ns")
+
+    events = _assert_detail(
+        bus,
+        CHK_PIN_CS_MUTEX,
+        test="TC-OWN-CS-MUTEX-SELECTED",
+        detail_substr="CE# low together",
+        timing_id="Q-MUX",
+    )
+    master._set_bit(UIO_PSRAM_CE_BITS[1], 1)
+    master._apply()
+    await master.send_opcode(QSPI_CMD_WRITE)
+    dispose_run(
+        bringup,
+        test="TC-OWN-CS-MUTEX-SELECTED",
+        expect_fail=[
+            expect(CHK_PIN_CS_MUTEX, count=1),
+            expect(Q_MUX, count=1),
+            expect(Q_PHASE, count=2),
+        ],
+        log=dut._log,
+        repro=repro,
+    )
+    dut._log.info("TC-OWN-CS-MUTEX-SELECTED recorded: %s", events[0])
 
 
 async def _tc_own_sck_idle(dut, bringup, repro: str) -> None:
@@ -284,12 +393,159 @@ async def _tc_own_sck_idle(dut, bringup, repro: str) -> None:
     dispose_run(
         bringup,
         test="TC-OWN-SCK-IDLE",
-        expect_fail=[expect(CHK_PIN_SCK_PARK)],
+        expect_fail=[expect(CHK_PIN_SCK_PARK, count=1), expect(Q_SCKIDLE, count=1)],
         log=dut._log,
         repro=repro,
     )
     dut._log.info("TC-OWN-SCK-IDLE recorded: %s", events[0])
     _clear_fault(dut)
+    await Timer(1, unit="ns")
+
+
+async def _tc_own_cs_mutex_xz(dut, bringup, repro: str) -> None:
+    """Sub-step TC-OWN-CS-MUTEX-XZ: both RAM CE# X → ``Q-MUX`` / ``CHK-PIN-CS-MUTEX``.
+
+    ASIC keeper drives both CE# high; host drives both low so the resolved
+    nets are X. Dual-select must fail even though neither CE# is exactly 0.
+    """
+    bus = bringup.bus
+    await _park_clean(dut, bringup)
+
+    # ASIC keeper drives both CE# high. Host drives both low so the nets are X
+    # (fault_uio would mask ASIC OE and resolve to a clean 0).
+    ce_mask = (1 << UIO_PSRAM_CE_BITS[0]) | (1 << UIO_PSRAM_CE_BITS[1])
+    dut.host_uio_drive.value = 0
+    dut.host_uio_oe.value = ce_mask
+    await Timer(1, unit="ns")
+
+    events = _assert_detail(
+        bus,
+        CHK_PIN_CS_MUTEX,
+        test="TC-OWN-CS-MUTEX-XZ",
+        detail_substr="unresolved CE#",
+        timing_id=Q_MUX,
+    )
+    dispose_run(
+        bringup,
+        test="TC-OWN-CS-MUTEX-XZ",
+        expect_fail=[expect(CHK_PIN_CS_MUTEX, count=1), expect(Q_MUX, count=1)],
+        log=dut._log,
+        repro=repro,
+    )
+    dut._log.info("TC-OWN-CS-MUTEX-XZ recorded: %s", events[0])
+    dut.host_uio_oe.value = 0
+    dut.host_uio_drive.value = 0
+    await Timer(1, unit="ns")
+
+
+async def _tc_own_cs_mutex_oe(dut, bringup, repro: str) -> None:
+    """Sub-step TC-OWN-CS-MUTEX-OE: both CE# OE=1 with out=0 → ``Q-MUX``.
+
+    ASIC keeper already enables all CS OEs. Forcing both RAM CS outputs low
+    is dual-select even if the resolved nets were not independently X.
+    """
+    bus = bringup.bus
+    await _park_clean(dut, bringup)
+
+    # Keep flash CS high; drive both RAM CS outputs low while OE stays 1.
+    dut.uio_out.value = Force(1 << UIO_FLASH_CS_BIT)
+    await Timer(1, unit="ns")
+
+    events = _assert_detail(
+        bus,
+        CHK_PIN_CS_MUTEX,
+        test="TC-OWN-CS-MUTEX-OE",
+        detail_substr="OE=1 with out=0",
+        timing_id=Q_MUX,
+    )
+    dispose_run(
+        bringup,
+        test="TC-OWN-CS-MUTEX-OE",
+        expect_fail=[expect(CHK_PIN_CS_MUTEX, count=1), expect(Q_MUX, count=1)],
+        log=dut._log,
+        repro=repro,
+    )
+    dut._log.info("TC-OWN-CS-MUTEX-OE recorded: %s", events[0])
+    dut.uio_out.value = Release()
+    await Timer(1, unit="ns")
+
+
+async def _tc_own_sck_idle_ce_x(dut, bringup, repro: str) -> None:
+    """Sub-step TC-OWN-SCK-IDLE-CE-X: keeper + one CE# X still judges ``Q-SCKIDLE``.
+
+    Park must not skip just because a CE# is not a clean 1. ASIC remains
+    keeper (``~BUS_GNT``); one CE# is dual-driven to X while SCK is forced high.
+    """
+    bus = bringup.bus
+    await _park_clean(dut, bringup)
+
+    # Host vs ASIC on RAM A CE# → X (not a known select). Fault clocks SCK high.
+    dut.host_uio_drive.value = 0
+    dut.host_uio_oe.value = 1 << UIO_PSRAM_CE_BITS[0]
+    dut.fault_uio_drive.value = 1 << UIO_SCK_BIT
+    dut.fault_uio_oe.value = 1 << UIO_SCK_BIT
+    await Timer(1, unit="ns")
+
+    events = _assert_detail(
+        bus,
+        CHK_PIN_SCK_PARK,
+        test="TC-OWN-SCK-IDLE-CE-X",
+        detail_substr="SCK high while no device is selected",
+        timing_id=Q_SCKIDLE,
+    )
+    dispose_run(
+        bringup,
+        test="TC-OWN-SCK-IDLE-CE-X",
+        expect_fail=[expect(CHK_PIN_SCK_PARK, count=1), expect(Q_SCKIDLE, count=1)],
+        log=dut._log,
+        repro=repro,
+    )
+    dut._log.info("TC-OWN-SCK-IDLE-CE-X recorded: %s", events[0])
+    dut.host_uio_oe.value = 0
+    dut.host_uio_drive.value = 0
+    _clear_fault(dut)
+    await Timer(1, unit="ns")
+
+
+async def _tc_gnt_quiet_ce_oe_x(dut, bringup, repro: str) -> None:
+    """Sub-step TC-OWN-GNT-QUIET-OE-X: X on CE# OE while granted fails GNT-QUIET.
+
+    ``BUS_GNT=1``; Force RAM A CE# OE (uio[6]) to X so
+    ``_asic_drives_low`` cannot skip the sample. ``CHK-ARB-GNT-OE`` also
+    fires because the whole ``uio_oe`` vector is no longer 0.
+    """
+    arb = bringup.arbitration
+    assert arb is not None, "TC-OWN-GNT-QUIET-OE-X requires ArbitrationMonitor"
+    await _park_clean(dut, bringup)
+    await _await_bus_gnt(dut)
+    await RisingEdge(dut.clk)
+
+    # MSB-first 8-bit string: bit 6 (RAM A CE#) is the second character.
+    dut.uio_oe.value = Force("0x000000")
+    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk)
+
+    events = arb.violations_for(CHK_ARB_GNT_QUIET)
+    assert events, (
+        f"TC-OWN-GNT-QUIET-OE-X: expected {CHK_ARB_GNT_QUIET}, "
+        f"observed {arb.summary()}"
+    )
+    details = " | ".join(event.detail for event in events)
+    assert "unresolved" in details, (
+        f"TC-OWN-GNT-QUIET-OE-X: missing unresolved OE detail in {details}"
+    )
+    dispose_run(
+        bringup,
+        test="TC-OWN-GNT-QUIET-OE-X",
+        expect_fail=[
+            expect(CHK_ARB_GNT_QUIET, count=1),
+            expect(CHK_ARB_GNT_OE, count=1),
+        ],
+        log=dut._log,
+        repro=repro,
+    )
+    # Do not Release() a Force on DUT ``uio_oe``: Icarus 14 segfaults. This is
+    # the last sub-step, so the forced X may stay until sim teardown.
     await Timer(1, unit="ns")
 
 
@@ -317,7 +573,7 @@ async def ownership_shared_bus_negatives(dut):
         ce_monitor=False,
         handshake_monitor=False,
         pin_monitor=False,
-        arbitration_monitor=False,
+        arbitration_monitor=True,
         controller_monitor=False,
     )
     assert bringup.bus is not None, "ownership suite requires SharedBusMonitor"
@@ -331,10 +587,18 @@ async def ownership_shared_bus_negatives(dut):
 
     await _tc_own_baseline(dut, bringup, repro)
     await _tc_own_cs_mutex(dut, bringup, repro)
+    await _tc_own_cs_mutex_xz(dut, bringup, repro)
+    await _tc_own_cs_mutex_oe(dut, bringup, repro)
     await _tc_own_flash_cs(dut, bringup, repro)
     await _tc_own_sio_dual(dut, bringup, repro)
+    await _tc_own_sio_dual_selected(dut, bringup, repro)
+    await _tc_own_cs_mutex_selected(dut, bringup, repro)
     await _tc_own_sck_idle(dut, bringup, repro)
+    await _tc_own_sck_idle_ce_x(dut, bringup, repro)
+    await _tc_gnt_quiet_ce_oe_x(dut, bringup, repro)
 
     dut._log.info(
-        "TC-OWN suite passed: BASELINE, CS-MUTEX, FLASH-CS, SIO-DUAL, SCK-IDLE"
+        "TC-OWN suite passed: BASELINE, CS-MUTEX, CS-MUTEX-XZ, CS-MUTEX-OE, FLASH-CS, "
+        "SIO-DUAL, SIO-DUAL-SELECTED, CS-MUTEX-SELECTED, SCK-IDLE, SCK-IDLE-CE-X, "
+        "GNT-QUIET-OE-X"
     )

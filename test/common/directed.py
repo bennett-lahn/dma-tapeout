@@ -133,7 +133,7 @@ def _coverage_sampler(config: dict, *, test: str) -> CoverageSampler:
             fresh.absorb_fragment(fragment)
         _coverage_samplers[key] = fresh
         return fresh
-    existing.context = replace(existing.context, test=test)
+    existing.begin_window(test=test)
     return existing
 
 
@@ -152,11 +152,20 @@ def commit_l1_window(
     *,
     test: str,
     checkers_ok: bool = True,
-    scoreboard_ok: bool = True,
+    scoreboard_ok: bool = False,
+    scoreboard_na: bool = False,
 ) -> None:
-    """Commit pending L1 observations when there is no golden-chain compare."""
+    """Commit pending L1 observations when there is no golden-chain compare.
+
+    Pass ``scoreboard_na=True`` for injection/reset windows that never ran a
+    scoreboard compare. Do not default ``scoreboard_ok=True`` without compare.
+    """
     cov = _coverage_sampler(config, test=test)
-    cov.commit_window(checkers_ok=checkers_ok, scoreboard_ok=scoreboard_ok)
+    cov.commit_window(
+        checkers_ok=checkers_ok,
+        scoreboard_ok=scoreboard_ok,
+        scoreboard_na=scoreboard_na,
+    )
     cov.write_fragment()
 
 
@@ -218,6 +227,8 @@ async def run_directed_window(
     Returns:
         ``(golden, report)``: the golden :class:`reference.chain.ChainResult`
         and the :class:`common.dispose.DisposeReport` for this window.
+        ``report.pin_transactions`` is the pre-dispose pin log (dispose
+        clears monitors).
     """
     chain = align_chain_depth(chain, config)
     bringup.clear()
@@ -247,6 +258,7 @@ async def run_directed_window(
             "pin axis for dual-axis scoreboard compare. " + repro
         )
 
+    pin_transactions = tuple(bringup.pin.transactions())
     Scoreboard.from_result(
         golden,
         guards=chain.guards,
@@ -254,11 +266,12 @@ async def run_directed_window(
         context=run_context(config, test, repro),
         log=dut._log,
     ).compare(
-        bringup.pin.transactions(),
+        pin_transactions,
         observed_memory=read_back(bringup, chain),
     )
 
     report = dispose_run(bringup, test=test, log=dut._log, repro=repro)
+    report.pin_transactions = pin_transactions
     record_passing_coverage(config, chain, golden, test=test)
     dut._log.info(
         "%s passed: %d transaction(s) (%s)",

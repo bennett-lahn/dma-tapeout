@@ -3,6 +3,8 @@
 Test-case IDs:
     TC-QPI-READ
     TC-QPI-WRITE
+    TC-QPI-ASIC-CE-TIMING
+    TC-QPI-ASIC-SIO-X
 
 Stimulus is the blessed L0 BFM in :mod:`common.engine_bfm`, which drives the
 frozen request ports (``txn_valid`` / ``cmd`` / ``addr`` / ``device_sel`` /
@@ -13,23 +15,30 @@ with ``CHK-HS-*`` and the shared-bus ownership monitors running always-on from
 """
 
 import cocotb
-from cocotb.triggers import Timer
+from cocotb.triggers import RisingEdge, Timer
 
 from common.bringup import bring_up_engine
 from common.config import parse_run_config
-from common.dispose import dispose_run
+from common.constants import RESULT_PASS
+from common.dispose import dispose_run, expect
 from common.engine_bfm import (
+    BUSY_TIMEOUT_CYCLES,
     bytes_to_nibbles,
     engine_qpi_read,
     engine_qpi_write,
     nibbles_to_bytes,
 )
+from monitors.handshake import CHK_HS_OPCODE
+from monitors.qspi import CHK_PIN_KNOWN, CHK_PIN_SIO_OWN, Q_SIO_OWN
+from monitors.timing import Q_CHD, Q_CSP, Q_TERM
 from models.psram import (
     ADDR_NIBBLES,
     CMD_NIBBLES,
     FAST_READ_DUMMY_CYCLES,
     QSPI_CMD_FAST_READ,
     QSPI_CMD_WRITE,
+    Q_OPCODE,
+    Q_SIO_X,
 )
 
 # Distinct addresses so each variant's log and memory window is unique.
@@ -118,6 +127,29 @@ def _assert_read_txn(txn, *, device: int, address: int, payload: bytes, repro: s
     )
 
 
+def _assert_pin_dummy(
+    bringup, *, device: int, address: int, dummy_cycles: int, repro: str
+) -> None:
+    """cov-qspi-01: pin decoder measured wait/dummy cycles, not the model log."""
+    pin = bringup.pin
+    assert pin is not None and not pin.blocked, (
+        f"TC-QPI pin dummy evidence requires a live pin monitor. {repro}"
+    )
+    matches = [
+        interval
+        for interval in pin.completed()
+        if interval.device == device and interval.address == address
+    ]
+    assert matches, (
+        f"no completed pin interval for PSRAM{device} addr=0x{address:06X}. {repro}"
+    )
+    interval = matches[-1]
+    assert interval.dummy_cycles == dummy_cycles, (
+        f"pin dummy_cycles={interval.dummy_cycles}, expected {dummy_cycles} "
+        f"({interval.canonical()}). {repro}"
+    )
+
+
 def _assert_write_txn(txn, *, device: int, address: int, payload: bytes, repro: str) -> None:
     """Check model transaction log against the APS6404L / V1 ``0x02`` shape."""
     assert txn.complete, f"write transaction incomplete: {txn}. {repro}"
@@ -162,7 +194,7 @@ async def qpi_read_variants(dut):
     repro = _repro(config, "qpi_read_variants")
     dut._log.info(repro)
 
-    bringup = await bring_up_engine(dut)
+    bringup = await bring_up_engine(dut, pin_monitor=True)
     devices = (bringup.psram0, bringup.psram1)
 
     for device, address, length, payload in _READ_CASES:
@@ -213,6 +245,13 @@ async def qpi_read_variants(dut):
             payload=payload,
             repro=case_repro,
         )
+        _assert_pin_dummy(
+            bringup,
+            device=device,
+            address=address,
+            dummy_cycles=FAST_READ_DUMMY_CYCLES,
+            repro=case_repro,
+        )
         # Backdoor memory is unchanged by a read.
         assert psram.read(address, length) == payload, (
             f"backdoor memory changed during read. {case_repro}"
@@ -228,6 +267,11 @@ async def qpi_read_variants(dut):
 
     report = dispose_run(bringup, test="TC-QPI-READ", log=dut._log, repro=repro)
     handshake = bringup.handshake
+    opcode_disp = handshake.results().get(CHK_HS_OPCODE)
+    assert opcode_disp == RESULT_PASS, (
+        f"TC-QPI-READ: pin-backed {CHK_HS_OPCODE}={opcode_disp!r}, expected pass. "
+        f"{repro}"
+    )
     assert not handshake.write_nibbles(), (
         f"TC-QPI-READ: handshake monitor saw a write transaction: "
         f"{handshake.summary()}. {repro}"
@@ -249,8 +293,9 @@ async def qpi_write_variants(dut):
     repro = _repro(config, "qpi_write_variants")
     dut._log.info(repro)
 
-    bringup = await bring_up_engine(dut)
+    bringup = await bring_up_engine(dut, pin_monitor=True)
     devices = (bringup.psram0, bringup.psram1)
+    presented = []
 
     for device, address, length, payload in _WRITE_CASES:
         assert length == len(payload)
@@ -290,6 +335,13 @@ async def qpi_write_variants(dut):
             payload=payload,
             repro=case_repro,
         )
+        _assert_pin_dummy(
+            bringup,
+            device=device,
+            address=address,
+            dummy_cycles=0,
+            repro=case_repro,
+        )
         assert psram.read(address, length) == payload, (
             f"backdoor memory after write="
             f"{psram.read(address, length).hex()}, expected {payload.hex()}. "
@@ -298,15 +350,25 @@ async def qpi_write_variants(dut):
         assert psram.read(address + length, 1) == b"\xEE", (
             f"write overran into sentinel. {case_repro}"
         )
+        # Per-case dispose clears handshake history; snapshot the driven
+        # nibble stream before that wipe.
+        case_stream = bringup.handshake.write_nibbles()
+        assert len(case_stream) == 1, (
+            f"TC-QPI-WRITE: expected one handshake write this case, "
+            f"got {case_stream!r}. {case_repro}"
+        )
+        presented.append(case_stream[0])
         dispose_run(bringup, test=f"TC-QPI-WRITE ({case})", repro=repro)
 
     await Timer(100, unit="ns")
 
     report = dispose_run(bringup, test="TC-QPI-WRITE", log=dut._log, repro=repro)
+    opcode_disp = bringup.handshake.results().get(CHK_HS_OPCODE)
+    assert opcode_disp == RESULT_PASS, (
+        f"TC-QPI-WRITE: pin-backed {CHK_HS_OPCODE}={opcode_disp!r}, expected pass. "
+        f"{repro}"
+    )
 
-    # CHK-HS-WDATA-KNOWN keeps the presented nibble stream; compare it against
-    # the payloads the BFM drove, independently of the model's pin decode.
-    presented = bringup.handshake.write_nibbles()
     expected = [bytes_to_nibbles(payload) for _, _, _, payload in _WRITE_CASES]
     assert presented == expected, (
         f"TC-QPI-WRITE: handshake wdata stream {presented} != driven {expected}. "
@@ -325,4 +387,81 @@ async def qpi_write_variants(dut):
         bringup.arbitration.summary(),
         bringup.controller.summary(),
         report.summary(),
+    )
+
+
+@cocotb.test()
+async def qpi_asic_ce_timing_legal_read(dut):
+    """TC-QPI-ASIC-CE-TIMING: ASIC-generated L0 frame for Q-CSP / Q-CHD / Q-TERM.
+
+    MCU pass-through isolation lives in ``test_qspi_timing_delay``; this case
+    uses the engine BFM so CE#/SCK are ASIC-driven.
+    """
+    config = parse_run_config()
+    repro = _repro(config, "qpi_asic_ce_timing_legal_read")
+    dut._log.info(repro)
+
+    bringup = await bring_up_engine(dut, ce_monitor=True)
+    payload = bytes([0xA5])
+    bringup.psram0.write(0x000100, payload)
+    await engine_qpi_read(dut, device=0, address=0x000100, length=1)
+    report = dispose_run(bringup, test="TC-QPI-ASIC-CE-TIMING", log=dut._log, repro=repro)
+    results = bringup.ce.results()
+    for check_id in (Q_CSP, Q_CHD, Q_TERM):
+        assert results.get(check_id) == RESULT_PASS, (
+            f"TC-QPI-ASIC-CE-TIMING: {check_id}={results.get(check_id)!r}, "
+            f"expected pass. {repro}"
+        )
+    dut._log.info("TC-QPI-ASIC-CE-TIMING passed | %s", report.summary())
+
+
+@cocotb.test()
+async def qpi_asic_selected_unresolved_sio(dut):
+    """TC-QPI-ASIC-SIO-X: ASIC-selected write with contended SIO fails Q-SIO-X.
+
+    MCU pass-through negatives live in ``test_qspi_negative``; this case keeps
+    the engine as bus master (CE# low under ASIC) with pin/handshake monitors
+    attached. ``fault_sio_oe`` mutes the engine driver at L0
+    (``asic_sio_oe = sio_oe & ~fault_sio_oe``), so contention is the selected
+    model's extra SIO OE against ASIC, not the fault mux.
+    """
+    config = parse_run_config()
+    repro = _repro(config, "qpi_asic_selected_unresolved_sio")
+    dut._log.info(repro)
+
+    bringup = await bring_up_engine(dut, pin_monitor=True)
+    agent = bringup.psram0.agent
+
+    async def _contend_sio_while_selected() -> None:
+        for _ in range(BUSY_TIMEOUT_CYCLES):
+            await RisingEdge(dut.clk)
+            if _level(dut.psram0_ce_n) == 0:
+                # Disagreeing 0xF vs ASIC command/data nibbles → X on SIO.
+                agent.inject_sio_drive(0xF)
+                return
+        raise AssertionError("ASIC never selected PSRAM0. " + repro)
+
+    inj = cocotb.start_soon(_contend_sio_while_selected())
+    try:
+        await engine_qpi_write(
+            dut, device=0, address=0x000500, payload=bytes([0xA5])
+        )
+    except AssertionError as error:
+        dut._log.info("TC-QPI-ASIC-SIO-X: BFM raised during illegal SIO: %s", error)
+    await inj
+    agent.inject_sio_release()
+    await RisingEdge(dut.clk)
+
+    dispose_run(
+        bringup,
+        test="TC-QPI-ASIC-SIO-X",
+        expect_fail=[
+            expect(Q_SIO_X, count=1),
+            expect(CHK_PIN_KNOWN, count=1),
+            expect(Q_SIO_OWN, count=4),
+            expect(CHK_PIN_SIO_OWN, count=4),
+            expect(Q_OPCODE, count=1),
+        ],
+        log=dut._log,
+        repro=repro,
     )

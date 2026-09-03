@@ -273,7 +273,7 @@ async def _q_rst_engine(dut, config: dict) -> None:
     repro = _repro(config, "qspi_reset_protocol")
     dut._log.info(repro)
 
-    bringup = await bring_up_engine(dut, fill=FILL)
+    bringup = await bring_up_engine(dut, fill=FILL, ce_monitor=True)
     psram0 = bringup.psram0
     psram1 = bringup.psram1
 
@@ -377,3 +377,49 @@ async def qspi_reset_protocol(dut):
         await _q_rst_engine(dut, config)
     else:
         await _q_rst_top(dut, config)
+
+
+async def _q_rst_bfm_auto_top(dut, config: dict) -> None:
+    """L1: mid-txn ``rst_n`` abort classifies without calling ``note_reset()``."""
+    test = "TC-QRST-BFM-AUTO"
+    repro = _repro(config, "qspi_reset_bfm_auto")
+    dut._log.info(repro)
+
+    bringup = await bring_up_top(dut, fill=FILL)
+    psram0 = bringup.psram0
+
+    _load_smoke_chain(psram0, src_byte=SRC_BYTE)
+    bringup.clear()
+
+    await pulse_start(dut)
+    await _await_mid_txn_top(dut, repro=repro)
+    assert psram0.agent.selected, f"{test}: PSRAM0 not selected mid-txn. {repro}"
+    assert psram0.agent.phase != "IDLE", f"{test}: parser idle before reset. {repro}"
+
+    # Falling rst_n alone must abort the BFM; do not call note_reset().
+    dut.rst_n.value = 0
+    await Timer(1, unit="ns")
+
+    assert psram0.agent.phase == "IDLE", (
+        f"{test}: parser still in {psram0.agent.phase!r} after rst_n fall. {repro}"
+    )
+    truncated = _dispose_reset_window(
+        bringup, test=test, log=dut._log, repro=repro
+    )
+    assert any(finding.source.startswith("PSRAM") for finding in truncated), (
+        f"{test}: expected model RESET-TRUNCATED from BFM rst_n watch "
+        f"(no note_reset), observed {[str(finding) for finding in truncated]}. "
+        + repro
+    )
+    dut._log.info("%s passed: BFM classified mid-txn abort on rst_n alone", test)
+
+
+@cocotb.test()
+async def qspi_reset_bfm_auto(dut):
+    """TC-QRST-BFM-AUTO: BFM watches ``rst_n`` without a manual ``note_reset()``."""
+    config = parse_run_config()
+    if config["dut_level"] == "L0":
+        # Engine path is covered by TC-QRST-ACTIVE; this directed case is L1-only.
+        dut._log.info("TC-QRST-BFM-AUTO skipped at L0 (use LEVEL=top)")
+        return
+    await _q_rst_bfm_auto_top(dut, config)

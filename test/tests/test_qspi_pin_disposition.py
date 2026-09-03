@@ -1,18 +1,18 @@
-"""M1 T9 disposition for ``CHK-PIN-KNOWN``.
+"""M1 T9 model-plane evidence for ``Q-SIO-X``.
 
-Path: model-side pin decode proves the catalog row via ``Q-SIO-X``
-(see ``monitors.qspi.dispose_model_pin_checks``). This module prints explicit
-pass/fail dispositions and proves the ID can fail. It is the intentional
-model-plane dispose contract test: attach/clock/reset come from
-:func:`common.bringup.bring_up_top` with ``pin_monitor=False``, then
-:func:`monitors.qspi.assert_model_pin_disposition` judges via model ``Q-*``.
+This module does **not** map model ``Q-SIO-X`` onto ``CHK-PIN-KNOWN`` (that
+mapping is tautological when ``pin_monitor=False``). Pin ``CHK-PIN-KNOWN``
+coverage lives in suites that start ``QspiPinMonitor`` (``TC-QNEG-SIO-X``).
+``pin_monitor`` stays off here so the ASIC can be held in reset for MCU
+pass-through; ``CHK-PIN-KNOWN`` / pin ``Q-SIO-X`` are ``na`` at this window.
 
-``CHK-PIN-ADDR23-ZERO`` / ``Q-ADDR23`` are retired by D35 (``A[23]`` don't-care).
+D35: ``A[23]`` is don't-care (masked to ``A[22:0]``); this module has no
+ADDR23=0 fail test.
 
 Test-case IDs:
-    TC-PIN-DISP-PASS   - legal traffic leaves KNOWN pass
-    TC-PIN-DISP-KNOWN  - SIO X in a host-driven write → ``CHK-PIN-KNOWN=fail``
-                         via ``Q-SIO-X``
+    TC-PIN-DISP-PASS   - legal traffic leaves model ``Q-SIO-X`` quiet
+    TC-PIN-DISP-KNOWN  - SIO X in a host-driven write → ``Q-SIO-X``
+    TC-PIN-DISP-KNOWN-Z - host-driven write SIO Hi-Z → ``Q-SIO-X``
 
 L1 (``LEVEL=top``) owns the directed evidence. L0 directed pass evidence is
 also printed from ``tests.test_qspi`` after legal engine traffic.
@@ -23,7 +23,8 @@ from cocotb.triggers import Timer
 
 from common.bringup import bring_up_top
 from common.config import parse_run_config
-from common.constants import FILL
+from common.constants import FILL, REVIEW
+from common.dispose import dispose_run, expect
 from common.host import QpiPassthroughMaster
 from models.psram import (
     Q_SIO_X,
@@ -32,11 +33,7 @@ from models.psram import (
     SIO_UIO_BITS,
     format_violations,
 )
-from monitors.qspi import (
-    CHK_PIN_KNOWN,
-    MODEL_DISPOSE_VIA,
-    assert_model_pin_disposition,
-)
+
 
 async def _bring_up(dut):
     """Shared L1 attach/clock/reset, then hold ASIC reset for MCU pass-through."""
@@ -48,7 +45,7 @@ async def _bring_up(dut):
 
     master = QpiPassthroughMaster(dut)
     await master.park()
-    return bringup.psram0, bringup.psram1, master
+    return bringup, master
 
 
 def _repro(config: dict, test: str) -> str:
@@ -65,26 +62,38 @@ def _clear_agent_logs(*psrams) -> None:
         psram.agent.transactions.clear()
 
 
+def _sio_x_records(*psrams) -> list:
+    records = []
+    for psram in psrams:
+        records.extend(r for r in psram.agent.violations if r.code == Q_SIO_X)
+    return records
+
+
 @cocotb.test()
 async def pin_dispose_legal_frames_pass(dut):
-    """TC-PIN-DISP-PASS: legal write/read leave KNOWN as pass."""
+    """TC-PIN-DISP-PASS: legal write/read leave model ``Q-SIO-X`` quiet."""
     config = parse_run_config()
     repro = _repro(config, "pin_dispose_legal_frames_pass")
     dut._log.info(repro)
 
-    psram0, psram1, master = await _bring_up(dut)
+    bringup, master = await _bring_up(dut)
+    psram0, psram1 = bringup.psram0, bringup.psram1
     psram1.write(0x001000, b"\xDE\xAD")
 
     await master.frame(0, QSPI_CMD_WRITE, 0x000040, write_data=b"\x11\x22")
     await master.frame(1, QSPI_CMD_FAST_READ, 0x001000, dummy_cycles=6, read_bytes=2)
 
-    assert_model_pin_disposition(
-        psram0, psram1, log=dut._log, test="TC-PIN-DISP-PASS"
+    records = _sio_x_records(psram0, psram1)
+    assert not records, (
+        "TC-PIN-DISP-PASS: unexpected Q-SIO-X: " + format_violations(records)
     )
-    dut._log.info(
-        "TC-PIN-DISP-PASS: %s=%s",
-        CHK_PIN_KNOWN,
-        MODEL_DISPOSE_VIA[CHK_PIN_KNOWN],
+    dut._log.info("TC-PIN-DISP-PASS: model Q-SIO-X quiet (pin CHK-PIN-KNOWN na)")
+    dispose_run(
+        bringup,
+        test="TC-PIN-DISP-PASS",
+        log=dut._log,
+        reset_truncated=REVIEW,
+        repro=repro,
     )
 
 
@@ -98,17 +107,19 @@ def _sio_uio_mask(*sio_indices: int) -> int:
 
 @cocotb.test()
 async def pin_dispose_known_sio_x_fails(dut):
-    """TC-PIN-DISP-KNOWN: SIO X on a write beat → ``CHK-PIN-KNOWN=fail``.
+    """TC-PIN-DISP-KNOWN: SIO X on a write beat → model ``Q-SIO-X``.
 
-    Floating ``z`` is idealized to 0 on the model plane (``tb_top``), so this
-    case injects dual-drive X on SIO0 during one host-driven write nibble.
-    ``Q-SIO-X`` fires and disposes ``CHK-PIN-KNOWN``.
+    Physical SIO Hi-Z is visible to the parser (no Z-to-0 overlay). This case
+    still injects dual-drive X on SIO0 during one host-driven write nibble;
+    ``TC-PIN-DISP-KNOWN-Z`` covers a released (Z) host-driven beat.
+    Pin ``CHK-PIN-KNOWN`` is not claimed here (``pin_monitor=False``).
     """
     config = parse_run_config()
     repro = _repro(config, "pin_dispose_known_sio_x_fails")
     dut._log.info(repro)
 
-    psram0, psram1, master = await _bring_up(dut)
+    bringup, master = await _bring_up(dut)
+    psram0, psram1 = bringup.psram0, bringup.psram1
     _clear_agent_logs(psram0, psram1)
 
     await master.open(0)
@@ -124,14 +135,50 @@ async def pin_dispose_known_sio_x_fails(dut):
     await master.send_data(b"\x5A")
     await master.close()
 
-    records = list(psram0.agent.violations) + list(psram1.agent.violations)
-    assert any(record.code == Q_SIO_X for record in records), (
-        "TC-PIN-DISP-KNOWN: expected Q-SIO-X: " + format_violations(records)
+    records = _sio_x_records(psram0, psram1)
+    assert records, (
+        "TC-PIN-DISP-KNOWN: expected Q-SIO-X: "
+        + format_violations(list(psram0.agent.violations) + list(psram1.agent.violations))
     )
-    assert_model_pin_disposition(
-        psram0,
-        psram1,
-        log=dut._log,
-        expect_fail=(CHK_PIN_KNOWN,),
+    dut._log.info("TC-PIN-DISP-KNOWN: model Q-SIO-X x%d", len(records))
+    dispose_run(
+        bringup,
         test="TC-PIN-DISP-KNOWN",
+        expect_fail=[expect(Q_SIO_X)],
+        log=dut._log,
+        reset_truncated=REVIEW,
+        repro=repro,
+    )
+
+
+@cocotb.test()
+async def pin_dispose_known_sio_z_fails(dut):
+    """TC-PIN-DISP-KNOWN-Z: host-driven write SIO Hi-Z → model ``Q-SIO-X``."""
+    config = parse_run_config()
+    repro = _repro(config, "pin_dispose_known_sio_z_fails")
+    dut._log.info(repro)
+
+    bringup, master = await _bring_up(dut)
+    psram0, psram1 = bringup.psram0, bringup.psram1
+    _clear_agent_logs(psram0, psram1)
+
+    await master.open(0)
+    await master.send_opcode(QSPI_CMD_WRITE)
+    await master.send_address(0x000090)
+    await master.float_clocks(1)
+    await master.close()
+
+    records = _sio_x_records(psram0, psram1)
+    assert records, (
+        "TC-PIN-DISP-KNOWN-Z: expected Q-SIO-X: "
+        + format_violations(list(psram0.agent.violations) + list(psram1.agent.violations))
+    )
+    dut._log.info("TC-PIN-DISP-KNOWN-Z: model Q-SIO-X x%d", len(records))
+    dispose_run(
+        bringup,
+        test="TC-PIN-DISP-KNOWN-Z",
+        expect_fail=[expect(Q_SIO_X)],
+        log=dut._log,
+        reset_truncated=REVIEW,
+        repro=repro,
     )

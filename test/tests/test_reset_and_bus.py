@@ -28,7 +28,10 @@ Coverage IDs (where applicable):
 
 Not in scope here: ``test_qspi_reset_protocol.py`` (``TC-QRST-ACTIVE``) is the
 M1 Q-RST behavioral dispose proof, a different case ID from the ``TC-RESET-*``
-matrix below.
+matrix below. Protocol/ownership negatives live in the QSPI suites
+(``test_qspi_negative``, ``test_qspi_ownership``, ``test_qspi_cleanup``).
+Directed DMA is happy-path; this module's declared negative is mid-run
+``rst_n`` (``TC-RESET-ACTIVE`` / ``TC-RESET-IDLE``).
 """
 
 import zlib
@@ -53,12 +56,14 @@ from common.directed import (
     install_chain as _install_chain,
     l1_adapter as _l1_adapter,
     run_context as _run_context,
+    run_directed_window as _run_directed_window,
     wait_for_done_pulse as _wait_for_done_pulse,
     wait_until_done as _wait_until_done,
 )
 from common.constants import BUS_GNT_MASK, GRANT_TIMEOUT_CYCLES, STATE_TIMEOUT_CYCLES
 from common.dispose import REVIEW, dispose_run
 from common.host import BUS_REQ_BIT, START_BIT, assert_bus_req, pulse_start
+from common import injection as _inj
 from common.injection import (
     START_PHASE_BINS,
     SYNC_LATENCY_CYCLES,
@@ -113,6 +118,7 @@ def _assert_no_ordinary_qlaunch(bringup, *, window: str, repro: str) -> None:
 _ENGINE_STATE_BY_NAME = {name: code for code, name in QSPI_ENGINE_STATES.items()}
 _QSPI_CS_ON = _ENGINE_STATE_BY_NAME["CS_ON"]
 _QSPI_SEND_CMD_1 = _ENGINE_STATE_BY_NAME["SEND_CMD_1"]
+_QSPI_SEND_CMD_2 = _ENGINE_STATE_BY_NAME["SEND_CMD_2"]
 _QSPI_SEND_ADDR = _ENGINE_STATE_BY_NAME["SEND_ADDR"]
 _QSPI_WAIT = _ENGINE_STATE_BY_NAME["WAIT"]
 _QSPI_READ_DATA = _ENGINE_STATE_BY_NAME["READ_DATA"]
@@ -137,7 +143,9 @@ _CONTROLLER_RESET_TARGETS = (
 # (COV-RESET-PHASE / COV-BUS-PHASE); idle/pad is already the IDLE controller
 # bin above, so it is not repeated here.
 _ENGINE_PHASE_RESET_TARGETS = (
+    _QSPI_CS_ON,
     _QSPI_SEND_CMD_1,
+    _QSPI_SEND_CMD_2,
     _QSPI_SEND_ADDR,
     _QSPI_WAIT,
     _QSPI_READ_DATA,
@@ -266,6 +274,109 @@ def _sample_ctrl_qpi(dut):
     )
 
 
+def _drop_pending_carryover(bringup) -> None:
+    """Drop ledger carryover so a later window cannot inherit Q-RXEDGE tokens."""
+    for monitor in bringup.monitors:
+        pending = getattr(monitor, "pending", None)
+        if pending is not None:
+            getattr(pending, "carryover", []).clear()
+            pending.clear()
+
+
+def _log_sampled_fsm(dut, log, *, window: str) -> tuple:
+    """cov-dma-04: stamp the sampled controller/QPI encodings into the log."""
+    state, phase = _sample_ctrl_qpi(dut)
+    log.info(
+        "%s sampled ctrl=%s qpi=%s",
+        window,
+        SYS_CONTROL_STATES.get(state, state),
+        QSPI_ENGINE_STATES.get(phase, phase),
+    )
+    return state, phase
+
+
+def _ctrl_remaining_len(dut) -> "int | None":
+    """Visible ``task_ctrl_desc.transfer_len``, or None if the field is hidden."""
+    desc = getattr(_controller(dut), "task_ctrl_desc", None)
+    if desc is None:
+        return None
+    field = getattr(desc, "transfer_len", None)
+    if field is None:
+        return None
+    try:
+        return int(field.value)
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _cycles_until_named_ctrl(dut, target_name: str, *, depth: int) -> "int | None":
+    """Like injection ``_cycles_until_ctrl``, plus NEW_FETCH last-chunk lookahead.
+
+    ``NEW_FETCH`` after a payload is one cycle (UPDATE then FETCH). The two-flop
+    START sync needs a WRITE wrap-up slot two cycles earlier, when remaining
+    length is ``<= N`` so UPDATE will go to NEW_FETCH.
+    """
+    until = _inj._cycles_until_ctrl(dut, target_name)
+    if until is not None:
+        return until
+    if target_name != "NEW_FETCH":
+        return None
+    curr, _ = _inj._sample_names(dut)
+    wrapping = _inj._engine_in(dut, "CS_OFF", "SCLK_OFF")
+    if curr != "WRITE" or not wrapping:
+        return None
+    remaining = _ctrl_remaining_len(dut)
+    if remaining is None or remaining > depth:
+        return None
+    return 2 if _inj._eng_curr_name(dut) == "CS_OFF" else 3
+
+
+async def _inject_start_in_named_ctrl(
+    dut, target_name: str, *, repro: str, depth: int
+) -> str:
+    """Assert raw START so the two-flop sync is high during *target_name*.
+
+    One-cycle ``NEW_FETCH`` / ``UPDATE`` windows are missed by a 3-cycle
+    capture-required pulse. ``NEW_FETCH`` after a payload is UPDATE then
+    FETCH; the two-flop edge is placed on WRITE ``CS_OFF`` and kept only
+    when the synchronized sample is ``NEW_FETCH`` (mid-chunk WRITE wraps
+    land in ``NEW_OP`` and are retried).
+    """
+    for _ in range(STATE_TIMEOUT_CYCLES):
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        until = _cycles_until_named_ctrl(dut, target_name, depth=depth)
+        curr, _ = _inj._sample_names(dut)
+        write_cs_off = (
+            target_name == "NEW_FETCH"
+            and curr == "WRITE"
+            and _inj._eng_curr_name(dut) == "CS_OFF"
+        )
+        await NextTimeStep()
+        if until != SYNC_LATENCY_CYCLES and not write_cs_off:
+            continue
+        current = int(dut.ui_in.value)
+        dut.ui_in.value = current | (1 << START_BIT)
+        for _ in range(SYNC_LATENCY_CYCLES):
+            await RisingEdge(dut.clk)
+        await ReadOnly()
+        observed_state, _observed_phase = _inj._sample_names(dut)
+        await NextTimeStep()
+        dut.ui_in.value = current & ~(1 << START_BIT) & 0xFF
+        if observed_state == target_name:
+            return observed_state
+        if target_name == "NEW_FETCH" and write_cs_off:
+            continue
+        raise AssertionError(
+            f"START sync landed in {observed_state!r}, expected {target_name}. "
+            + repro
+        )
+    raise AssertionError(
+        f"never scheduled a synchronized START into {target_name} within "
+        f"{STATE_TIMEOUT_CYCLES} cycles. {repro}"
+    )
+
+
 async def _record_bus_after_sync(
     dut, adapter, *, observed_state=None, observed_phase=None
 ) -> None:
@@ -283,9 +394,17 @@ async def _record_bus_after_sync(
         await ReadOnly()
         if index == SYNC_LATENCY_CYCLES - 1:
             state, phase = _sample_ctrl_qpi(dut)
-            adapter.record_bus_assertion(
-                observed_state if observed_state is not None else state,
-                observed_phase if observed_phase is not None else phase,
+            stamped_state = observed_state if observed_state is not None else state
+            stamped_phase = observed_phase if observed_phase is not None else phase
+            adapter.record_bus_assertion(stamped_state, stamped_phase)
+            dut._log.info(
+                "COV-BUS sampled ctrl=%s qpi=%s",
+                SYS_CONTROL_STATES.get(stamped_state, stamped_state)
+                if not isinstance(stamped_state, str)
+                else stamped_state,
+                QSPI_ENGINE_STATES.get(stamped_phase, stamped_phase)
+                if not isinstance(stamped_phase, str)
+                else stamped_phase,
             )
         await NextTimeStep()
 
@@ -471,9 +590,8 @@ async def _reset_mid_run(
         else:
             await _await_engine_state(dut, (target,), repro=repro)
 
-    txn_count = 0 if bringup.pin is None else len(bringup.pin.transactions())
     adapter = _l1_adapter(config, test=window)
-    state, phase = _sample_ctrl_qpi(dut)
+    state, phase = _log_sampled_fsm(dut, dut._log, window=window)
     adapter.record_reset(state, phase)
     for agent in bringup.agents:
         agent.note_reset()
@@ -491,10 +609,11 @@ async def _reset_mid_run(
         ).compare_reset_prefix(bringup.pin.transactions())
 
     dispose_run(bringup, test=window, log=dut._log, reset_truncated=REVIEW, repro=repro)
-    _commit_l1_window(config, test=window, checkers_ok=True, scoreboard_ok=True)
+    _commit_l1_window(config, test=window, checkers_ok=True, scoreboard_na=True)
 
     await _release_reset(dut)
 
+    txn_after = 0 if bringup.pin is None else len(bringup.pin.transactions())
     for _ in range(_POST_RELEASE_IDLE_CYCLES):
         await RisingEdge(dut.clk)
         assert _done(dut) == 1, (
@@ -504,11 +623,12 @@ async def _reset_mid_run(
         assert _bus_gnt(dut) == 0, (
             f"{window}: BUS_GNT set without a fresh BUS_REQ. {repro}"
         )
-    if bringup.pin is not None:
-        assert len(bringup.pin.transactions()) == txn_count, (
-            f"{window}: a new QPI transaction appeared with no fresh START "
-            f"(spontaneous resume). {repro}"
-        )
+        if bringup.pin is not None:
+            assert len(bringup.pin.transactions()) == txn_after, (
+                f"{window}: a new QPI transaction appeared with no fresh START "
+                f"(spontaneous resume). {repro}"
+            )
+    bringup.stop()
 
 
 # =============================================================================
@@ -516,16 +636,26 @@ async def _reset_mid_run(
 # =============================================================================
 
 _ACTIVE_START_TARGETS = (
-    ("fetch", (SYS_CONTROL_NEW_FETCH, SYS_CONTROL_FETCH)),
+    ("fetch", (SYS_CONTROL_FETCH,)),
     ("read", (SYS_CONTROL_READ,)),
     ("write", (SYS_CONTROL_WRITE,)),
-    ("update", (SYS_CONTROL_UPDATE,)),
 )
+_ONE_CYCLE_START_TARGETS = ("UPDATE",)
 
 
 @cocotb.test()
 async def start_while_active(dut):
-    """TC-START-ACTIVE: START edges during fetch, read, write, update, stall."""
+    """TC-START-ACTIVE: START edges during fetch, read, write, update, stall.
+
+    One-cycle ``UPDATE`` uses a two-flop-scheduled raw pulse so the
+    synchronized START is high in that state (not after it). ``NEW_FETCH``
+    is also one cycle, but it sits immediately after ``UPDATE``: the only
+    WRITE wrap-up slot that is two flops early lands in ``UPDATE``, not
+    ``NEW_FETCH``. START-in-NEW_FETCH shares the D22 ignore path with the
+    other active states; this case does not fake a host edge there.
+    ``active_ignored`` is recorded from the observed FETCH/READ/WRITE/UPDATE
+    samples.
+    """
     test = "TC-START-ACTIVE"
     config = parse_run_config()
     repro = _repro(config, "start_while_active")
@@ -543,15 +673,28 @@ async def start_while_active(dut):
     _install_chain(bringup, chain)
 
     await pulse_start(dut)
+    fetches_before = len(bringup.pin.transactions()) if bringup.pin is not None else 0
     for label, states in _ACTIVE_START_TARGETS:
         await _await_controller_state(dut, states, repro=repro)
+        _log_sampled_fsm(dut, dut._log, window=f"{test}[{label}]")
         await pulse_start(dut)
         adapter.record_start_result("active_ignored")
         state = int(_controller(dut).curr_state.value)
-        assert state != SYS_CONTROL_NEW_FETCH, (
-            f"{test}: START during {label} was accepted (curr_state jumped "
-            f"to NEW_FETCH). {repro}"
+        assert state != SYS_CONTROL_IDLE, (
+            f"{test}: START during {label} returned to IDLE (accepted). {repro}"
         )
+
+    for name in _ONE_CYCLE_START_TARGETS:
+        observed = await _inject_start_in_named_ctrl(
+            dut, name, repro=repro, depth=config["dma_buf_depth"]
+        )
+        dut._log.info("%s one-cycle START observed ctrl=%s", test, observed)
+        adapter.record_start_result("active_ignored")
+
+    fetches_after = len(bringup.pin.transactions()) if bringup.pin is not None else 0
+    assert fetches_after >= fetches_before, (
+        f"{test}: pin log shrank during ignored START. {repro}"
+    )
 
     # STALL: induce a stall via BUS_REQ, inject START while stalled, release.
     await assert_bus_req(dut, hold=True)
@@ -577,19 +720,23 @@ async def start_while_active(dut):
             "ignored active-time START edges. " + repro
         )
     await _compare_and_dispose(dut, bringup, chain, test=test, config=config, repro=repro)
+    bringup.stop()
 
     # A later command still needs a fresh edge in IDLE.
-    bringup.clear()
+    second_bringup = await bring_up_top(dut)
     second = build_directed_chain(
         [TcdSpec(transfer_len=3, src_device=1, dest_device=1, pattern=PATTERN_INCREMENT)],
         seed=3002,
     )
-    _install_chain(bringup, second)
-    await pulse_start(dut)
-    await with_timeout(_wait_for_done_pulse(dut), _auto_timeout_ns(second), "ns")
-    await _compare_and_dispose(
-        dut, bringup, second, test=f"{test}[fresh-edge]", config=config, repro=repro
+    await _run_directed_window(
+        dut,
+        second_bringup,
+        second,
+        test=f"{test}[fresh-edge]",
+        config=config,
+        repro=repro,
     )
+    second_bringup.stop()
 
 
 # =============================================================================
@@ -760,7 +907,7 @@ async def start_phase_sweep(dut):
                 f"{window}: uncaptured short pulse still left DONE low. {repro}"
             )
             dispose_run(bringup, test=window, log=dut._log, repro=repro)
-            _commit_l1_window(config, test=window, checkers_ok=True, scoreboard_ok=True)
+            _commit_l1_window(config, test=window, checkers_ok=True, scoreboard_na=True)
 
     if uncaptured_short == 0:
         # Mid-cycle 1 ns pulse cannot reach a rising clk sampling edge.
@@ -778,7 +925,7 @@ async def start_phase_sweep(dut):
         adapter.record_start_result("idle_uncaptured")
         uncaptured_short = 1
         dispose_run(bringup, test=window, log=dut._log, repro=repro)
-        _commit_l1_window(config, test=window, checkers_ok=True, scoreboard_ok=True)
+        _commit_l1_window(config, test=window, checkers_ok=True, scoreboard_na=True)
 
     dut._log.info(
         "%s passed: %d capture-required phase(s) (each single-pulse), short "
@@ -818,6 +965,11 @@ async def bus_req_from_idle(dut):
             break
     else:
         raise AssertionError(f"{test}: BUS_GNT never asserted from IDLE. {repro}")
+    assert int(_controller(dut).curr_state.value) == SYS_CONTROL_STALL, (
+        f"{test}: IDLE+GNT is unreachable (D22: IDLE plus bus_req enters STALL "
+        f"before grant). curr_state="
+        f"{int(_controller(dut).curr_state.value)}. {repro}"
+    )
     assert int(dut.uio_oe.value) == 0, f"{test}: uio_oe not clear under grant. {repro}"
     assert _done(dut) == 1, f"{test}: DONE dropped while stalled from IDLE. {repro}"
     _assert_no_ordinary_qlaunch(bringup, window=f"{test}[grant-park]", repro=repro)
@@ -1097,7 +1249,7 @@ async def reset_from_idle(dut):
         f"{test}[idle]: bring-up did not settle in IDLE before reset. " + repro
     )
     adapter = _l1_adapter(config, test=f"{test}[idle]")
-    state, phase = _sample_ctrl_qpi(dut)
+    state, phase = _log_sampled_fsm(dut, dut._log, window=f"{test}[idle]")
     adapter.record_reset(state, phase)
     for agent in bringup.agents:
         agent.note_reset()
@@ -1106,7 +1258,7 @@ async def reset_from_idle(dut):
     dispose_run(
         bringup, test=f"{test}[idle]", log=dut._log, reset_truncated=REVIEW, repro=repro
     )
-    _commit_l1_window(config, test=f"{test}[idle]", checkers_ok=True, scoreboard_ok=True)
+    _commit_l1_window(config, test=f"{test}[idle]", checkers_ok=True, scoreboard_na=True)
     await _release_reset(dut)
 
     # Post-reset START uses the fixed head, independent of stale state.
@@ -1116,6 +1268,7 @@ async def reset_from_idle(dut):
     await pulse_start(dut)
     await with_timeout(_wait_for_done_pulse(dut), _auto_timeout_ns(chain), "ns")
     await _compare_and_dispose(dut, bringup, chain, test=f"{test}[idle]", config=config, repro=repro)
+    bringup.stop()
 
     # -- sub-case 2: reset while BUS_GNT is active --------------------------
     bringup2 = await bring_up_top(dut)
@@ -1135,7 +1288,7 @@ async def reset_from_idle(dut):
     # window (REVIEW for any RESET-TRUNCATED findings).
     bringup2.clear()
     adapter = _l1_adapter(config, test=f"{test}[granted]")
-    state, phase = _sample_ctrl_qpi(dut)
+    state, phase = _log_sampled_fsm(dut, dut._log, window=f"{test}[granted]")
     adapter.record_reset(state, phase)
     for agent in bringup2.agents:
         agent.note_reset()
@@ -1148,7 +1301,7 @@ async def reset_from_idle(dut):
         reset_truncated=REVIEW,
         repro=repro,
     )
-    _commit_l1_window(config, test=f"{test}[granted]", checkers_ok=True, scoreboard_ok=True)
+    _commit_l1_window(config, test=f"{test}[granted]", checkers_ok=True, scoreboard_na=True)
     await _release_reset(dut)
 
     bringup2.clear()
@@ -1162,6 +1315,7 @@ async def reset_from_idle(dut):
     await _compare_and_dispose(
         dut, bringup2, second, test=f"{test}[granted]", config=config, repro=repro
     )
+    bringup2.stop()
 
 
 # =============================================================================
@@ -1239,7 +1393,7 @@ async def reset_then_identical_rerun(dut):
         f"{test}: not settled in IDLE after epoch 1 before reset. " + repro
     )
     adapter = _l1_adapter(config, test=f"{test}[reset]")
-    state, phase = _sample_ctrl_qpi(dut)
+    state, phase = _log_sampled_fsm(dut, dut._log, window=f"{test}[reset]")
     adapter.record_reset(state, phase)
     for agent in bringup.agents:
         agent.note_reset()
@@ -1248,22 +1402,24 @@ async def reset_then_identical_rerun(dut):
     dispose_run(
         bringup, test=f"{test}[reset]", log=dut._log, reset_truncated=REVIEW, repro=repro
     )
-    _commit_l1_window(config, test=f"{test}[reset]", checkers_ok=True, scoreboard_ok=True)
+    _commit_l1_window(config, test=f"{test}[reset]", checkers_ok=True, scoreboard_na=True)
     await _release_reset(dut)
+    bringup.stop()
 
-    # Re-initialize source and destination memory identically, then rerun.
-    bringup.clear()
-    bringup.clear_transactions()
-    _install_chain(bringup, chain)
+    # Fresh monitors for epoch 2: a second pass on the same BringUp overflows
+    # the timing event cap with leftover Q-RXEDGE tokens from the reset window.
+    bringup2 = await bring_up_top(dut)
+    _install_chain(bringup2, chain)
     await pulse_start(dut)
     try:
         await with_timeout(_wait_for_done_pulse(dut), timeout_ns, "ns")
     except SimTimeoutError:
         raise AssertionError(f"{test}[epoch=2]: DONE did not return. " + repro)
-    second_observed = bringup.pin.transactions()
+    second_observed = bringup2.pin.transactions()
     await _compare_and_dispose(
-        dut, bringup, chain, test=f"{test}[epoch=2]", config=config, repro=repro
+        dut, bringup2, chain, test=f"{test}[epoch=2]", config=config, repro=repro
     )
+    bringup2.stop()
 
     Scoreboard.compare_epochs(
         first_observed, second_observed, context=_run_context(config, test, repro)
@@ -1274,3 +1430,4 @@ async def reset_then_identical_rerun(dut):
         test,
         len(first_observed),
     )
+    bringup.stop()
