@@ -503,6 +503,12 @@ async def qspi_rxedge_device_plane_race(dut):
             bringup.timing_params["D_OUT_CE_NS"],
             bringup.timing_params["D_OUT_SCK_NS"],
         )
+        dispose_run(
+            monitor,
+            test="TC-RXEDGE-RACE-DEVICE-PLANE",
+            log=dut._log,
+            repro=repro,
+        )
         return
     bringup.psram1.write(_RX_ADDRESS, _RX_PAYLOAD)
     wrapper = monitor._timed_devices[1]
@@ -633,7 +639,7 @@ async def qspi_timed_wrapper_stop_isolation(dut):
     repro = _repro(config, "qspi_timed_wrapper_stop_isolation")
     dut._log.info(repro)
 
-    bringup, _ = await _bring_up_timing(dut)
+    bringup, monitor = await _bring_up_timing(dut)
     old_wrapper = bringup.psram1
     assert hasattr(old_wrapper, "timing_events"), (
         "TC-TIMED-WRAPPER-STOP-ISOLATION requires a nominal timed wrapper"
@@ -645,12 +651,24 @@ async def qspi_timed_wrapper_stop_isolation(dut):
         device_fall_fs=0,
     )
     events_before_stop = list(old_wrapper.timing_events)
+    dispose_run(
+        monitor,
+        test="TC-TIMED-WRAPPER-STOP-ISOLATION-SETUP",
+        log=dut._log,
+        repro=repro,
+    )
     bringup.stop()
-    await _bring_up_timing(dut)
+    bringup, monitor = await _bring_up_timing(dut)
     await Timer(bringup.timing_params["PSRAM_TACLK_NS"] + 1.0, unit="ns")
     assert old_wrapper.timing_events == events_before_stop, (
         "TC-TIMED-WRAPPER-STOP-ISOLATION: retired delayed response appended "
         "timing events after stop/re-bring-up"
+    )
+    dispose_run(
+        monitor,
+        test="TC-TIMED-WRAPPER-STOP-ISOLATION",
+        log=dut._log,
+        repro=repro,
     )
 
 

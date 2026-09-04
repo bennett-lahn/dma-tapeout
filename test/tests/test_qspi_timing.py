@@ -77,6 +77,7 @@ async def _bring_up(dut):
         tcem_ns=DIRECTED_TCEM_NS,
         tcph_ns=DIRECTED_TCPH_NS,
         timing_params=bringup.timing_params,
+        timed_devices=bringup.devices,
     )
     return bringup, master
 

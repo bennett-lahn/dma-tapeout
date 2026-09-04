@@ -18,8 +18,10 @@ Contract, from ``docs/llm/verification/06-checkers.md`` and
 * a declared negative names the ID and, optionally, the exact count,
 * a ``RESET-TRUNCATED`` finding is never an ordinary fail and is never silently
   ignored: the test must choose ``review`` or ``require``, and
-* every applicable ID gets a printed disposition (``pass`` / ``fail`` / ``na`` /
-  ``blocked``), including the rows a monitor could not judge.
+* every applicable ID is disposed (``pass`` / ``fail`` / ``na`` / ``blocked``),
+  including the rows a monitor could not judge. A clean pass prints one compact
+  count line; per-ID ``DISPOSE`` lines print on undeclared ``fail`` /
+  ``blocked``, or when ``DISPOSE_VERBOSE`` is set.
 
 Typical use::
 
@@ -43,6 +45,7 @@ from dataclasses import dataclass, field
 
 from common.bringup import BringUp
 from common.lifecycle import REASON_DISPOSE, finalize_all
+from common.runlog import dispose_verbose
 from models.psram import (
     CLASS_RESET_TRUNCATED,
     PsramDevice,
@@ -501,6 +504,22 @@ def dispose_run(
                 monitor.clear()
             for agent in item.agents:
                 agent.violations.clear()
+        else:
+            from common.bringup import _HISTORY
+
+            for bringup in _HISTORY:
+                if (
+                    item in bringup.monitors
+                    or item in bringup.devices
+                    or item in bringup.agents
+                    or item is getattr(bringup, "ce", None)
+                    or item is getattr(bringup, "bus", None)
+                    or item is getattr(bringup, "pin", None)
+                    or item is getattr(bringup, "handshake", None)
+                    or item is getattr(bringup, "arbitration", None)
+                    or item is getattr(bringup, "controller", None)
+                ):
+                    bringup._disposed = True
 
     report = DisposeReport(
         test=test,
@@ -516,7 +535,7 @@ def dispose_run(
     )
 
     if log is not None and not quiet:
-        _log_report(report, log)
+        _log_report(report, log, expect_blocked=expect_blocked)
 
     suffix = f" {repro}" if repro else ""
     prefix = f"{test}: " if test else ""
@@ -598,8 +617,75 @@ def dispose_run(
     return report
 
 
-def _log_report(report: DisposeReport, log) -> None:
-    """Print one disposition line per ID, then any reviewed reset findings."""
+def _declared_ids(expected, expect_blocked) -> set[str]:
+    """Return IDs a test declared as expected fail or allowed blocked.
+
+    Twin IDs of an expected fail are treated as declared so a dual-emitted
+    ``Q-*`` / ``CHK-*`` pair does not force a per-ID dump on a successful
+    negative.
+    """
+    declared: set[str] = set()
+    for entry in expected:
+        declared.add(entry.check_id)
+        declared.update(twin_ids(entry.check_id))
+    for item in expect_blocked:
+        declared.add(item.check_id if isinstance(item, Expected) else str(item))
+    return declared
+
+
+def _undeclared_nonpass(report: DisposeReport, declared: set[str]) -> bool:
+    """True when a fail/blocked row is not covered by the test's expect lists."""
+    for check_id, result in report.results.items():
+        if result in (RESULT_FAIL, RESULT_BLOCKED) and check_id not in declared:
+            return True
+    return False
+
+
+def _compact_dispose_line(report: DisposeReport) -> str:
+    """One-line pass/na/fail/blocked counts plus any non-pass IDs."""
+    n_pass = 0
+    n_na = 0
+    n_fail = 0
+    n_blocked = 0
+    fail_ids: list[str] = []
+    blocked_ids: list[str] = []
+    for check_id, result in sorted(report.results.items()):
+        if result == RESULT_PASS:
+            n_pass += 1
+        elif result == RESULT_NA:
+            n_na += 1
+        elif result == RESULT_FAIL:
+            n_fail += 1
+            fail_ids.append(check_id)
+        elif result == RESULT_BLOCKED:
+            n_blocked += 1
+            blocked_ids.append(check_id)
+    extra = ""
+    if fail_ids:
+        extra += " fail_ids=" + ",".join(fail_ids)
+    if blocked_ids:
+        extra += " blocked_ids=" + ",".join(blocked_ids)
+    if report.reset_truncated:
+        extra += f" reset_truncated={len(report.reset_truncated)}"
+    return (
+        f"DISPOSE test={report.test} pass={n_pass} na={n_na} "
+        f"fail={n_fail} blocked={n_blocked}{extra}"
+    )
+
+
+def _log_report(report: DisposeReport, log, *, expect_blocked=()) -> None:
+    """Print compact counts on a clean pass; per-ID lines on fail or verbose.
+
+    A successful negative (declared ``expect_fail`` / ``expect_blocked`` only)
+    stays compact. Undeclared ``fail`` / ``blocked``, or ``DISPOSE_VERBOSE``,
+    expands to one line per catalog ID plus reviewed ``RESET-TRUNCATED``
+    findings. Dispose semantics are unchanged; only the print shape changes.
+    """
+    declared = _declared_ids(report.expected, expect_blocked)
+    expand = dispose_verbose() or _undeclared_nonpass(report, declared)
+    log.info("%s", _compact_dispose_line(report))
+    if not expand:
+        return
     for check_id, result in sorted(report.results.items()):
         count = report.counts.get(check_id, 0)
         reason = report.blocked_reasons.get(check_id, "")

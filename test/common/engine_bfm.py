@@ -168,7 +168,8 @@ async def engine_qpi_read(
             result.busy_cycles += 1
             result.ce_trace.append(_sample_ce(dut))
         if _level(dut.rdata_valid) == 1:
-            result.nibbles.append(_level(dut.rdata) & 0xF)
+            raw_rdata = _level(dut.rdata)
+            result.nibbles.append(None if raw_rdata is None else (raw_rdata & 0xF))
         await NextTimeStep()
         if saw_busy and busy == 0:
             break

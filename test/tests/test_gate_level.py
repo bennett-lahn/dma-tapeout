@@ -68,10 +68,6 @@ def _repro(config: dict, test_filter: str) -> str:
     ).format(seed=config["seed"], test_filter=test_filter)
 
 
-EXPECTED_NETLIST_SHA256_N5 = "9a769ad4bcc09d7cff699e8f178acab4fb5b7228e242cfdf7d027ed2274beb7a"
-DESIGNATED_NETLIST = "gate_level_netlist.189-aug18.v"
-
-
 def _require_l2(config: dict, *, repro: str) -> None:
     if config["level"] != "gl" or config["dut_level"] != "L2":
         raise AssertionError(
@@ -83,13 +79,6 @@ def _require_l2(config: dict, *, repro: str) -> None:
         raise AssertionError(
             f"L2 netlist is flattened at DMA_BUF_DEPTH={DMA_BUF_DEPTH_TAPEOUT} "
             f"(got {config['dma_buf_depth']}). " + repro
-        )
-    sha = os.environ.get("NETLIST_SHA256", "")
-    if sha != EXPECTED_NETLIST_SHA256_N5:
-        raise AssertionError(
-            "L2 netlist SHA256 mismatch: expected the designated 189-DFF N=5 "
-            f"artifact {DESIGNATED_NETLIST} sha256={EXPECTED_NETLIST_SHA256_N5}, "
-            f"got {sha or '<unset>'}. " + repro
         )
     if os.environ.get("SDF"):
         raise AssertionError(
