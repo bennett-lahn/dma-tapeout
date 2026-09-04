@@ -36,38 +36,30 @@ from reference.constants import DMA_BUF_DEPTH_MAX, DMA_BUF_DEPTH_TAPEOUT
 from reference.tcd import PTR_BIT23, TCD_BYTES, Tcd, TcdError, encode_tcd
 from reference.tcd import ReferenceModelError
 
-
 def test_default_depth_is_tapeout_n5():
     """tb-ref-01 / cov-dma-07: oracle default is tapeout N=5, not N=1."""
     assert DEFAULT_DMA_BUF_DEPTH == 5
     assert DEFAULT_DMA_BUF_DEPTH == DMA_BUF_DEPTH_TAPEOUT
 
-
 def image(fill: int = 0x00) -> MemoryImage:
     return MemoryImage(fill=fill)
-
 
 def place(memory: MemoryImage, device: int, address: int, tcd: Tcd) -> None:
     memory.write(device, address, encode_tcd(tcd))
 
-
 def kinds(result) -> list:
     return [txn.kind for txn in result.transactions]
-
 
 def positions(result, kind) -> list:
     return [(txn.device, txn.address, txn.length) for txn in result.transactions if txn.kind == kind]
 
-
 # -- memory image ----------------------------------------------------------
-
 
 def test_memory_read_write_round_trip():
     memory = image()
     memory.write(1, 0x1234, b"\xDE\xAD\xBE\xEF")
     assert memory.read(1, 0x1234, 4) == b"\xDE\xAD\xBE\xEF"
     assert memory.read(1, 0x1235, 2) == b"\xAD\xBE"
-
 
 def test_memory_clone_is_independent():
     memory = image()
@@ -77,18 +69,15 @@ def test_memory_clone_is_independent():
     assert memory.read(0, 0x10, 2) == b"\x01\x02"
     assert clone.read(0, 0x10, 2) == b"\xFF\xFF"
 
-
 def test_undefined_byte_is_a_reference_error_without_fill():
     memory = MemoryImage()
     with pytest.raises(MemoryUndefinedError):
         memory.read(0, 0x40, 1)
 
-
 def test_explicit_fill_defines_unwritten_bytes():
     memory = MemoryImage(fill=0xEE)
     assert memory.read(0, 0x40, 2) == b"\xEE\xEE"
     assert memory.fill == 0xEE
-
 
 @pytest.mark.parametrize(
     "device, address, length",
@@ -105,12 +94,10 @@ def test_memory_rejects_out_of_range_access(device, address, length):
     with pytest.raises(MemoryRangeError):
         memory.read(device, address, length)
 
-
 def test_highest_legal_complete_range_is_allowed():
     memory = image()
     memory.write(0, ADDR_MAX - 10, bytes(range(11)))
     assert memory.read(0, ADDR_MAX - 10, 11) == bytes(range(11))
-
 
 def test_snapshot_round_trip():
     memory = image()
@@ -120,9 +107,7 @@ def test_snapshot_round_trip():
     assert rebuilt.read(0, 0x20, 1) == b"\x11"
     assert rebuilt.read(1, 0x30, 1) == b"\x22"
 
-
 # -- fixed head, quit, empty ----------------------------------------------
-
 
 def test_head_is_always_psram0_address_zero():
     memory = image()
@@ -133,7 +118,6 @@ def test_head_is_always_psram0_address_zero():
     assert kinds(result) == [FETCH_READ]
     assert result.path == ((HEAD_DEVICE, HEAD_ADDRESS),)
 
-
 def test_empty_chain_is_one_fetch_and_no_data():
     """TC-EMPTY: quit descriptor at the fixed head."""
     memory = image()
@@ -143,7 +127,6 @@ def test_empty_chain_is_one_fetch_and_no_data():
     assert result.transactions[0].length == TCD_BYTES
     assert result.transactions[0].opcode == OPCODE_READ
     assert result.fetch_count == 1
-
 
 def test_quit_outranks_transfer_len_and_next():
     """TC-QUIT: quit descriptor with nonzero pointers is fetched, not executed."""
@@ -168,9 +151,7 @@ def test_quit_outranks_transfer_len_and_next():
     assert kinds(result) == [FETCH_READ]
     assert result.final_memory.read(0, DST_ADDR, 1) == b"\x00"
 
-
 # -- data transfers --------------------------------------------------------
-
 
 def test_same_device_single_byte_copy():
     """TC-SAME-0 / TC-SMOKE ordering: fetch, read, write, fetch."""
@@ -190,7 +171,6 @@ def test_same_device_single_byte_copy():
     ]
     assert result.final_memory.read(0, DST_ADDR, 1) == b"\xA5"
     assert result.expected_writes == {(0, DST_ADDR): 0xA5}
-
 
 def test_same_device_one_copy_on_psram1():
     """TC-SAME-1: head fetch on PSRAM0, data traffic on PSRAM1."""
@@ -217,7 +197,6 @@ def test_same_device_one_copy_on_psram1():
     assert result.final_memory.read(1, DST_ADDR, 2) == b"\x11\x22"
     assert result.final_memory.read(0, DST_ADDR, 2) == b"\x00\x00"
 
-
 @pytest.mark.parametrize("src_device, dest_device", [(0, 1), (1, 0)])
 def test_cross_device_copies_select_different_devices(src_device, dest_device):
     """TC-CROSS-01 / TC-CROSS-10."""
@@ -243,7 +222,6 @@ def test_cross_device_copies_select_different_devices(src_device, dest_device):
     assert {txn.device for txn in result.transactions if txn.kind == DATA_WRITE} == {dest_device}
     assert result.final_memory.read(dest_device, DST_ADDR, 3) == b"\x01\x02\x03"
 
-
 def test_zero_length_emits_no_data_and_follows_next():
     """TC-LEN-CORNERS zero bin: no data transaction, immediate next fetch."""
     memory = image()
@@ -259,7 +237,6 @@ def test_zero_length_emits_no_data_and_follows_next():
     assert kinds(result) == [FETCH_READ, FETCH_READ]
     assert result.path == ((0, 0x000000), (1, QUIT_ADDR))
     assert result.expected_writes == {}
-
 
 @pytest.mark.parametrize(
     "depth, length, expected_chunks",
@@ -295,7 +272,6 @@ def test_chunking_follows_min_depth_remaining(depth, length, expected_chunks):
     assert [txn.address for txn in writes] == [DST_ADDR + offset for offset in offsets]
     assert result.final_memory.read(0, DST_ADDR, length) == memory.read(0, SRC_ADDR, length)
 
-
 def test_read_and_write_alternate_strictly():
     memory = image()
     place(
@@ -309,9 +285,7 @@ def test_read_and_write_alternate_strictly():
     result = interpret_chain(memory, dma_buf_depth=1)
     assert kinds(result) == [FETCH_READ] + [DATA_READ, DATA_WRITE] * 4 + [FETCH_READ]
 
-
 # -- chaining --------------------------------------------------------------
-
 
 def test_three_descriptor_chain_executes_in_order():
     """TC-CHAIN with non-contiguous buffers."""
@@ -342,7 +316,6 @@ def test_three_descriptor_chain_executes_in_order():
     for index, payload in enumerate(payloads):
         assert result.final_memory.read(0, dests[index], len(payload)) == payload
 
-
 def test_next_device_alternates_and_address_zero_is_a_valid_link():
     """TC-NEXT-DEVICE: each fetch uses NEXT_DEVICE; address zero is not null."""
     memory = image()
@@ -368,7 +341,6 @@ def test_next_device_alternates_and_address_zero_is_a_valid_link():
         (0, 0x000030, TCD_BYTES),
     ]
 
-
 def test_later_fetch_reads_current_memory():
     """A preceding copy may rewrite a descriptor that has not been fetched yet."""
     memory = image()
@@ -391,9 +363,7 @@ def test_later_fetch_reads_current_memory():
         (0, second_slot + offset, 1) for offset in range(TCD_BYTES)
     ]
 
-
 # -- overlap ---------------------------------------------------------------
-
 
 def test_forward_overlap_follows_sequential_chunk_behavior():
     """TC-OVERLAP: read-then-write per chunk, not a whole-transfer memmove."""
@@ -410,7 +380,6 @@ def test_forward_overlap_follows_sequential_chunk_behavior():
     # Depth 1 propagates the first byte forward; memmove would give 01 02 03 04.
     assert result.final_memory.read(0, SRC_ADDR, 5) == b"\x01\x01\x01\x01\x01"
 
-
 def test_backward_overlap_shifts_data_down():
     memory = image()
     place(
@@ -423,7 +392,6 @@ def test_backward_overlap_shifts_data_down():
     memory.write(0, SRC_ADDR, b"\x01\x02\x03\x04\x05")
     result = interpret_chain(memory, 1)
     assert result.final_memory.read(0, SRC_ADDR, 5) == b"\x02\x03\x04\x05\x05"
-
 
 def test_chunk_reads_all_bytes_before_its_own_write():
     """At depth 2 each chunk reads both bytes before its own write mutates memory.
@@ -443,7 +411,6 @@ def test_chunk_reads_all_bytes_before_its_own_write():
     memory.write(0, SRC_ADDR, b"\x01\x02\x03\x04\x05")
     result = interpret_chain(memory, 2)
     assert result.final_memory.read(0, SRC_ADDR, 5) == b"\x01\x01\x02\x02\x04"
-
 
 def test_n5_forward_overlap_uses_more_than_one_chunk():
     """tb-ref-02 / cov-refu-01: N=5, transfer_len > 5 is multi-chunk sequential copy."""
@@ -465,7 +432,6 @@ def test_n5_forward_overlap_uses_more_than_one_chunk():
     # Chunk 1 writes 01..05 onto SRC+1; chunk 2 then reads the mutated tail.
     assert result.final_memory.read(0, SRC_ADDR, 9) == b"\x01\x01\x02\x03\x04\x05\x05\x07\x08"
 
-
 def test_n5_backward_overlap_uses_more_than_one_chunk():
     """tb-ref-02 / cov-refu-01: N=5 backward overlap with transfer_len > 5."""
     memory = image()
@@ -483,7 +449,6 @@ def test_n5_backward_overlap_uses_more_than_one_chunk():
     # First chunk copies src+1..src+5 onto dest; second chunk sees the shift.
     assert result.final_memory.read(0, SRC_ADDR, 9) == b"\x02\x03\x04\x05\x06\x07\x08\x09\x09"
 
-
 def test_n5_one_chunk_control_stays_single_transaction():
     """tb-ref-02: transfer_len <= N is one DATA_READ / DATA_WRITE pair."""
     memory = image()
@@ -499,7 +464,6 @@ def test_n5_one_chunk_control_stays_single_transaction():
     assert positions(result, DATA_READ) == [(0, SRC_ADDR, 5)]
     assert positions(result, DATA_WRITE) == [(0, DST_ADDR, 5)]
     assert result.final_memory.read(0, DST_ADDR, 5) == b"\x11\x22\x33\x44\x55"
-
 
 def test_dest_device1_pointer_bit23_masks_to_a22_0():
     """cov-refu-02 / cov-refu-07: dest device 1 with ptr[23]=1 accesses A[22:0]."""
@@ -525,7 +489,6 @@ def test_dest_device1_pointer_bit23_masks_to_a22_0():
     assert writes[0].device == 1
     assert writes[0].address == dest
 
-
 def test_equal_source_and_destination_is_a_no_op_in_value():
     memory = image()
     place(
@@ -540,9 +503,7 @@ def test_equal_source_and_destination_is_a_no_op_in_value():
     assert result.final_memory.read(0, SRC_ADDR, 3) == b"\x09\x08\x07"
     assert len(positions(result, DATA_WRITE)) == 3
 
-
 # -- wide addresses --------------------------------------------------------
-
 
 def test_highest_legal_complete_range_transfers():
     """TC-ADDR-WIDE: a complete range ending exactly at 0x7FFFFF."""
@@ -559,7 +520,6 @@ def test_highest_legal_complete_range_transfers():
     result = interpret_chain(memory)
     assert result.final_memory.read(1, 0x010000, 4) == b"\xF1\xF2\xF3\xF4"
 
-
 def test_data_access_past_top_of_memory_is_a_reference_error():
     memory = image()
     place(
@@ -572,16 +532,13 @@ def test_data_access_past_top_of_memory_is_a_reference_error():
     with pytest.raises(MemoryRangeError):
         interpret_chain(memory, 2)
 
-
 def test_descriptor_fetch_past_top_of_memory_is_a_reference_error():
     memory = image()
     place(memory, 0, 0x000000, Tcd(transfer_len=0, next_tcd=ADDR_MAX))
     with pytest.raises(MemoryRangeError):
         interpret_chain(memory)
 
-
 # -- reference errors ------------------------------------------------------
-
 
 def test_self_pointing_chain_exhausts_the_fetch_budget():
     memory = image()
@@ -590,7 +547,6 @@ def test_self_pointing_chain_exhausts_the_fetch_budget():
         interpret_chain(memory, 1, 8)
     assert "budget" in str(error.value)
     assert "0:0x000000" in str(error.value)
-
 
 def test_pointer_bit23_is_masked_for_memory_access():
     """D35: ptr[23] don't-care; oracle uses A[22:0] for fetches and copies."""
@@ -613,7 +569,6 @@ def test_pointer_bit23_is_masked_for_memory_access():
     assert data_reads[0].address == SRC_ADDR
     assert result.path[-1] == (0, QUIT_ADDR)
 
-
 def test_transaction_budget_exhaustion_is_reported():
     memory = image()
     place(
@@ -625,7 +580,6 @@ def test_transaction_budget_exhaustion_is_reported():
     place(memory, 0, QUIT_ADDR, Tcd(quit=True))
     with pytest.raises(ReferenceLimitError):
         interpret_chain(memory, 1, 64, 16)
-
 
 def test_invalid_descriptor_stops_before_data_transactions():
     memory = image()
@@ -640,14 +594,12 @@ def test_invalid_descriptor_stops_before_data_transactions():
     assert "reserved" in str(error.value)
     assert "path=" in str(error.value)
 
-
 def test_undefined_source_byte_is_a_reference_error():
     memory = MemoryImage()
     place(memory, 0, 0x000000, Tcd(src_ptr=SRC_ADDR, dest_ptr=DST_ADDR, transfer_len=1, next_tcd=QUIT_ADDR))
     place(memory, 0, QUIT_ADDR, Tcd(quit=True))
     with pytest.raises(MemoryUndefinedError):
         interpret_chain(memory)
-
 
 @pytest.mark.parametrize("depth", [0, -1, True, 1.0, 9])
 def test_depth_must_be_a_positive_int(depth):
@@ -656,7 +608,6 @@ def test_depth_must_be_a_positive_int(depth):
     with pytest.raises(Exception):
         interpret_chain(memory, depth)
 
-
 def test_depth_nine_is_rejected():
     """tb-ref-07: V1 elaboration is 1..8; N=9 is not a legal dma_buf_depth."""
     memory = image()
@@ -664,7 +615,6 @@ def test_depth_nine_is_rejected():
     with pytest.raises(ReferenceModelError, match="1..8"):
         interpret_chain(memory, 9)
     assert DMA_BUF_DEPTH_MAX == 8
-
 
 def test_max_chain_fits_raised_txn_budget_at_n1():
     """tb-ref-07: 8 x 255-byte descriptors at N=1 fit DEFAULT_TXN_BUDGET."""
@@ -682,7 +632,6 @@ def test_max_chain_fits_raised_txn_budget_at_n1():
     data_reads = [txn for txn in result.transactions if txn.kind == DATA_READ]
     assert len(data_reads) == 8 * 255
 
-
 def test_interpreter_does_not_mutate_the_input_image():
     memory = image()
     place(memory, 0, 0x000000, Tcd(src_ptr=SRC_ADDR, dest_ptr=DST_ADDR, transfer_len=1, next_tcd=QUIT_ADDR))
@@ -696,14 +645,11 @@ def test_interpreter_does_not_mutate_the_input_image():
     assert first.final_memory.read(0, DST_ADDR, 1) == b"\x5A"
     assert first.initial_memory.read(0, DST_ADDR, 1) == b"\x00"
 
-
 # -- record shape ----------------------------------------------------------
-
 
 def test_canonical_record_form_matches_the_spec_sample():
     record = transaction(4, DATA_WRITE, 1, 0x234568, b"\xA5")
     assert record.canonical() == "#004 DATA_WRITE op=02 dev=1 addr=0x234568 len=1 data=A5"
-
 
 def test_metadata_is_excluded_from_semantic_equality():
     first = transaction(0, DATA_READ, 0, 0x100, b"\x01", start_time_ns=5.0)
@@ -711,13 +657,11 @@ def test_metadata_is_excluded_from_semantic_equality():
     assert first == second
     assert first.differences(second) == []
 
-
 def test_differences_names_every_changed_field():
     first = transaction(0, DATA_READ, 0, 0x100, b"\x01")
     second = transaction(0, DATA_WRITE, 1, 0x101, b"\x02")
     changed = {name for name, _, _ in first.differences(second)}
     assert changed == {"kind", "opcode", "device", "address", "data"}
-
 
 def test_commit_prefix_replays_only_completed_writes():
     initial = image()
@@ -732,7 +676,6 @@ def test_commit_prefix_replays_only_completed_writes():
     assert commit_prefix(initial, log, 3).read(0, DST_ADDR, 2) == b"\x11\x00"
     assert commit_prefix(initial, log, 5).read(0, DST_ADDR, 2) == b"\x11\x22"
     assert commit_prefix(initial, log, 0).read(0, DST_ADDR, 2) == b"\x00\x00"
-
 
 def test_transaction_records_are_hashable_values():
     record = transaction(0, DATA_WRITE, 0, 0x10, b"\x01")

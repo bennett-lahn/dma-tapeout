@@ -136,18 +136,15 @@ Do not treat a one-line name restatement as complete. A complete comment says wh
 
 ### Centralize testbench interaction and make output easier to read
 
-Planned as one change in `test/` (not a shuttle freeze gate). Firmware REPL / `print` paths are out of scope.
+Done in `test/` (not a shuttle freeze gate). Firmware REPL / `print` paths stay out of scope.
 
-Today each cocotb module repeats the same conversation with the bench: a local `_repro()` string (often `make` in one file and `run_test.sh` in another), `dut._log.info` of that string, then `bring_up_*` / host pulses / `dispose_run`. `dispose_run` `_log_report` then prints one `DISPOSE test=... id=... result=... count=...` INFO line per catalog ID (`CHK-*` always-on monitors and `Q-*` simulation-provable QSPI protocol/edge checks). Passing tests often log another pipe-joined `report.summary()` on the same stream as Make banners, toolchain versions, and Icarus `sorry:` notes.
+Cocotb tests call `common.runlog.begin_run` instead of a local `_repro()`. That helper builds both copy-paste `REPRO:` forms from `parse_run_config()` plus module / `TEST_FILTER` (`run_test.sh` and `make test`; L2 uses `run_gl.sh` / `make gl_test`) and logs the SEED/config banner. Tests still call `dispose_run` for the pass/fail contract.
 
-Planned:
+A clean pass collapses per-ID `DISPOSE` lines into one compact summary (pass / `na` / `blocked` counts, and any non-pass IDs). Per-ID lines remain on fail, when any row is `fail` / `blocked`, or when `DISPOSE_VERBOSE` is set. The contract "every applicable ID is disposed, never a silent skip" stays; what changed is how a clean pass is printed.
 
-1. **One reproduction helper** in `test/common/` that builds the copy-paste `REPRO:` line from `parse_run_config()` plus module / `TEST_FILTER`. Tests stop copying the template. Keep both `make test ...` and `test/scripts/run_test.sh ...` forms if both remain supported; generate them in one place.
-2. **One run-log helper** (thin, next to bring-up / dispose, not a new monitor) owns the human-facing lines: config and `SEED` at start, compact pass banner at end. Tests still call `dispose_run` for the pass/fail contract; they stop formatting the narrative themselves.
-3. **Readable pass output.** A clean pass collapses per-ID `DISPOSE` lines into one compact summary (pass / `na` / `blocked` counts, and any non-pass IDs). Per-ID lines remain on fail, when any row is `fail` / `blocked`, or when a verbosity override is set. The contract "every applicable ID is disposed, never a silent skip" stays; what changes is how a clean pass is printed.
-4. **Do not** fold models, pin monitors, or the scoreboard into the logger. **Do not** change dispose semantics (`expect_fail`, `RESET-TRUNCATED` review/require, pin vs model `via=`). **Do not** treat quieter Make/Icarus compiler noise as this change; `run.log` isolation already exists.
+Do not fold models, pin monitors, or the scoreboard into the logger. Do not change dispose semantics (`expect_fail`, `RESET-TRUNCATED` review/require, pin vs model `via=`). Do not treat quieter Make/Icarus compiler noise as this change; `run.log` isolation already exists.
 
-Local per-test messages that name a unique directed fault (for example which SIO bit was X) may stay in the test. Anything every suite repeats (`REPRO`, SEED/config, "passed: N transactions", the all-pass ID dump) moves.
+Local per-test messages that name a unique directed fault (for example which SIO bit was X) may stay in the test.
 
 ## DUT-level selection
 

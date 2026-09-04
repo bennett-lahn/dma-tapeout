@@ -15,7 +15,6 @@ from common.dispose import (
     expect,
 )
 
-
 def test_expect_default_is_at_least_one():
     """tb-life-05: bare expect(ID) means >=1; count=N is exact."""
     assert expect("Q-MUX").matches(1)
@@ -24,7 +23,6 @@ def test_expect_default_is_at_least_one():
     assert expect("Q-MUX", count=2).matches(2)
     assert not expect("Q-MUX", count=2).matches(1)
     assert ">=1" in str(expect("Q-MUX"))
-
 
 def test_report_blocked_excludes_na():
     """tb-hs-02: na is never treated as blocked."""
@@ -35,7 +33,6 @@ def test_report_blocked_excludes_na():
     assert report.blocked() == []
     report.results["CHK-HS-REQ-STABLE"] = RESULT_BLOCKED
     assert report.blocked() == ["CHK-HS-REQ-STABLE"]
-
 
 def test_truncated_counts_separate_from_ordinary():
     """tb-life-05: truncated hits are counted under truncated_counts."""

@@ -4,26 +4,12 @@ import cocotb
 from cocotb.triggers import RisingEdge, Timer
 
 from common.bringup import bring_up_top
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.constants import FILL
 from common.dispose import dispose_run, expect
 from common.host import QpiPassthroughMaster, assert_bus_req
 from models.psram import QSPI_CMD_FAST_READ, Q_PHASE
 from monitors.handshake import CHK_CTRL_DATA_PAIR
-
-
-def _repro(config: dict, test_filter: str) -> str:
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_test.sh "
-        "LEVEL=top SIM={sim} SEED={seed} TIMING_PROFILE={timing} "
-        "COCOTB_TEST_MODULES=tests.test_qspi_cleanup TEST_FILTER={test_filter}"
-    ).format(
-        sim=config["sim"],
-        seed=config["seed"],
-        timing=config["timing_profile"],
-        test_filter=test_filter,
-    )
-
 
 async def _bring_up(dut, *, handshake_monitor: bool = False):
     bringup = await bring_up_top(
@@ -46,7 +32,6 @@ async def _bring_up(dut, *, handshake_monitor: bool = False):
     bringup.clear()
     return bringup, master
 
-
 @cocotb.test()
 async def qspi_cleanup_controller_pair_pending(dut):
     """TC-CTRL-DATA-PAIR-PENDING-AT-STOP: unpaired payload read fails at dispose.
@@ -56,8 +41,7 @@ async def qspi_cleanup_controller_pair_pending(dut):
     avoids the legal read-data float window, so this is the public stop path
     without poking the controller's private decoder.
     """
-    config = parse_run_config()
-    repro = _repro(config, "qspi_cleanup_controller_pair_pending")
+    config, repro = begin_run(dut, "qspi_cleanup_controller_pair_pending")
     bringup, master = await _bring_up(dut)
     controller = bringup.controller
     assert controller is not None and not controller.blocked, (
@@ -91,7 +75,6 @@ async def qspi_cleanup_controller_pair_pending(dut):
     )
     bringup.stop()
 
-
 @cocotb.test()
 async def qspi_cleanup_live_ce_frame(dut):
     """TC-LIVE-CE-FRAME-AT-STOP: still-open CE# after opcode fails Q-PHASE.
@@ -99,8 +82,7 @@ async def qspi_cleanup_live_ce_frame(dut):
     Model and pin decoder both record ``Q-PHASE`` at dispose, so the exact
     count is 2.
     """
-    config = parse_run_config()
-    repro = _repro(config, "qspi_cleanup_live_ce_frame")
+    config, repro = begin_run(dut, "qspi_cleanup_live_ce_frame")
     bringup, master = await _bring_up(dut)
 
     await master.open(0)

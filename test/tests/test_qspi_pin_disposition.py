@@ -22,7 +22,7 @@ import cocotb
 from cocotb.triggers import Timer
 
 from common.bringup import bring_up_top
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.constants import FILL, REVIEW
 from common.dispose import dispose_run, expect
 from common.host import QpiPassthroughMaster
@@ -33,7 +33,6 @@ from models.psram import (
     SIO_UIO_BITS,
     format_violations,
 )
-
 
 async def _bring_up(dut):
     """Shared L1 attach/clock/reset, then hold ASIC reset for MCU pass-through."""
@@ -47,20 +46,10 @@ async def _bring_up(dut):
     await master.park()
     return bringup, master
 
-
-def _repro(config: dict, test: str) -> str:
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_test.sh "
-        "LEVEL={level} SIM={sim} SEED={seed} "
-        "COCOTB_TEST_MODULES=tests.test_qspi_pin_disposition TEST_FILTER={test}"
-    ).format(level=config["level"], sim=config["sim"], seed=config["seed"], test=test)
-
-
 def _clear_agent_logs(*psrams) -> None:
     for psram in psrams:
         psram.agent.violations.clear()
         psram.agent.transactions.clear()
-
 
 def _sio_x_records(*psrams) -> list:
     records = []
@@ -68,13 +57,10 @@ def _sio_x_records(*psrams) -> list:
         records.extend(r for r in psram.agent.violations if r.code == Q_SIO_X)
     return records
 
-
 @cocotb.test()
 async def pin_dispose_legal_frames_pass(dut):
     """TC-PIN-DISP-PASS: legal write/read leave model ``Q-SIO-X`` quiet."""
-    config = parse_run_config()
-    repro = _repro(config, "pin_dispose_legal_frames_pass")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "pin_dispose_legal_frames_pass")
 
     bringup, master = await _bring_up(dut)
     psram0, psram1 = bringup.psram0, bringup.psram1
@@ -96,14 +82,12 @@ async def pin_dispose_legal_frames_pass(dut):
         repro=repro,
     )
 
-
 def _sio_uio_mask(*sio_indices: int) -> int:
     indices = sio_indices if sio_indices else range(len(SIO_UIO_BITS))
     mask = 0
     for index in indices:
         mask |= 1 << SIO_UIO_BITS[index]
     return mask
-
 
 @cocotb.test()
 async def pin_dispose_known_sio_x_fails(dut):
@@ -114,9 +98,7 @@ async def pin_dispose_known_sio_x_fails(dut):
     ``TC-PIN-DISP-KNOWN-Z`` covers a released (Z) host-driven beat.
     Pin ``CHK-PIN-KNOWN`` is not claimed here (``pin_monitor=False``).
     """
-    config = parse_run_config()
-    repro = _repro(config, "pin_dispose_known_sio_x_fails")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "pin_dispose_known_sio_x_fails")
 
     bringup, master = await _bring_up(dut)
     psram0, psram1 = bringup.psram0, bringup.psram1
@@ -150,13 +132,10 @@ async def pin_dispose_known_sio_x_fails(dut):
         repro=repro,
     )
 
-
 @cocotb.test()
 async def pin_dispose_known_sio_z_fails(dut):
     """TC-PIN-DISP-KNOWN-Z: host-driven write SIO Hi-Z → model ``Q-SIO-X``."""
-    config = parse_run_config()
-    repro = _repro(config, "pin_dispose_known_sio_z_fails")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "pin_dispose_known_sio_z_fails")
 
     bringup, master = await _bring_up(dut)
     psram0, psram1 = bringup.psram0, bringup.psram1

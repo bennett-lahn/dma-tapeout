@@ -37,7 +37,6 @@ PAYLOAD = b"\x11\x22"
 
 CONTEXT = RunContext(level="L1", sim="icarus", seed=1, depth=1, test="unit", repro="REPRO: unit")
 
-
 def build_chain(transfer_len: int = 2, dest_device: int = 0) -> MemoryImage:
     memory = MemoryImage(fill=0x00)
     memory.write(
@@ -57,14 +56,11 @@ def build_chain(transfer_len: int = 2, dest_device: int = 0) -> MemoryImage:
     memory.write(0, SRC_ADDR, PAYLOAD[:transfer_len])
     return memory
 
-
 def oracle(transfer_len: int = 2, dest_device: int = 0, depth: int = 1):
     return interpret_chain(build_chain(transfer_len, dest_device), depth)
 
-
 def scoreboard(result, **kwargs) -> Scoreboard:
     return Scoreboard.from_result(result, context=CONTEXT, **kwargs)
-
 
 def observed_from(result, *, neutral: bool = False) -> list:
     """Return an observed log that mirrors the oracle, optionally pin-neutral."""
@@ -80,21 +76,17 @@ def observed_from(result, *, neutral: bool = False) -> list:
         )
     return records
 
-
 # -- axis 1: ordered transactions -----------------------------------------
-
 
 def test_matching_log_passes_both_axes():
     result = oracle()
     board = scoreboard(result)
     board.compare(observed_from(result), result.final_memory)
 
-
 def test_neutral_read_write_records_are_classified():
     result = oracle()
     board = scoreboard(result)
     board.compare_transactions(observed_from(result, neutral=True))
-
 
 def test_read_at_a_non_fetch_position_classifies_as_data_read():
     result = oracle()
@@ -110,7 +102,6 @@ def test_read_at_a_non_fetch_position_classifies_as_data_read():
         FETCH_READ,
     ]
 
-
 def test_missing_transaction_fails_axis_one():
     result = oracle()
     board = scoreboard(result)
@@ -121,7 +112,6 @@ def test_missing_transaction_fails_axis_one():
     assert error.value.axis == AXIS_TRANSACTIONS
     assert "axis=transactions" in str(error.value)
 
-
 def test_extra_transaction_fails_axis_one():
     result = oracle()
     board = scoreboard(result)
@@ -131,7 +121,6 @@ def test_extra_transaction_fails_axis_one():
         board.compare_transactions(observed)
     assert "<missing>" in str(error.value)
 
-
 def test_duplicated_transaction_fails_axis_one():
     result = oracle()
     board = scoreboard(result)
@@ -139,7 +128,6 @@ def test_duplicated_transaction_fails_axis_one():
     observed.insert(2, observed[2])
     with pytest.raises(ScoreboardError):
         board.compare_transactions(_renumber(observed))
-
 
 def test_reordered_transactions_fail_axis_one():
     result = oracle()
@@ -149,7 +137,6 @@ def test_reordered_transactions_fail_axis_one():
     with pytest.raises(ScoreboardError) as error:
         board.compare_transactions(_renumber(observed))
     assert "first mismatching index=1" in str(error.value)
-
 
 def test_wrong_device_is_reported_field_by_field():
     result = oracle()
@@ -162,7 +149,6 @@ def test_wrong_device_is_reported_field_by_field():
     assert "device: expected=0 observed=1" in message
     assert "expected context:" in message and "observed context:" in message
 
-
 def test_wrong_chunk_length_is_reported():
     result = oracle()
     board = scoreboard(result)
@@ -171,7 +157,6 @@ def test_wrong_chunk_length_is_reported():
     with pytest.raises(ScoreboardError) as error:
         board.compare_transactions(observed)
     assert "length: expected=1 observed=2" in str(error.value)
-
 
 def test_compensating_write_is_caught_by_the_transaction_axis():
     """Wrong source data plus a later fixing write leaves memory correct."""
@@ -187,7 +172,6 @@ def test_compensating_write_is_caught_by_the_transaction_axis():
     # Memory alone would have passed, which is why both axes are required.
     board.compare_memory(result.final_memory)
 
-
 def test_illegal_data_transaction_after_quit_fails():
     result = oracle(transfer_len=0)
     board = scoreboard(result)
@@ -195,7 +179,6 @@ def test_illegal_data_transaction_after_quit_fails():
     observed.append(transaction(len(observed), DATA_READ, 0, SRC_ADDR, b"\x11"))
     with pytest.raises(ScoreboardError):
         board.compare_transactions(observed)
-
 
 def test_index_mismatch_is_reported():
     result = oracle()
@@ -206,9 +189,7 @@ def test_index_mismatch_is_reported():
         board.compare_transactions(observed)
     assert "index: expected=3 observed=9" in str(error.value)
 
-
 # -- axis 2: final memory --------------------------------------------------
-
 
 def test_missing_write_is_classified():
     result = oracle()
@@ -222,7 +203,6 @@ def test_missing_write_is_classified():
     assert board.mismatches[0].address == DST_ADDR
     assert board.mismatches[0].region == "destination"
 
-
 def test_wrong_data_is_classified():
     result = oracle()
     board = scoreboard(result)
@@ -232,7 +212,6 @@ def test_wrong_data_is_classified():
         board.compare_memory(observed)
     assert CLASS_WRONG_DATA in str(error.value)
     assert f"addr=0x{DST_ADDR + 1:06X}" in str(error.value)
-
 
 def test_unexpected_write_outside_the_expected_set_is_classified():
     result = oracle()
@@ -244,7 +223,6 @@ def test_unexpected_write_outside_the_expected_set_is_classified():
     assert CLASS_UNEXPECTED_WRITE in str(error.value)
     assert "dev=1" in str(error.value)
 
-
 def test_guard_bytes_are_compared():
     result = oracle()
     board = scoreboard(result, guards=[guard_region(0, DST_ADDR + 8, 4)])
@@ -253,7 +231,6 @@ def test_guard_bytes_are_compared():
     with pytest.raises(ScoreboardError) as error:
         board.compare_memory(observed)
     assert "region=guard" in str(error.value)
-
 
 def test_source_region_corruption_is_caught():
     result = oracle()
@@ -264,13 +241,11 @@ def test_source_region_corruption_is_caught():
         board.compare_memory(observed)
     assert "region=source" in str(error.value)
 
-
 def test_observed_memory_may_be_a_device_mapping():
     result = oracle()
     board = scoreboard(result)
     snapshot = result.final_memory.snapshot()
     board.compare_memory(snapshot)
-
 
 def test_observed_memory_may_be_a_model_like_object():
     result = oracle()
@@ -291,7 +266,6 @@ def test_observed_memory_may_be_a_model_like_object():
         {0: _Model(result.final_memory, 0), 1: _Model(result.final_memory, 1)}
     )
 
-
 def test_failure_header_carries_run_dimensions_and_repro():
     result = oracle()
     board = scoreboard(result)
@@ -305,16 +279,13 @@ def test_failure_header_carries_run_dimensions_and_repro():
     assert "epoch=0 expected_transactions=6 observed_transactions=5" in message
     assert "REPRO: unit" in message
 
-
 # -- reset-interrupted epochs ---------------------------------------------
-
 
 def test_reset_prefix_accepts_a_short_completed_log():
     result = oracle()
     board = scoreboard(result)
     observed = observed_from(result)[:3]
     board.compare_reset_prefix(observed, reset_index=3)
-
 
 def test_reset_prefix_rejects_a_wrong_record_before_the_edge():
     result = oracle()
@@ -325,12 +296,10 @@ def test_reset_prefix_rejects_a_wrong_record_before_the_edge():
         board.compare_reset_prefix(observed, reset_index=3)
     assert "reset prefix" in str(error.value)
 
-
 def test_reset_prefix_does_not_demand_the_full_chain():
     result = oracle()
     board = scoreboard(result)
     board.compare_reset_prefix(observed_from(result)[:1])
-
 
 def test_reset_prefix_memory_derives_from_the_completed_prefix():
     result = oracle()
@@ -341,7 +310,6 @@ def test_reset_prefix_memory_derives_from_the_completed_prefix():
     with pytest.raises(ScoreboardError):
         board.compare_reset_memory(result.final_memory, 3)
 
-
 def test_reset_prefix_memory_skips_aborted_addresses():
     result = oracle()
     board = scoreboard(result)
@@ -350,16 +318,13 @@ def test_reset_prefix_memory_skips_aborted_addresses():
     committed.poke(0, DST_ADDR + 1, 0xFF)  # partially committed aborted write
     board.compare_reset_memory(committed, 3, aborted_addresses=[(0, DST_ADDR + 1)])
 
-
 def test_reset_index_beyond_the_completed_log_is_a_reference_error():
     result = oracle()
     board = scoreboard(result)
     with pytest.raises(Exception):
         board.compare_reset_prefix(observed_from(result)[:2], reset_index=5)
 
-
 # -- repeated-run epochs --------------------------------------------------
-
 
 def test_two_epoch_logs_must_be_identical():
     result = oracle()
@@ -367,7 +332,6 @@ def test_two_epoch_logs_must_be_identical():
     second = observed_from(result)
     compare_epoch_logs(first, second, context=CONTEXT)
     Scoreboard.compare_epochs(first, second, context=CONTEXT)
-
 
 def test_two_epoch_difference_fails_even_when_both_match_the_oracle():
     result = oracle()
@@ -383,7 +347,6 @@ def test_two_epoch_difference_fails_even_when_both_match_the_oracle():
         compare_epoch_logs(first, second, context=CONTEXT)
     assert "two-epoch equality" in str(error.value)
 
-
 def test_two_epoch_field_difference_is_reported():
     result = oracle()
     first = observed_from(result)
@@ -392,7 +355,6 @@ def test_two_epoch_field_difference_is_reported():
     with pytest.raises(ScoreboardError) as error:
         compare_epoch_logs(first, second, context=CONTEXT)
     assert "epoch1=0 epoch2=1" in str(error.value)
-
 
 def test_cross_device_epoch_passes_both_axes_against_independent_image():
     """cov-refu-03: dest-1 compare uses a rebuilt image, not the oracle object."""
@@ -404,7 +366,6 @@ def test_cross_device_epoch_passes_both_axes_against_independent_image():
             rebuilt.poke(device, address, result.final_memory.byte(device, address))
     assert rebuilt is not result.final_memory
     board.compare(observed_from(result), rebuilt)
-
 
 def test_dest_device1_corruption_fails_memory_axis():
     """cov-refu-03: mutating dest-1 observed bytes is a scoreboard fail."""
@@ -420,7 +381,6 @@ def test_dest_device1_corruption_fails_memory_axis():
     assert error.value.axis == AXIS_MEMORY
     assert CLASS_WRONG_DATA in str(error.value)
 
-
 def test_l1_compare_requires_observed_memory():
     """tb-ref-04: L1/L2 compare cannot skip the memory axis."""
     result = oracle()
@@ -430,7 +390,6 @@ def test_l1_compare_requires_observed_memory():
     assert error.value.axis == AXIS_MEMORY
     assert "required" in str(error.value)
 
-
 def test_l0_compare_may_omit_memory():
     """tb-ref-04: documented L0 exception omits observed memory."""
     result = oracle()
@@ -438,7 +397,6 @@ def test_l0_compare_may_omit_memory():
         result, context=RunContext(level="L0", test="unit", repro="REPRO: l0")
     )
     board.compare(observed_from(result))
-
 
 def test_sparse_observed_dict_detects_missing_dest_byte():
     """tb-ref-04: a sparse dest map still fails when a written byte is absent."""
@@ -452,7 +410,6 @@ def test_sparse_observed_dict_detects_missing_dest_byte():
         board.compare(observed_from(result), sparse)
     assert CLASS_MISSING_WRITE in str(error.value)
 
-
 def test_transaction_mismatch_includes_chunk_index():
     """tb-ref-06: mismatch text includes chunk=i/k. AXIS_REFERENCE was deleted."""
     import reference.scoreboard as scoreboard_mod
@@ -465,7 +422,6 @@ def test_transaction_mismatch_includes_chunk_index():
     with pytest.raises(ScoreboardError) as error:
         board.compare_transactions(observed)
     assert "chunk=1/2" in str(error.value)
-
 
 def _renumber(records) -> list:
     return [record.with_index(index) for index, record in enumerate(records)]

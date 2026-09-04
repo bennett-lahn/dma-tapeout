@@ -6,7 +6,6 @@ datasheet device AC and zeros only TB path placeholders.
 
 from models.psram_timing import resolve_timing_params
 
-
 def test_ideal_keeps_device_ac_zeros_tb_path():
     params = resolve_timing_params("ideal")
     assert params["PSRAM_TSP_NS"] == 2.0

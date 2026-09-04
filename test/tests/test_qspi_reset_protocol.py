@@ -18,7 +18,7 @@ from cocotb.triggers import NextTimeStep, ReadOnly, RisingEdge, Timer, with_time
 from cocotb.triggers import SimTimeoutError
 
 from common.bringup import bring_up_engine, bring_up_top
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.constants import (
     DONE_MASK,
     DONE_TIMEOUT_NS,
@@ -42,21 +42,11 @@ _MID_TXN_TIMEOUT_CYCLES = 256
 _ENGINE_WRITE_LEN = 11
 _ENGINE_WRITE_ADDR = 0x003100
 
-
-def _repro(config: dict, test: str) -> str:
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_test.sh "
-        "LEVEL={level} SIM={sim} SEED={seed} "
-        "COCOTB_TEST_MODULES=tests.test_qspi_reset_protocol TEST_FILTER={test}"
-    ).format(level=config["level"], sim=config["sim"], seed=config["seed"], test=test)
-
-
 def _level(handle) -> "int | None":
     try:
         return int(handle.value)
     except ValueError:
         return None
-
 
 def _bytes_to_nibbles(data: bytes) -> list:
     nibbles = []
@@ -64,7 +54,6 @@ def _bytes_to_nibbles(data: bytes) -> list:
         nibbles.append((value >> 4) & 0xF)
         nibbles.append(value & 0xF)
     return nibbles
-
 
 def _dispose_reset_window(bringup, *, test: str, log, repro: str) -> list:
     """Review every ``RESET-TRUNCATED`` finding from the abort window.
@@ -82,7 +71,6 @@ def _dispose_reset_window(bringup, *, test: str, log, repro: str) -> list:
     )
     return report.reset_truncated
 
-
 def _load_smoke_chain(psram0, *, src_byte: int) -> None:
     tcd_head = encode_tcd(
         Tcd(
@@ -99,13 +87,11 @@ def _load_smoke_chain(psram0, *, src_byte: int) -> None:
     psram0.write(SRC_ADDR, bytes([src_byte]))
     psram0.write(DST_ADDR, bytes([DST_SENTINEL]))
 
-
 async def _wait_for_done_pulse(dut) -> None:
     while int(dut.uo_out.value) & DONE_MASK:
         await RisingEdge(dut.clk)
     while not (int(dut.uo_out.value) & DONE_MASK):
         await RisingEdge(dut.clk)
-
 
 async def _await_mid_txn_top(dut, *, repro: str) -> None:
     """Reach an in-flight ASIC CE# select with shared OE driven."""
@@ -128,13 +114,11 @@ async def _await_mid_txn_top(dut, *, repro: str) -> None:
             return
     raise AssertionError(f"never observed mid-txn PSRAM0 CE# with OE. {repro}")
 
-
 async def _assert_rst_n_clears_top_oe(dut, *, test: str) -> None:
     """CHK-RST-OE: every shared ``uio_oe`` bit is 0 while ``rst_n=0``."""
     await Timer(1, unit="ns")
     oe = int(dut.uio_oe.value)
     assert oe == 0, f"{test}: CHK-RST-OE failed, uio_oe=0x{oe:02X} while rst_n=0"
-
 
 async def _assert_sampled_reset_status_top(dut, *, test: str, cycles: int = 5) -> None:
     """CHK-RST-STATUS after rising ``clk`` edges sampled with ``rst_n=0``."""
@@ -155,12 +139,9 @@ async def _assert_sampled_reset_status_top(dut, *, test: str, cycles: int = 5) -
     # Leave ReadOnly before the caller drives host inputs / releases rst_n.
     await NextTimeStep()
 
-
-async def _q_rst_top(dut, config: dict) -> None:
+async def _q_rst_top(dut, config: dict, repro: str) -> None:
     """L1: abort mid-DMA, clear ``uio_oe``, dispose truncated events, restart."""
     test = "TC-QRST-ACTIVE"
-    repro = _repro(config, "qspi_reset_protocol")
-    dut._log.info(repro)
 
     bringup = await bring_up_top(dut, fill=FILL)
     psram0 = bringup.psram0
@@ -236,7 +217,6 @@ async def _q_rst_top(dut, config: dict) -> None:
         bus_summary,
     )
 
-
 async def _await_mid_txn_engine(dut, *, repro: str) -> None:
     """Start a long write and stop while ``busy`` with CE# low.
 
@@ -266,12 +246,9 @@ async def _await_mid_txn_engine(dut, *, repro: str) -> None:
             return
     raise AssertionError(f"never observed mid-txn engine busy/CE#. {repro}")
 
-
-async def _q_rst_engine(dut, config: dict) -> None:
+async def _q_rst_engine(dut, config: dict, repro: str) -> None:
     """L0: abort mid-engine write, clear ``sio_oe``, dispose, restart."""
     test = "TC-QRST-ACTIVE"
-    repro = _repro(config, "qspi_reset_protocol")
-    dut._log.info(repro)
 
     bringup = await bring_up_engine(dut, fill=FILL, ce_monitor=True)
     psram0 = bringup.psram0
@@ -361,29 +338,18 @@ async def _q_rst_engine(dut, config: dict) -> None:
         bus_summary,
     )
 
-
 @cocotb.test()
 async def qspi_reset_protocol(dut):
     """TC-QRST-ACTIVE at the DUT level selected by ``LEVEL``."""
-    config = parse_run_config()
-    dut._log.info(
-        "SEED=%d LEVEL=%s SIM=%s DUT_LEVEL=%s",
-        config["seed"],
-        config["level"],
-        config["sim"],
-        config["dut_level"],
-    )
+    config, repro = begin_run(dut, "qspi_reset_protocol", test="TC-QRST-ACTIVE")
     if config["dut_level"] == "L0":
-        await _q_rst_engine(dut, config)
+        await _q_rst_engine(dut, config, repro)
     else:
-        await _q_rst_top(dut, config)
+        await _q_rst_top(dut, config, repro)
 
-
-async def _q_rst_bfm_auto_top(dut, config: dict) -> None:
+async def _q_rst_bfm_auto_top(dut, config: dict, repro: str) -> None:
     """L1: mid-txn ``rst_n`` abort classifies without calling ``note_reset()``."""
     test = "TC-QRST-BFM-AUTO"
-    repro = _repro(config, "qspi_reset_bfm_auto")
-    dut._log.info(repro)
 
     bringup = await bring_up_top(dut, fill=FILL)
     psram0 = bringup.psram0
@@ -413,13 +379,12 @@ async def _q_rst_bfm_auto_top(dut, config: dict) -> None:
     )
     dut._log.info("%s passed: BFM classified mid-txn abort on rst_n alone", test)
 
-
 @cocotb.test()
 async def qspi_reset_bfm_auto(dut):
     """TC-QRST-BFM-AUTO: BFM watches ``rst_n`` without a manual ``note_reset()``."""
-    config = parse_run_config()
+    config, repro = begin_run(dut, "qspi_reset_bfm_auto", test="TC-QRST-BFM-AUTO")
     if config["dut_level"] == "L0":
         # Engine path is covered by TC-QRST-ACTIVE; this directed case is L1-only.
         dut._log.info("TC-QRST-BFM-AUTO skipped at L0 (use LEVEL=top)")
         return
-    await _q_rst_bfm_auto_top(dut, config)
+    await _q_rst_bfm_auto_top(dut, config, repro)

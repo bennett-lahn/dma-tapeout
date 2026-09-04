@@ -17,7 +17,7 @@ import cocotb
 from cocotb.triggers import Timer
 
 from common.bringup import bring_up_engine
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.constants import FILL
 from common.engine_bfm import engine_qpi_read, engine_qpi_write
 from models.psram_timing import resolve_timing_params
@@ -30,21 +30,6 @@ _UNEQUAL_SCK_SLOW_NS = 8.0
 _UNEQUAL_CE_FAST_NS = 2.0
 _UNEQUAL_ADDR = 0x000410
 _UNEQUAL_PAYLOAD = bytes((0xA5, 0x5A, 0x3C))
-
-
-def _repro(config: dict, test_filter: str, *, timing: str = "nominal") -> str:
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_test.sh "
-        "LEVEL=engine SIM={sim} SEED={seed} TIMING_PROFILE={timing} "
-        "COCOTB_TEST_MODULES=tests.test_qspi_timing_model "
-        "TEST_FILTER={test_filter}"
-    ).format(
-        sim=config["sim"],
-        seed=config["seed"],
-        timing=timing,
-        test_filter=test_filter,
-    )
-
 
 def _assert_ideal_resolve_keeps_device_ac() -> None:
     """``ideal`` keeps datasheet AC; only TB_* path placeholders are zero."""
@@ -66,7 +51,6 @@ def _assert_ideal_resolve_keeps_device_ac() -> None:
     assert params["TB_FLIGHT_OUT_NS"] == 0.0
     assert params["TB_FLIGHT_IN_NS"] == 0.0
 
-
 def _assert_timed_wrapper(device) -> None:
     assert hasattr(device, "timing_params"), (
         "wrap_device must return a timed wrapper with timing_params"
@@ -77,7 +61,6 @@ def _assert_timed_wrapper(device) -> None:
     assert hasattr(device, "_schedule"), (
         "expected a timed wrapper with _schedule"
     )
-
 
 async def _bring_up_timed(dut, *, require_profile: str = "nominal"):
     bringup = await bring_up_engine(
@@ -98,14 +81,13 @@ async def _bring_up_timed(dut, *, require_profile: str = "nominal"):
     _assert_timed_wrapper(device)
     return bringup, device
 
-
 @cocotb.test()
 async def test_ideal_ac_and_wrap(dut):
     """ideal keeps device AC and always wraps (not an identity passthrough)."""
 
-    config = parse_run_config()
-    repro = _repro(config, "test_ideal_ac_and_wrap", timing="ideal")
-    dut._log.info(repro)
+    config, repro = begin_run(
+        dut, "test_ideal_ac_and_wrap", timing_profile="ideal"
+    )
 
     _assert_ideal_resolve_keeps_device_ac()
 
@@ -126,14 +108,11 @@ async def test_ideal_ac_and_wrap(dut):
         "TC-TIMED-IDEAL-AC pass: ideal AC live, TB zero, wrapped device"
     )
 
-
 @cocotb.test()
 async def test_timed_sequence_order(dut):
     """Same-delay scheduled callbacks keep source schedule order."""
 
-    config = parse_run_config()
-    repro = _repro(config, "test_timed_sequence_order")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "test_timed_sequence_order")
     _assert_ideal_resolve_keeps_device_ac()
     _bringup, device = await _bring_up_timed(dut)
 
@@ -154,14 +133,11 @@ async def test_timed_sequence_order(dut):
     )
     dut._log.info("TC-TIMED-SEQUENCE-ORDER pass: %s", order)
 
-
 @cocotb.test()
 async def test_timed_oe_delay(dut):
     """Non-zero ``D_OUT_OE_NS`` delays model SIO OE relative to an immediate drive."""
 
-    config = parse_run_config()
-    repro = _repro(config, "test_timed_oe_delay")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "test_timed_oe_delay")
     _assert_ideal_resolve_keeps_device_ac()
     _bringup, device = await _bring_up_timed(dut)
 
@@ -195,7 +171,6 @@ async def test_timed_oe_delay(dut):
         "TC-TIMED-OE-DELAY pass: D_OUT_OE_NS=%.1f delayed model OE", d_out_oe_ns
     )
 
-
 @cocotb.test()
 async def test_timed_unequal_dout(dut):
     """Unequal ``D_OUT_CE_NS`` / ``D_OUT_SCK_NS`` still sample command and payload.
@@ -208,9 +183,7 @@ async def test_timed_unequal_dout(dut):
     rising SCK / hold after last SCK).
     """
 
-    config = parse_run_config()
-    repro = _repro(config, "test_timed_unequal_dout")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "test_timed_unequal_dout")
     bringup, device = await _bring_up_timed(dut)
 
     # Point A: D_OUT_CE > D_OUT_SCK (first-nibble skew).

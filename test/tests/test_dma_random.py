@@ -26,7 +26,7 @@ from cocotb.triggers import RisingEdge, SimTimeoutError, with_timeout
 
 from common.artifacts import run_dir
 from common.bringup import bring_up_top
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.coverage_l1 import L1CoverageAdapter
 from common.constants import BUS_GNT_MASK, GRANT_TIMEOUT_CYCLES
 from common.directed import (
@@ -59,28 +59,10 @@ RESERVED_STREAMS = (STREAM_START, STREAM_BUS_REQ, STREAM_RESET)
 STIMULUS_FILENAME = "stimulus.json"
 STIMULUS_SCHEMA = "dma-tapeout.stimulus.v1"
 
-
-def _repro(config: dict, test_filter: str) -> str:
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_test.sh "
-        "LEVEL={level} SIM={sim} SEED={seed} DMA_BUF_DEPTH={depth} "
-        "TIMING_PROFILE={timing} COCOTB_TEST_MODULES=tests.test_dma_random "
-        "TEST_FILTER={test_filter}"
-    ).format(
-        level=config["level"],
-        sim=config["sim"],
-        seed=config["seed"],
-        depth=config["dma_buf_depth"],
-        timing=config["timing_profile"],
-        test_filter=test_filter,
-    )
-
-
 def _child_seed(base_seed: int, stream_name: str) -> int:
     """Return the integer seed :func:`child_random` would use for *stream_name*."""
     digest = hashlib.sha256(f"{base_seed}:{stream_name}".encode("utf-8")).digest()
     return int.from_bytes(digest[:8], byteorder="big")
-
 
 def _rtl_revision() -> str:
     """Best-effort git HEAD for the stimulus manifest's RTL revision field."""
@@ -99,14 +81,12 @@ def _rtl_revision() -> str:
         return "unknown"
     return (result.stdout or "").strip() or "unknown"
 
-
 def schedule_start_edges(base_seed: int, *, clk_period_ns=None) -> list:
     """Adapter: ``InjectionPlanner.plan_start`` on stream ``start``."""
     planner = InjectionPlanner(
         base_seed, clk_period_ns=resolve_clk_period_ns(clk_period_ns)
     )
     return [planner.plan_start(capture=CAPTURE_REQUIRED)]
-
 
 def schedule_bus_req_edges(base_seed: int, *, clk_period_ns=None, chain=None) -> list:
     """Adapter: ``InjectionPlanner.plan_bus_req`` on stream ``bus_req``.
@@ -127,14 +107,12 @@ def schedule_bus_req_edges(base_seed: int, *, clk_period_ns=None, chain=None) ->
         target = "FETCH"
     return [planner.plan_bus_req(target_state=target)]
 
-
 def schedule_reset_edges(base_seed: int, *, clk_period_ns=None) -> list:
     """Adapter: ``InjectionPlanner.plan_reset`` on stream ``reset``."""
     planner = InjectionPlanner(
         base_seed, clk_period_ns=resolve_clk_period_ns(clk_period_ns)
     )
     return [planner.plan_reset(reset_truncated=REVIEW, target_state="SYS_CTRL_IDLE")]
-
 
 def _edge_payload(edges) -> list:
     payload = []
@@ -144,7 +122,6 @@ def _edge_payload(edges) -> list:
         else:
             payload.append(edge)
     return payload
-
 
 async def apply_start_edges(dut, edges, *, adapter=None, clk_period_ns=None) -> list:
     """Adapter: drive each plan with :func:`common.injection.jitter_start`."""
@@ -164,7 +141,6 @@ async def apply_start_edges(dut, edges, *, adapter=None, clk_period_ns=None) -> 
             )
         driven.append(record)
     return driven
-
 
 async def apply_bus_req_edges(dut, edges, *, adapter=None, clk_period_ns=None) -> list:
     """Adapter: drive each plan with :func:`common.injection.inject_bus_req`."""
@@ -190,7 +166,6 @@ async def apply_bus_req_edges(dut, edges, *, adapter=None, clk_period_ns=None) -
         driven.append(record)
     return driven
 
-
 async def apply_reset_edges(dut, edges, *, bringup=None, adapter=None) -> list:
     """Adapter: drive each plan with :func:`common.injection.pulse_reset`."""
     driven = []
@@ -200,7 +175,6 @@ async def apply_reset_edges(dut, edges, *, bringup=None, adapter=None) -> list:
             adapter.record_reset(record.observed_state, record.observed_phase)
         driven.append(record)
     return driven
-
 
 def assert_firmware_legal(chain, *, test: str, repro: str) -> None:
     """Require reserved=0, acyclic slots, and in-range ``A[22:0]`` complete spans."""
@@ -247,7 +221,6 @@ def assert_firmware_legal(chain, *, test: str, repro: str) -> None:
             f"{test}: descriptor at {device}:0x{address:06X} is not a complete "
             f"11-byte record inside 0x000000..0x{ADDR_MAX:06X}. " + repro
         )
-
 
 def write_stimulus_manifest(
     config: dict,
@@ -310,12 +283,10 @@ def write_stimulus_manifest(
         handle.write("\n")
     return path
 
-
 def _optional_child(parent, name):
     if parent is None:
         return None
     return getattr(parent, name, None)
-
 
 async def sample_l1_states(dut, adapter: L1CoverageAdapter, running) -> None:
     """Record ``COV-CTRL-STATE`` / ``COV-QPI-PHASE`` on every state transition.
@@ -347,23 +318,11 @@ async def sample_l1_states(dut, adapter: L1CoverageAdapter, running) -> None:
                 adapter.record_qpi_phase(phase)
                 prev_qpi = phase
 
-
 @cocotb.test()
 async def random_legal_chain(dut):
     """Constrained-random firmware-legal descriptor chains (M5 high-volume suite)."""
-    config = parse_run_config()
     test = "random_legal_chain"
-    repro = _repro(config, test)
-    dut._log.info(
-        "SEED=%d LEVEL=%s SIM=%s DUT_LEVEL=%s DMA_BUF_DEPTH=%d TIMING_PROFILE=%s",
-        config["seed"],
-        config["level"],
-        config["sim"],
-        config["dut_level"],
-        config["dma_buf_depth"],
-        config["timing_profile"],
-    )
-    dut._log.info(repro)
+    config, repro = begin_run(dut, test)
 
     cov = coverage_sampler(config, test=test)
     adapter = L1CoverageAdapter(cov)

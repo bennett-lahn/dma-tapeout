@@ -43,12 +43,11 @@ import cocotb
 from cocotb.triggers import RisingEdge, Timer
 
 from common.bringup import bring_up_top
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.constants import FILL, LEGAL_GAP_NS
 from common.dispose import dispose_run, expect
 from common.host import UIO_PSRAM_CE_BITS, UIO_SCK_BIT, QpiPassthroughMaster, assert_bus_req
 from monitors.timing import Q_CHD, Q_CSP, Q_TERM, start_ce_timing_monitor
-
 
 async def _await_bus_gnt(dut, *, cycles: int = 32) -> None:
     await assert_bus_req(dut, hold=True)
@@ -57,7 +56,6 @@ async def _await_bus_gnt(dut, *, cycles: int = 32) -> None:
         if (int(dut.uo_out.value) >> 1) & 1:
             return
     raise AssertionError("BUS_GNT did not assert after BUS_REQ")
-
 
 async def _bring_up(dut, *, read_expected_nibbles=None):
     """Shared top bring-up + directed CE timing monitor under ``TIMING_PROFILE=nominal``.
@@ -100,16 +98,6 @@ async def _bring_up(dut, *, read_expected_nibbles=None):
     )
     return bringup, master
 
-
-def _repro(config: dict, test_filter: str) -> str:
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_test.sh "
-        "LEVEL=top SIM={sim} SEED={seed} TIMING_PROFILE=nominal "
-        "COCOTB_TEST_MODULES=tests.test_qspi_timing_delay "
-        "TEST_FILTER={test_filter}"
-    ).format(sim=config["sim"], seed=config["seed"], test_filter=test_filter)
-
-
 def _assert_positive_margins(ce, *, test: str, log) -> None:
     """W3b margin gate: legal-pass min margins must be strictly positive."""
     summary = ce.summary()
@@ -128,7 +116,6 @@ def _assert_positive_margins(ce, *, test: str, log) -> None:
             f"{summary}"
         )
 
-
 def _assert_detail(ce, check_id: str, *, test: str, detail_substr: str) -> None:
     """Keep the directed detail substrings the M1 CEM/CPH cases asserted."""
     events = ce.violations_for(check_id)
@@ -136,7 +123,6 @@ def _assert_detail(ce, check_id: str, *, test: str, detail_substr: str) -> None:
     assert detail_substr in events[0].detail, (
         f"{test}: missing {detail_substr!r} in {events[0].detail}"
     )
-
 
 async def _drive_ce_sck(
     master: QpiPassthroughMaster,
@@ -177,14 +163,11 @@ async def _drive_ce_sck(
         master._set_bit(ce_bit, 1)
     master._apply()
 
-
 @cocotb.test()
 async def qspi_timing_delay_csp_chd(dut):
     """TC-QTIMING-DELAY-BASELINE, CSP/CHD boundary-pass, and CSP/CHD violation."""
-    config = parse_run_config()
-    dut._log.info(
-        "SEED=%d LEVEL=%s SIM=%s TIMING_PROFILE=%s",
-        config["seed"], config["level"], config["sim"], config["timing_profile"],
+    config, repro = begin_run(
+        dut, "qspi_timing_delay_csp_chd", timing_profile="nominal"
     )
 
     bringup, master = await _bring_up(dut)
@@ -196,8 +179,6 @@ async def qspi_timing_delay_csp_chd(dut):
     )
 
     # -- TC-QTIMING-DELAY-BASELINE: generous legal margins on both devices ---
-    repro = _repro(config, "qspi_timing_delay_csp_chd")
-    dut._log.info(repro)
     await _drive_ce_sck(
         master, 0, csp_gap_ns=LEGAL_GAP_NS, rise_to_ce_ns=LEGAL_GAP_NS,
         sck_high_ns=LEGAL_GAP_NS / 2,
@@ -284,7 +265,6 @@ async def qspi_timing_delay_csp_chd(dut):
         "CSP/CHD violation"
     )
 
-
 @cocotb.test()
 async def qspi_timing_delay_term(dut):
     """TC-TERM-SCK-NOT-FROZEN: ``Q-TERM`` architectural "SCK frozen" precondition.
@@ -297,9 +277,7 @@ async def qspi_timing_delay_term(dut):
     rise. ``Q-CSP``/``Q-CHD`` use legal margins on both sides of the single
     SCK edge so only ``Q-TERM`` fires.
     """
-    config = parse_run_config()
-    repro = _repro(config, "qspi_timing_delay_term")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "qspi_timing_delay_term")
 
     bringup, master = await _bring_up(dut, read_expected_nibbles=lambda label: 0)
 

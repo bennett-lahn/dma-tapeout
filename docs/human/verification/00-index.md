@@ -17,7 +17,7 @@ Condensed map of the V1 verification plan. Verbose catalogs live in [`../../llm/
 | Directed tests | `TC-*` | Simulation | [`08-stimulus-and-coverage.md`](../../llm/verification/08-stimulus-and-coverage.md) |
 | Functional coverage | `COV-*` | Simulation | [`08-stimulus-and-coverage.md`](../../llm/verification/08-stimulus-and-coverage.md) |
 | Control-plane proofs and covers | `FP-*` | Formal | [`07-formal.md`](../../llm/verification/07-formal.md) |
-| Firmware-driven hardware regression | `TC-*` subset | FPGA on the carrier board (M7) | [`../../llm/verification/01-strategy.md`](../../llm/verification/01-strategy.md) |
+| Firmware-driven hardware regression | `TC-*` subset | Host HIL (`hil/`) on carrier board (M7) | [`../../llm/verification/01-strategy.md`](../../llm/verification/01-strategy.md), [`../architecture/firmware.md`](../architecture/firmware.md) |
 | Nanosecond and physical closure | `T-*` | STA and demoboard | [`../../llm/11-timing-analysis.md`](../../llm/11-timing-analysis.md) |
 
 Published IDs keep their meanings even if implementation files change. Required results use `todo`, `wip`, `pass`, `fail`, `blocked`, or `na`, and every `pass` retains its revision, configuration, tool, and artifact.
@@ -70,12 +70,12 @@ GitHub Actions: `test.yaml` (L1 Icarus smoke), `timing.yaml` (`bash test/scripts
 | M3 exit (delay / launch / RX / lifecycle) | `pass` | 2026-08-10: `nominal` Icarus ≡ Verilator on timing + ownership + launch_rx; cleanup `TC-*`; see residuals |
 | `Q-LAUNCH`, `Q-RXEDGE`, `Q-CSP`/`Q-CHD`/`Q-TERM` | `pass` | M3 directed evidence; delay-rerun CEM/CPH/SIO-OWN also green |
 | M4 formal (`FP-*`) | `todo` | Deferred (D33); not a V1 freeze gate; stubs under `test/formal/` untouched - do not claim pass |
-| M5 random / `COV-*` / depth sweep | `pass` | Regenerated 2026-08-25: `test/runs/m5_coverage_closure.json` `closed=true` (`missing={}`; depths 1..8; reviewer `tb-closure-2026-08-25`). `TC-DEPTH` Icarus 15/15 per N=1..8 (`run_depth_sweep-20260825-190207.log`). Firmware oracle-hash drift remains a firmware follow-up. |
-| L2 functional infra | `wip` | `tests.test_gate_level` (`TC-GL-*`) + `test/scripts/run_gl.sh`; designated 189-DFF N=5 netlist SHA256 `9a769ad4bcc09d7cff699e8f178acab4fb5b7228e242cfdf7d027ed2274beb7a`; SDF blocked; `make verilator_x` isolates `x-unique` and is not four-state (`run_verilator_x-20260825-191818.log`); M6 open |
+| M5 random / `COV-*` / depth sweep | `pass` | Regenerated 2026-08-25: `test/runs/m5_coverage_closure.json` `closed=true` (`missing={}`; depths 1..8; reviewer `tb-closure-2026-08-25`). `TC-DEPTH` Icarus 15/15 per N=1..8 (`run_depth_sweep-20260825-190207.log`). M7 HIL uses host `test/reference` import (D37). |
+| L2 functional infra | `wip` | `tests.test_gate_level` (`TC-GL-*`) + `test/scripts/run_gl.sh`; N=5 netlist; SDF blocked; `make verilator_x` isolates `x-unique` and is not four-state (`run_verilator_x-20260825-191818.log`); M6 open |
 | SDF run | `blocked` | No compatible final-netlist SDF artifact; a zero-delay GL run is not an SDF pass |
 | `TC-DEPTH` (`1..8`) | `pass` | 2026-08-25: Icarus 15/15 directed suite per compile-time `DMA_BUF_DEPTH` via `make depth` / `run_depth_sweep.sh` (`run_depth_sweep-20260825-190207.log`) |
 | `DMA_BUF_DEPTH` elaboration `1..8` | `pass` | Tapeout and default sim/Make depth **N=5**; sweep N=1..8 green for directed suite |
-| M7 FPGA hardware validation | `todo` | Not started; requires an FPGA-synthesizable build and carrier-board bring-up with real MCU firmware |
+| M7 FPGA hardware validation | `wip` | Host `hil/` testbench in place (`loopback` pytest green); demoboard `fpga`/`asic` sign-off pending |
 | `T-*` closure | `todo` | STA and demoboard evidence follow M6 |
 | CI smoke job | `todo` | Local smoke green; CI job still open |
 | Independent `QspiPinMonitor` | live | CE#-framed decode; pin KNOWN dispose `via=pin` with `Q-SIO-X` twin row (`ADDR23` retired D35); L0 default `pin_monitor=False` leaves those IDs `na`; ordinary paths use `dispose_run` |
@@ -106,4 +106,4 @@ Not a shuttle freeze gate. Full text: [`../../llm/verification/02-platform.md`](
 
 1. **Centralize constants.** Architecture numbers live in `test/reference/constants.py` (mechanical twin of `firmware/constants.py`). Sim-only shared numbers (DONE mask, timeouts, `FILL`, FSM encodings) live in `test/common/constants.py`. `Q-*` IDs are simulation-provable QSPI protocol and edge checks; `CHK-*` IDs are always-on cocotb runtime monitors; `COV-*` IDs are functional coverage points and stay in their catalog owner. Firmware still must not import `test/` (D30).
 2. **Complete function comments, plus a repo commenting standard.** Review verification docs and add a complete comment on every testbench function. Write the commenting standard in that same change; later RTL and scripts follow it.
-3. **Centralize testbench interaction and make output easier to read.** One shared `REPRO` / run-log helper so tests stop copying `_repro()` and formatting `dut._log` themselves. Passing dispose output is a compact summary; a fail still prints every `CHK-*` / `Q-*` ID. Checker pass/fail semantics stay the same.
+3. **Centralize testbench interaction and make output easier to read.** Done. Cocotb tests call `common.runlog.begin_run` for `REPRO` / SEED banners (both `run_test.sh` and `make test` forms; L2 uses `run_gl.sh`). Passing dispose output is a compact summary; a fail still prints every `CHK-*` / `Q-*` ID. Checker pass/fail semantics stay the same.

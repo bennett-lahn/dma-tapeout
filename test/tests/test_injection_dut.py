@@ -28,7 +28,7 @@ from cocotb.triggers import (
 )
 
 from common.bringup import bring_up_top
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.constants import BUS_GNT_MASK, GRANT_TIMEOUT_CYCLES
 from common.directed import (
     auto_timeout_ns,
@@ -57,23 +57,6 @@ from common.injection import _sample_names
 from reference.coverage import BUS_RESUME_BINS
 from reference.generator import PATTERN_INCREMENT, TcdSpec, build_directed_chain
 
-
-def _repro(config: dict, test_filter: str) -> str:
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_test.sh "
-        "LEVEL={level} SIM={sim} SEED={seed} DMA_BUF_DEPTH={depth} "
-        "TIMING_PROFILE={timing} COCOTB_TEST_MODULES=tests.test_injection_dut "
-        "TEST_FILTER={test_filter}"
-    ).format(
-        level=config["level"],
-        sim=config["sim"],
-        seed=config["seed"],
-        depth=config["dma_buf_depth"],
-        timing=config["timing_profile"],
-        test_filter=test_filter,
-    )
-
-
 def _sync_bus_req(dut) -> int:
     inner = getattr(dut, "dut", None)
     handle = getattr(inner, "bus_req", None) if inner is not None else None
@@ -82,7 +65,6 @@ def _sync_bus_req(dut) -> int:
     if handle is None:
         raise AssertionError("synchronized bus_req is not visible on this DUT")
     return int(handle.value)
-
 
 async def _count_raw_to_sync_edges(dut) -> int:
     """Count rising ``clk`` edges after raw BUS_REQ rises until sync is high.
@@ -104,10 +86,8 @@ async def _count_raw_to_sync_edges(dut) -> int:
             return edges
         await NextTimeStep()
 
-
 def _bus_gnt(dut) -> int:
     return 1 if (int(dut.uo_out.value) & BUS_GNT_MASK) else 0
-
 
 async def _wait_grant_drop(dut, *, window: str, repro: str) -> None:
     for _ in range(GRANT_TIMEOUT_CYCLES):
@@ -116,18 +96,14 @@ async def _wait_grant_drop(dut, *, window: str, repro: str) -> None:
             return
     raise AssertionError(f"{window}: BUS_GNT never dropped after BUS_REQ release. {repro}")
 
-
 def _observed_start_result(sync_edges: int) -> str:
     return "idle_accepted" if sync_edges == 1 else "idle_uncaptured"
-
 
 @cocotb.test()
 async def injection_bus_req_sync_latency(dut):
     """Raw BUS_REQ rises SYNC_LATENCY_CYCLES before synchronized bus_req."""
     test = "injection_bus_req_sync_latency"
-    config = parse_run_config()
-    repro = _repro(config, test)
-    dut._log.info(repro)
+    config, repro = begin_run(dut, test)
     period = resolve_clk_period_ns()
     adapter = l1_adapter(config, test=test)
 
@@ -181,14 +157,11 @@ async def injection_bus_req_sync_latency(dut):
     dispose_run(bringup, test=test, log=dut._log, repro=repro)
     commit_l1_window(config, test=test, checkers_ok=True, scoreboard_na=True)
 
-
 @cocotb.test()
 async def injection_bus_req_new_fetch_sync_latency(dut):
     """NEW_FETCH helper also asserts raw SYNC_LATENCY_CYCLES before sync."""
     test = "injection_bus_req_new_fetch_sync_latency"
-    config = parse_run_config()
-    repro = _repro(config, test)
-    dut._log.info(repro)
+    config, repro = begin_run(dut, test)
     period = resolve_clk_period_ns()
     adapter = l1_adapter(config, test=test)
 
@@ -233,7 +206,6 @@ async def injection_bus_req_new_fetch_sync_latency(dut):
     dispose_run(bringup, test=test, log=dut._log, repro=repro)
     commit_l1_window(config, test=test, checkers_ok=True, scoreboard_na=True)
 
-
 async def _uncertain_start_window(dut, *, test: str, config: dict, repro: str, plan: StartPulseRecord, seed: int):
     adapter = l1_adapter(config, test=test)
     bringup = await bring_up_top(dut)
@@ -268,14 +240,11 @@ async def _uncertain_start_window(dut, *, test: str, config: dict, repro: str, p
     dispose_run(bringup, test=test, log=dut._log, repro=repro)
     commit_l1_window(config, test=test, checkers_ok=True, scoreboard_na=True)
 
-
 @cocotb.test()
 async def injection_start_uncertain_single_edge(dut):
     """Capture-uncertain START cannot produce two synchronized edges."""
     test = "injection_start_uncertain_single_edge"
-    config = parse_run_config()
-    repro = _repro(config, test)
-    dut._log.info(repro)
+    config, repro = begin_run(dut, test)
     period = resolve_clk_period_ns()
 
     plan = StartPulseRecord(
@@ -296,14 +265,11 @@ async def injection_start_uncertain_single_edge(dut):
         dut, test=test, config=config, repro=repro, plan=plan, seed=7201
     )
 
-
 @cocotb.test()
 async def injection_start_uncertain_near_edge_after(dut):
     """Second capture-uncertain START fixture (near-edge after) with recorded result."""
     test = "injection_start_uncertain_near_edge_after"
-    config = parse_run_config()
-    repro = _repro(config, test)
-    dut._log.info(repro)
+    config, repro = begin_run(dut, test)
     period = resolve_clk_period_ns()
 
     plan = StartPulseRecord(
@@ -320,7 +286,6 @@ async def injection_start_uncertain_near_edge_after(dut):
     await _uncertain_start_window(
         dut, test=test, config=config, repro=repro, plan=plan, seed=7202
     )
-
 
 async def _reset_in_named_ctrl(dut, *, test: str, config: dict, repro: str, target: str, seed: int):
     adapter = l1_adapter(config, test=test)
@@ -361,38 +326,29 @@ async def _reset_in_named_ctrl(dut, *, test: str, config: dict, repro: str, targ
     await release_reset(dut)
     commit_l1_window(config, test=test, checkers_ok=True, scoreboard_na=True)
 
-
 @cocotb.test()
 async def injection_reset_fetch(dut):
     """Force rst_n during FETCH; record observed state/phase."""
     test = "injection_reset_fetch"
-    config = parse_run_config()
-    repro = _repro(config, test)
-    dut._log.info(repro)
+    config, repro = begin_run(dut, test)
     await _reset_in_named_ctrl(
         dut, test=test, config=config, repro=repro, target="FETCH", seed=7301
     )
-
 
 @cocotb.test()
 async def injection_reset_read(dut):
     """Force rst_n during READ; record observed state/phase."""
     test = "injection_reset_read"
-    config = parse_run_config()
-    repro = _repro(config, test)
-    dut._log.info(repro)
+    config, repro = begin_run(dut, test)
     await _reset_in_named_ctrl(
         dut, test=test, config=config, repro=repro, target="READ", seed=7302
     )
-
 
 @cocotb.test()
 async def injection_reset_write(dut):
     """Force rst_n during WRITE; record observed state/phase."""
     test = "injection_reset_write"
-    config = parse_run_config()
-    repro = _repro(config, test)
-    dut._log.info(repro)
+    config, repro = begin_run(dut, test)
     await _reset_in_named_ctrl(
         dut, test=test, config=config, repro=repro, target="WRITE", seed=7303
     )

@@ -47,7 +47,7 @@ from cocotb.triggers import (
 )
 
 from common.bringup import bring_up_top
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.directed import (
     DONE_MASK,
     auto_timeout_ns as _auto_timeout_ns,
@@ -91,7 +91,6 @@ from reference.scoreboard import Scoreboard
 
 _RESET_SETTLE_CYCLES = 5
 _POST_RELEASE_IDLE_CYCLES = 10
-
 
 def _assert_no_ordinary_qlaunch(bringup, *, window: str, repro: str) -> None:
     """Grant-park OE release must not produce ordinary Q-LAUNCH.
@@ -154,25 +153,7 @@ _ENGINE_PHASE_RESET_TARGETS = (
     _QSPI_CS_OFF,
 )
 
-
-def _repro(config: dict, test_filter: str) -> str:
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_test.sh "
-        "LEVEL={level} SIM={sim} SEED={seed} DMA_BUF_DEPTH={depth} "
-        "TIMING_PROFILE={timing} COCOTB_TEST_MODULES=tests.test_reset_and_bus "
-        "TEST_FILTER={test_filter}"
-    ).format(
-        level=config["level"],
-        sim=config["sim"],
-        seed=config["seed"],
-        depth=config["dma_buf_depth"],
-        timing=config["timing_profile"],
-        test_filter=test_filter,
-    )
-
-
 # -- signal / hierarchy access ----------------------------------------------
-
 
 def _level(handle) -> "int | None":
     try:
@@ -180,27 +161,21 @@ def _level(handle) -> "int | None":
     except ValueError:
         return None
 
-
 def _done(dut) -> int:
     return int(dut.uo_out.value) & DONE_MASK
 
-
 def _bus_gnt(dut) -> int:
     return 1 if (int(dut.uo_out.value) & BUS_GNT_MASK) else 0
-
 
 def _controller(dut):
     """``dut.dut.sys_controller`` (RTL-hierarchy-only visibility, L1 tb_top)."""
     return dut.dut.sys_controller
 
-
 def _engine(dut):
     """``dut.dut.qspi_engine`` (RTL-hierarchy-only visibility, L1 tb_top)."""
     return dut.dut.qspi_engine
 
-
 # -- precise state-targeted stimulus -----------------------------------------
-
 
 async def _await_controller_state(
     dut, targets, *, timeout_cycles: int = STATE_TIMEOUT_CYCLES, repro: str = ""
@@ -225,7 +200,6 @@ async def _await_controller_state(
         f"{timeout_cycles} cycles. {repro}"
     )
 
-
 async def _await_engine_state(
     dut, targets, *, timeout_cycles: int = STATE_TIMEOUT_CYCLES, repro: str = ""
 ) -> int:
@@ -243,7 +217,6 @@ async def _await_engine_state(
         f"qspi_engine.curr_state never reached {targets} within "
         f"{timeout_cycles} cycles. {repro}"
     )
-
 
 async def _pulse_start_with_bus_req_at_new_fetch(dut) -> None:
     """Accepted START with BUS_REQ timed to synchronize exactly at NEW_FETCH.
@@ -265,14 +238,12 @@ async def _pulse_start_with_bus_req_at_new_fetch(dut) -> None:
     dut.ui_in.value = current & ~(1 << START_BIT) & 0xFF
     await RisingEdge(dut.clk)
 
-
 def _sample_ctrl_qpi(dut):
     """Return ``(controller_state, qpi_phase)`` encodings at this instant."""
     return (
         int(_controller(dut).curr_state.value),
         int(_engine(dut).curr_state.value),
     )
-
 
 def _drop_pending_carryover(bringup) -> None:
     """Drop ledger carryover so a later window cannot inherit Q-RXEDGE tokens."""
@@ -281,7 +252,6 @@ def _drop_pending_carryover(bringup) -> None:
         if pending is not None:
             getattr(pending, "carryover", []).clear()
             pending.clear()
-
 
 def _log_sampled_fsm(dut, log, *, window: str) -> tuple:
     """cov-dma-04: stamp the sampled controller/QPI encodings into the log."""
@@ -293,7 +263,6 @@ def _log_sampled_fsm(dut, log, *, window: str) -> tuple:
         QSPI_ENGINE_STATES.get(phase, phase),
     )
     return state, phase
-
 
 def _ctrl_remaining_len(dut) -> "int | None":
     """Visible ``task_ctrl_desc.transfer_len``, or None if the field is hidden."""
@@ -307,7 +276,6 @@ def _ctrl_remaining_len(dut) -> "int | None":
         return int(field.value)
     except (ValueError, TypeError, AttributeError):
         return None
-
 
 def _cycles_until_named_ctrl(dut, target_name: str, *, depth: int) -> "int | None":
     """Like injection ``_cycles_until_ctrl``, plus NEW_FETCH last-chunk lookahead.
@@ -329,7 +297,6 @@ def _cycles_until_named_ctrl(dut, target_name: str, *, depth: int) -> "int | Non
     if remaining is None or remaining > depth:
         return None
     return 2 if _inj._eng_curr_name(dut) == "CS_OFF" else 3
-
 
 async def _inject_start_in_named_ctrl(
     dut, target_name: str, *, repro: str, depth: int
@@ -376,7 +343,6 @@ async def _inject_start_in_named_ctrl(
         f"{STATE_TIMEOUT_CYCLES} cycles. {repro}"
     )
 
-
 async def _record_bus_after_sync(
     dut, adapter, *, observed_state=None, observed_phase=None
 ) -> None:
@@ -407,7 +373,6 @@ async def _record_bus_after_sync(
                 else stamped_phase,
             )
         await NextTimeStep()
-
 
 async def _bus_req_cycle(
     dut,
@@ -473,7 +438,6 @@ async def _bus_req_cycle(
     if adapter is not None and resume_origin is not None:
         adapter.record_bus_resume(resume_origin)
 
-
 async def _bus_req_targeted(
     dut,
     *,
@@ -512,9 +476,7 @@ async def _bus_req_targeted(
         adapter.record_bus_resume(resume_origin)
     return record
 
-
 # -- reset stimulus -----------------------------------------------------------
-
 
 async def _assert_reset_safe(dut, *, window: str, cycles: int = _RESET_SETTLE_CYCLES) -> None:
     """CHK-RST-OE / CHK-RST-STATUS-equivalent local check for one reset window.
@@ -539,14 +501,12 @@ async def _assert_reset_safe(dut, *, window: str, cycles: int = _RESET_SETTLE_CY
     assert _level(dut.bus_ram_a_cs_n) == 1, f"{window}: PSRAM0 CE# not idle high"
     assert _level(dut.bus_ram_b_cs_n) == 1, f"{window}: PSRAM1 CE# not idle high"
 
-
 async def _release_reset(dut) -> None:
     dut.rst_n.value = 1
     dut.ui_in.value = 0
     dut.host_uio_drive.value = 0
     dut.host_uio_oe.value = 0
     await RisingEdge(dut.clk)
-
 
 async def _drive_to_controller_state(dut, target: int, *, repro: str) -> None:
     """Advance a running chain until ``curr_state == target``, inducing STALL
@@ -559,7 +519,6 @@ async def _drive_to_controller_state(dut, target: int, *, repro: str) -> None:
         await _await_controller_state(dut, (SYS_CONTROL_STALL,), repro=repro)
     else:
         await _await_controller_state(dut, (target,), repro=repro)
-
 
 async def _reset_mid_run(
     dut, config: dict, *, kind: str, target: int, window: str, repro: str
@@ -630,7 +589,6 @@ async def _reset_mid_run(
             )
     bringup.stop()
 
-
 # =============================================================================
 # TC-START-ACTIVE
 # =============================================================================
@@ -641,7 +599,6 @@ _ACTIVE_START_TARGETS = (
     ("write", (SYS_CONTROL_WRITE,)),
 )
 _ONE_CYCLE_START_TARGETS = ("UPDATE",)
-
 
 @cocotb.test()
 async def start_while_active(dut):
@@ -657,9 +614,7 @@ async def start_while_active(dut):
     samples.
     """
     test = "TC-START-ACTIVE"
-    config = parse_run_config()
-    repro = _repro(config, "start_while_active")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "start_while_active")
 
     adapter = _l1_adapter(config, test=test)
     bringup = await bring_up_top(dut)
@@ -738,19 +693,15 @@ async def start_while_active(dut):
     )
     second_bringup.stop()
 
-
 # =============================================================================
 # TC-START-HELD
 # =============================================================================
-
 
 @cocotb.test()
 async def start_held_high(dut):
     """TC-START-HELD: hold raw START through acceptance and completion."""
     test = "TC-START-HELD"
-    config = parse_run_config()
-    repro = _repro(config, "start_held_high")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "start_held_high")
 
     adapter = _l1_adapter(config, test=test)
     bringup = await bring_up_top(dut)
@@ -790,7 +741,6 @@ async def start_held_high(dut):
         dut, bringup, second, test=f"{test}[refresh]", config=config, repro=repro
     )
 
-
 # =============================================================================
 # TC-START-PHASE
 # =============================================================================
@@ -798,7 +748,6 @@ async def start_held_high(dut):
 _START_LONG_HOLD_NS = 35.0  # capture-required: >= 3 full clk periods
 _START_SHORT_HOLD_NS = 2.0  # capture-uncertain: sub-period
 _START_PHASE_WINDOW_CYCLES = 40
-
 
 async def _raw_start_pulse(dut, *, phase_ns: float, hold_ns: float) -> None:
     """Assert then release raw START at a sub-cycle *phase_ns* after a clk edge."""
@@ -809,7 +758,6 @@ async def _raw_start_pulse(dut, *, phase_ns: float, hold_ns: float) -> None:
     await Timer(hold_ns, unit="ns")
     current = int(dut.ui_in.value)
     dut.ui_in.value = current & ~(1 << START_BIT) & 0xFF
-
 
 async def _count_accepted_starts(dut, cycles: int) -> int:
     """Count IDLE -> NEW_FETCH transitions over the next *cycles* clk edges."""
@@ -826,7 +774,6 @@ async def _count_accepted_starts(dut, cycles: int) -> int:
         await NextTimeStep()
     return count
 
-
 async def _raw_start_pulse_and_count(
     dut, *, phase_ns: float, hold_ns: float, cycles: int = _START_PHASE_WINDOW_CYCLES
 ) -> int:
@@ -835,14 +782,11 @@ async def _raw_start_pulse_and_count(
     await _raw_start_pulse(dut, phase_ns=phase_ns, hold_ns=hold_ns)
     return await counter
 
-
 @cocotb.test()
 async def start_phase_sweep(dut):
     """TC-START-PHASE: sweep START assertion phase and pulse width."""
     test = "TC-START-PHASE"
-    config = parse_run_config()
-    repro = _repro(config, "start_phase_sweep")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "start_phase_sweep")
 
     adapter = _l1_adapter(config, test=test)
     period_ns = resolve_clk_period_ns()
@@ -936,19 +880,15 @@ async def start_phase_sweep(dut):
         uncaptured_short,
     )
 
-
 # =============================================================================
 # TC-BUS-IDLE
 # =============================================================================
-
 
 @cocotb.test()
 async def bus_req_from_idle(dut):
     """TC-BUS-IDLE: BUS_REQ assert/release in IDLE, START while req/grant high."""
     test = "TC-BUS-IDLE"
-    config = parse_run_config()
-    repro = _repro(config, "bus_req_from_idle")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "bus_req_from_idle")
 
     adapter = _l1_adapter(config, test=test)
     bringup = await bring_up_top(dut)
@@ -1000,19 +940,15 @@ async def bus_req_from_idle(dut):
     await with_timeout(_wait_for_done_pulse(dut), _auto_timeout_ns(chain), "ns")
     await _compare_and_dispose(dut, bringup, chain, test=test, config=config, repro=repro)
 
-
 # =============================================================================
 # TC-BUS-BOUNDARY
 # =============================================================================
-
 
 @cocotb.test()
 async def bus_req_at_boundaries(dut):
     """TC-BUS-BOUNDARY: BUS_REQ in NEW_FETCH, NEW_OP, and UPDATE."""
     test = "TC-BUS-BOUNDARY"
-    config = parse_run_config()
-    repro = _repro(config, "bus_req_at_boundaries")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "bus_req_at_boundaries")
 
     adapter = _l1_adapter(config, test=test)
     bringup = await bring_up_top(dut)
@@ -1059,19 +995,15 @@ async def bus_req_at_boundaries(dut):
         raise AssertionError(f"{test}: DONE did not return after boundary stalls. " + repro)
     await _compare_and_dispose(dut, bringup, chain, test=test, config=config, repro=repro)
 
-
 # =============================================================================
 # TC-BUS-ACTIVE
 # =============================================================================
-
 
 @cocotb.test()
 async def bus_req_during_transaction(dut):
     """TC-BUS-ACTIVE: BUS_REQ during fetch, payload read, and payload write."""
     test = "TC-BUS-ACTIVE"
-    config = parse_run_config()
-    repro = _repro(config, "bus_req_during_transaction")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "bus_req_during_transaction")
 
     adapter = _l1_adapter(config, test=test)
     bringup = await bring_up_top(dut)
@@ -1107,7 +1039,6 @@ async def bus_req_during_transaction(dut):
         raise AssertionError(f"{test}: DONE did not return after active-time stalls. " + repro)
     await _compare_and_dispose(dut, bringup, chain, test=test, config=config, repro=repro)
 
-
 # =============================================================================
 # TC-BUS-PHASE
 # =============================================================================
@@ -1123,14 +1054,11 @@ _BUS_PHASE_SEQUENCE = (
     ("CS_OFF", _QSPI_CS_OFF, "inject"),
 )
 
-
 @cocotb.test()
 async def bus_req_during_qpi_phase(dut):
     """TC-BUS-PHASE: BUS_REQ during each externally visible QPI phase."""
     test = "TC-BUS-PHASE"
-    config = parse_run_config()
-    repro = _repro(config, "bus_req_during_qpi_phase")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "bus_req_during_qpi_phase")
 
     adapter = _l1_adapter(config, test=test)
     bringup = await bring_up_top(dut)
@@ -1168,19 +1096,15 @@ async def bus_req_during_qpi_phase(dut):
         raise AssertionError(f"{test}: DONE did not return after phase-time stalls. " + repro)
     await _compare_and_dispose(dut, bringup, chain, test=test, config=config, repro=repro)
 
-
 # =============================================================================
 # TC-BUS-REPEAT
 # =============================================================================
-
 
 @cocotb.test()
 async def bus_req_repeat_cycles(dut):
     """TC-BUS-REPEAT: multiple request/grant/release cycles in one chain."""
     test = "TC-BUS-REPEAT"
-    config = parse_run_config()
-    repro = _repro(config, "bus_req_repeat_cycles")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "bus_req_repeat_cycles")
 
     adapter = _l1_adapter(config, test=test)
     bringup = await bring_up_top(dut)
@@ -1229,19 +1153,15 @@ async def bus_req_repeat_cycles(dut):
         raise AssertionError(f"{test}: DONE did not return after repeat cycles. " + repro)
     await _compare_and_dispose(dut, bringup, chain, test=test, config=config, repro=repro)
 
-
 # =============================================================================
 # TC-RESET-IDLE
 # =============================================================================
-
 
 @cocotb.test()
 async def reset_from_idle(dut):
     """TC-RESET-IDLE: reset from IDLE and while BUS_GNT is active."""
     test = "TC-RESET-IDLE"
-    config = parse_run_config()
-    repro = _repro(config, "reset_from_idle")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "reset_from_idle")
 
     # -- sub-case 1: reset directly from IDLE ------------------------------
     bringup = await bring_up_top(dut)
@@ -1317,19 +1237,15 @@ async def reset_from_idle(dut):
     )
     bringup2.stop()
 
-
 # =============================================================================
 # TC-RESET-ACTIVE
 # =============================================================================
-
 
 @cocotb.test()
 async def reset_during_activity(dut):
     """TC-RESET-ACTIVE: reset during every controller state and QPI phase."""
     test = "TC-RESET-ACTIVE"
-    config = parse_run_config()
-    repro = _repro(config, "reset_during_activity")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "reset_during_activity")
 
     for target in _CONTROLLER_RESET_TARGETS:
         window = f"{test}[state={SYS_CONTROL_STATES[target]}]"
@@ -1351,19 +1267,15 @@ async def reset_during_activity(dut):
         len(_ENGINE_PHASE_RESET_TARGETS),
     )
 
-
 # =============================================================================
 # TC-RESET-REPEAT
 # =============================================================================
-
 
 @cocotb.test()
 async def reset_then_identical_rerun(dut):
     """TC-RESET-REPEAT: identical chain twice across a reset boundary."""
     test = "TC-RESET-REPEAT"
-    config = parse_run_config()
-    repro = _repro(config, "reset_then_identical_rerun")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "reset_then_identical_rerun")
 
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(

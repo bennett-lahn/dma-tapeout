@@ -9,7 +9,7 @@ from cocotb.triggers import RisingEdge, with_timeout
 from cocotb.triggers import SimTimeoutError
 
 from common.bringup import bring_up_top
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.constants import (
     DONE_MASK,
     DONE_TIMEOUT_NS,
@@ -26,20 +26,6 @@ from reference.chain import MemoryImage, interpret_chain
 from reference.scoreboard import RunContext, Scoreboard
 from reference.tcd import Tcd, encode_tcd
 
-
-def _repro(config: dict) -> str:
-    return (
-        "REPRO: make test LEVEL={level} SIM={sim} SEED={seed} "
-        "DMA_BUF_DEPTH={depth} TIMING_PROFILE={timing} TEST_FILTER=smoke"
-    ).format(
-        level=config["level"],
-        sim=config["sim"],
-        seed=config["seed"],
-        depth=config["dma_buf_depth"],
-        timing=config["timing_profile"],
-    )
-
-
 async def _wait_for_done_pulse(dut) -> None:
     """DONE (uo_out[0]) is high in IDLE; wait for it to drop then return high."""
     while int(dut.uo_out.value) & DONE_MASK:
@@ -47,17 +33,13 @@ async def _wait_for_done_pulse(dut) -> None:
     while not (int(dut.uo_out.value) & DONE_MASK):
         await RisingEdge(dut.clk)
 
-
 @cocotb.test()
 async def smoke_same_device_copy(dut):
     """TC-SMOKE: one PSRAM0-to-PSRAM0 copy, length 1, then quit TCD.
 
     Ordered QPI transactions are fetch, read, write, fetch; DONE returns.
     """
-    config = parse_run_config()
-    repro = _repro(config)
-    dut._log.info("SEED=%d LEVEL=%s SIM=%s DUT_LEVEL=%s", config["seed"], config["level"], config["sim"], config["dut_level"])
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "smoke_same_device_copy", test="TC-SMOKE")
 
     # Shared bring-up: stop prior agents, park host/fault injectors, attach both
     # models, start the non-strict ownership / CE# / handshake / pin monitors

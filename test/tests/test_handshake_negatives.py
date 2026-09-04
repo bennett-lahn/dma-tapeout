@@ -9,7 +9,7 @@ import cocotb
 from cocotb.triggers import RisingEdge
 
 from common.bringup import bring_up_engine
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.constants import FILL, REVIEW
 from common.dispose import dispose_run, expect
 from models.psram import QSPI_CMD_FAST_READ, Q_OPCODE, Q_PHASE
@@ -19,19 +19,8 @@ from monitors.handshake import (
     CHK_HS_REQ_STABLE,
 )
 
-
 def _x_bits(width: int) -> str:
     return "x" * width
-
-
-def _repro(config: dict, test_filter: str) -> str:
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_test.sh "
-        "LEVEL=engine SIM={sim} SEED={seed} TIMING_PROFILE=ideal "
-        "COCOTB_TEST_MODULES=tests.test_handshake_negatives "
-        "TEST_FILTER={test_filter}"
-    ).format(sim=config["sim"], seed=config["seed"], test_filter=test_filter)
-
 
 def _drive_request(dut, *, cmd, addr, device_sel=0, byte_len=1) -> None:
     dut.cmd.value = cmd
@@ -39,12 +28,10 @@ def _drive_request(dut, *, cmd, addr, device_sel=0, byte_len=1) -> None:
     dut.device_sel.value = device_sel
     dut.byte_len.value = byte_len
 
-
 @cocotb.test()
 async def handshake_illegal_opcode(dut):
     """Accepted cmd outside 0xEB/0x02 fails CHK-HS-OPCODE (allowlist half)."""
-    config = parse_run_config()
-    repro = _repro(config, "handshake_illegal_opcode")
+    config, repro = begin_run(dut, "handshake_illegal_opcode")
     bringup = await bring_up_engine(dut, fill=FILL, bus_monitor=False)
     _drive_request(dut, cmd=0xFF, addr=0x000100, byte_len=1)
     dut.txn_valid.value = 1
@@ -60,12 +47,10 @@ async def handshake_illegal_opcode(dut):
         repro=repro,
     )
 
-
 @cocotb.test()
 async def handshake_unresolved_addr_at_accept(dut):
     """tb-hs-08: unresolved accepted addr fails CHK-HS-REQ-STABLE immediately."""
-    config = parse_run_config()
-    repro = _repro(config, "handshake_unresolved_addr_at_accept")
+    config, repro = begin_run(dut, "handshake_unresolved_addr_at_accept")
     bringup = await bring_up_engine(dut, fill=FILL, bus_monitor=False)
     _drive_request(dut, cmd=QSPI_CMD_FAST_READ, addr=0x000100, byte_len=1)
     dut.addr.value = _x_bits(24)
@@ -82,12 +67,10 @@ async def handshake_unresolved_addr_at_accept(dut):
         repro=repro,
     )
 
-
 @cocotb.test()
 async def handshake_unresolved_addr_while_busy(dut):
     """tb-hs-08: addr going X/Z while busy fails CHK-HS-REQ-STABLE."""
-    config = parse_run_config()
-    repro = _repro(config, "handshake_unresolved_addr_while_busy")
+    config, repro = begin_run(dut, "handshake_unresolved_addr_while_busy")
     bringup = await bring_up_engine(dut, fill=FILL, bus_monitor=False)
     _drive_request(dut, cmd=QSPI_CMD_FAST_READ, addr=0x000100, byte_len=1)
     dut.txn_valid.value = 1
@@ -115,12 +98,10 @@ async def handshake_unresolved_addr_while_busy(dut):
         repro=repro,
     )
 
-
 @cocotb.test()
 async def handshake_hang_emits_count_fail(dut):
     """tb-hs-04: dispose while busy fails CHK-HS-RDATA-COUNT with expected beats."""
-    config = parse_run_config()
-    repro = _repro(config, "handshake_hang_emits_count_fail")
+    config, repro = begin_run(dut, "handshake_hang_emits_count_fail")
     bringup = await bring_up_engine(dut, fill=FILL, bus_monitor=False)
     _drive_request(dut, cmd=QSPI_CMD_FAST_READ, addr=0x000100, byte_len=1)
     dut.txn_valid.value = 1
@@ -149,12 +130,10 @@ async def handshake_hang_emits_count_fail(dut):
         f"report={report.summary()}"
     )
 
-
 @cocotb.test()
 async def handshake_reset_truncated_partial_counts(dut):
     """tb-hs-13: in-reset abort records RESET-TRUNCATED count rows."""
-    config = parse_run_config()
-    repro = _repro(config, "handshake_reset_truncated_partial_counts")
+    config, repro = begin_run(dut, "handshake_reset_truncated_partial_counts")
     bringup = await bring_up_engine(dut, fill=FILL, bus_monitor=False)
     _drive_request(dut, cmd=QSPI_CMD_FAST_READ, addr=0x000100, byte_len=1)
     dut.txn_valid.value = 1

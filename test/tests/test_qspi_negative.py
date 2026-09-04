@@ -42,7 +42,7 @@ import cocotb
 from cocotb.triggers import RisingEdge, Timer
 
 from common.bringup import bring_up_top
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.constants import FILL, UIO_PSRAM_CE_BITS, UIO_SCK_BIT
 from common.dispose import REVIEW, dispose_run, expect
 from common.host import QpiPassthroughMaster, assert_bus_req
@@ -71,7 +71,6 @@ QSPI_CMD_QUAD_WRITE = 0x38  # device-supported, outside the frozen V1 allowlist
 TOP_ADDR = PSRAM_ADDR_MASK  # 0x7FFFFF
 _BUS_GNT_BIT = 1
 
-
 async def _await_bus_gnt(dut, *, cycles: int = 32) -> None:
     await assert_bus_req(dut, hold=True)
     for _ in range(cycles):
@@ -80,7 +79,6 @@ async def _await_bus_gnt(dut, *, cycles: int = 32) -> None:
             return
     raise AssertionError("BUS_GNT did not assert after BUS_REQ")
 
-
 async def _release_bus_gnt(dut, *, cycles: int = 32) -> None:
     await assert_bus_req(dut, hold=False)
     for _ in range(cycles):
@@ -88,7 +86,6 @@ async def _release_bus_gnt(dut, *, cycles: int = 32) -> None:
         if not ((int(dut.uo_out.value) >> _BUS_GNT_BIT) & 1):
             return
     raise AssertionError("BUS_GNT did not drop after BUS_REQ release")
-
 
 async def _bring_up_passthrough(dut, **bringup_kwargs):
     """Attach via shared bring-up, grant the bus, and park the MCU master.
@@ -113,7 +110,6 @@ async def _bring_up_passthrough(dut, **bringup_kwargs):
     await master.park()
     return bringup, master
 
-
 async def _finish(bringup, master, dut, *, test: str, repro: str, expect_fail=()):
     """Park the master, release ``BUS_GNT``, and dispose the run."""
     await master.park()
@@ -126,21 +122,11 @@ async def _finish(bringup, master, dut, *, test: str, repro: str, expect_fail=()
         repro=repro,
     )
 
-
-def _repro(config: dict, test: str) -> str:
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_test.sh "
-        "LEVEL={level} SIM={sim} SEED={seed} "
-        "COCOTB_TEST_MODULES=tests.test_qspi_negative TEST_FILTER={test}"
-    ).format(level=config["level"], sim=config["sim"], seed=config["seed"], test=test)
-
-
 def _model_records(bringup) -> list:
     records = []
     for device in bringup.devices:
         records.extend(device.agent.violations)
     return records
-
 
 def _level(handle) -> "int | None":
     try:
@@ -148,12 +134,10 @@ def _level(handle) -> "int | None":
     except ValueError:
         return None
 
-
 def _read_launches(device) -> int:
     """Count wrapper ``read-launch`` events (falling SCK that sourced a nibble)."""
     events = getattr(device, "timing_events", ())
     return sum(1 for event in events if event.get("kind") == "read-launch")
-
 
 def _sio_uio_mask(*sio_indices: int) -> int:
     indices = sio_indices if sio_indices else range(len(SIO_UIO_BITS))
@@ -162,7 +146,6 @@ def _sio_uio_mask(*sio_indices: int) -> int:
         mask |= 1 << SIO_UIO_BITS[index]
     return mask
 
-
 @cocotb.test()
 async def qpi_negative_baseline_frames_are_clean(dut):
     """TC-QNEG-BASELINE: legal write and read frames record no violation.
@@ -170,9 +153,7 @@ async def qpi_negative_baseline_frames_are_clean(dut):
     Guards against a policing rule that fires on legal traffic, which would make
     every other case in this module meaningless.
     """
-    config = parse_run_config()
-    repro = _repro(config, "baseline")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "baseline")
     bringup, master = await _bring_up_passthrough(dut)
     psram0, psram1 = bringup.psram0, bringup.psram1
 
@@ -197,13 +178,10 @@ async def qpi_negative_baseline_frames_are_clean(dut):
 
     await _finish(bringup, master, dut, test="TC-QNEG-BASELINE", repro=repro)
 
-
 @cocotb.test()
 async def qpi_negative_unsupported_opcode(dut):
     """TC-QNEG-OPCODE: ``0x38`` is a device command but not in the V1 allowlist."""
-    config = parse_run_config()
-    repro = _repro(config, "opcode")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "opcode")
     bringup, master = await _bring_up_passthrough(dut)
     psram0 = bringup.psram0
 
@@ -226,7 +204,6 @@ async def qpi_negative_unsupported_opcode(dut):
         expect_fail=[expect(Q_OPCODE, count=1)],
     )
 
-
 @cocotb.test()
 async def qpi_negative_truncated_phases(dut):
     """TC-QNEG-PHASE: CE# rises inside the command phase, then inside address.
@@ -236,9 +213,7 @@ async def qpi_negative_truncated_phases(dut):
     ``Q-PHASE`` pending is for dispose/stop of a still-open CE# frame only; a
     completed CE# rise does not double-count via the pin ledger.
     """
-    config = parse_run_config()
-    repro = _repro(config, "phase")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "phase")
     bringup, master = await _bring_up_passthrough(dut)
 
     await master.frame(0, QSPI_CMD_FAST_READ, None, cmd_nibbles=1)
@@ -266,13 +241,10 @@ async def qpi_negative_truncated_phases(dut):
         expect_fail=[expect(Q_PHASE, count=2)],
     )
 
-
 @cocotb.test()
 async def qpi_negative_wrong_dummy_count(dut):
     """TC-QNEG-DUMMY: ``0xEB`` terminated after four of six dummy cycles."""
-    config = parse_run_config()
-    repro = _repro(config, "dummy")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "dummy")
     bringup, master = await _bring_up_passthrough(dut)
     psram0 = bringup.psram0
 
@@ -294,7 +266,6 @@ async def qpi_negative_wrong_dummy_count(dut):
         expect_fail=[expect(Q_DUMMY, count=1)],
     )
 
-
 @cocotb.test()
 async def qpi_negative_dummy_then_extra_clock(dut):
     """TC-QNEG-DUMMY-EXTRA: extra dummy cycles are treated as data.
@@ -303,9 +274,7 @@ async def qpi_negative_dummy_then_extra_clock(dut):
     nibble (``Q-NIBBLE-ODD``: odd data-nibble count at CE# rise), not an extra
     dummy cycle.
     """
-    config = parse_run_config()
-    repro = _repro(config, "dummy_extra")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "dummy_extra")
     bringup, master = await _bring_up_passthrough(dut)
     psram0 = bringup.psram0
 
@@ -333,13 +302,10 @@ async def qpi_negative_dummy_then_extra_clock(dut):
         expect_fail=[expect(Q_NIBBLE_ODD, count=1)],
     )
 
-
 @cocotb.test()
 async def qpi_negative_odd_data_nibble(dut):
     """TC-QNEG-NIBBLE-ODD: half-transferred byte on a write and on a read."""
-    config = parse_run_config()
-    repro = _repro(config, "nibble")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "nibble")
     bringup, master = await _bring_up_passthrough(dut)
     psram0 = bringup.psram0
 
@@ -359,7 +325,6 @@ async def qpi_negative_odd_data_nibble(dut):
         expect_fail=[expect(Q_NIBBLE_ODD, count=2)],
     )
 
-
 @cocotb.test()
 async def qpi_negative_page_crossings(dut):
     """TC-QNEG-PAGE: more than one ``PSRAM_PAGE_SIZE`` (1K) crossing fails ``Q-PAGE``.
@@ -367,9 +332,7 @@ async def qpi_negative_page_crossings(dut):
     Linear Burst may occupy at most two pages per CE# (chip enable, active low)
     pulse: one crossing is legal; two crossings (three pages) fail once.
     """
-    config = parse_run_config()
-    repro = _repro(config, "page")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "page")
     bringup, master = await _bring_up_passthrough(dut)
     psram0 = bringup.psram0
 
@@ -418,13 +381,10 @@ async def qpi_negative_page_crossings(dut):
         expect_fail=[expect(Q_PAGE, count=1)],
     )
 
-
 @cocotb.test()
 async def qpi_address_bit23_dontcare(dut):
     """TC-ADDR23-DONTCARE: ``A[23]`` is masked; access proceeds on ``A[22:0]`` (D35)."""
-    config = parse_run_config()
-    repro = _repro(config, "addr23")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "addr23")
     bringup, master = await _bring_up_passthrough(dut)
     psram0 = bringup.psram0
 
@@ -444,7 +404,6 @@ async def qpi_address_bit23_dontcare(dut):
         repro=repro,
     )
 
-
 @cocotb.test()
 async def qpi_negative_unresolved_sio(dut):
     """TC-QNEG-SIO-X: unresolved SIO (X) during a host-driven write beat.
@@ -454,9 +413,7 @@ async def qpi_negative_unresolved_sio(dut):
     which disposes ``CHK-PIN-KNOWN=fail``. Host-driven Hi-Z is a sibling
     (``TC-QNEG-SIO-Z``); legal read dummy/data float must not fire this ID.
     """
-    config = parse_run_config()
-    repro = _repro(config, "sio_x")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "sio_x")
     bringup, master = await _bring_up_passthrough(dut)
 
     await master.open(0)
@@ -491,13 +448,10 @@ async def qpi_negative_unresolved_sio(dut):
         ],
     )
 
-
 @cocotb.test()
 async def qpi_negative_host_driven_sio_z(dut):
     """TC-QNEG-SIO-Z: host-driven write beat with SIO Hi-Z fires Q-SIO-X."""
-    config = parse_run_config()
-    repro = _repro(config, "sio_z")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "sio_z")
     bringup, master = await _bring_up_passthrough(dut)
 
     await master.open(0)
@@ -525,13 +479,10 @@ async def qpi_negative_host_driven_sio_z(dut):
         ],
     )
 
-
 @cocotb.test()
 async def qpi_negative_read_float_not_sio_x(dut):
     """TC-QNEG-SIO-Z-READ-OK: legal 0xEB dummy/data float must not fire Q-SIO-X."""
-    config = parse_run_config()
-    repro = _repro(config, "sio_z_read_ok")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "sio_z_read_ok")
     bringup, master = await _bring_up_passthrough(dut)
     psram0 = bringup.psram0
     psram0.write(0x000300, b"\xA5\x5A")
@@ -556,7 +507,6 @@ async def qpi_negative_read_float_not_sio_x(dut):
         bringup, master, dut, test="TC-QNEG-SIO-Z-READ-OK", repro=repro
     )
 
-
 @cocotb.test()
 async def qpi_negative_sck_hiz_is_not_fall(dut):
     """TC-QNEG-SCK-HIZ: 1->Z is not a falling SCK; 1->Z->driven 0 is a real fall.
@@ -567,9 +517,7 @@ async def qpi_negative_sck_hiz_is_not_fall(dut):
     Pin/bus monitors are off: SCK Z while selected is the stimulus, not a
     ``CHK-PIN-KNOWN`` target. Closing mid-byte expects ``Q-NIBBLE-ODD``.
     """
-    config = parse_run_config()
-    repro = _repro(config, "sck_hiz")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "sck_hiz")
     bringup, master = await _bring_up_passthrough(
         dut, pin_monitor=False, bus_monitor=False
     )
@@ -643,7 +591,6 @@ async def qpi_negative_sck_hiz_is_not_fall(dut):
         expect_fail=[expect(Q_NIBBLE_ODD, count=1)],
     )
 
-
 @cocotb.test()
 async def qpi_negative_grant_reset_sck_float(dut):
     """TC-QNEG-SCK-FLOAT-GRANT-RST: grant/reset OE-clear is physical Z, not forced 0.
@@ -653,9 +600,7 @@ async def qpi_negative_grant_reset_sck_float(dut):
     Grant/reset with ASIC ``uio_oe`` clear must not fabricate a SCK fall, and
     must not pass park solely because a resolver forced 0.
     """
-    config = parse_run_config()
-    repro = _repro(config, "sck_float_grant_rst")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "sck_float_grant_rst")
     bringup = await bring_up_top(
         dut,
         fill=FILL,
@@ -702,7 +647,6 @@ async def qpi_negative_grant_reset_sck_float(dut):
         repro=repro,
     )
 
-
 @cocotb.test()
 async def qpi_negative_unresolved_ce(dut):
     """TC-QNEG-CE-X: unresolved CE# (X) aborts a live frame via termination.
@@ -712,9 +656,7 @@ async def qpi_negative_unresolved_ce(dut):
     not dropped, and not ``RESET-TRUNCATED`` (in-reset/truncated sample; not a
     fail). Pin ``CHK-PIN-KNOWN`` also fires for the unresolved framing pin.
     """
-    config = parse_run_config()
-    repro = _repro(config, "ce_x")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "ce_x")
     bringup, master = await _bring_up_passthrough(dut)
     psram0 = bringup.psram0
     ce_bit = UIO_PSRAM_CE_BITS[0]
@@ -772,13 +714,10 @@ async def qpi_negative_unresolved_ce(dut):
         ],
     )
 
-
 @cocotb.test()
 async def qpi_negative_address_range_no_wrap(dut):
     """TC-QNEG-ADDR-RANGE: a burst past ``0x7FFFFF`` fails instead of wrapping."""
-    config = parse_run_config()
-    repro = _repro(config, "range")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "range")
     bringup, master = await _bring_up_passthrough(dut)
     psram0, psram1 = bringup.psram0, bringup.psram1
 
@@ -806,13 +745,10 @@ async def qpi_negative_address_range_no_wrap(dut):
         expect_fail=[expect(Q_ADDR_RANGE, count=2)],
     )
 
-
 @cocotb.test()
 async def qpi_negative_drive_while_deselected(dut):
     """TC-QNEG-DRIVE-DESEL: model SIO drive with CE# high is a violation."""
-    config = parse_run_config()
-    repro = _repro(config, "desel")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "desel")
     bringup, master = await _bring_up_passthrough(dut)
     psram0 = bringup.psram0
 
@@ -842,13 +778,10 @@ async def qpi_negative_drive_while_deselected(dut):
         expect_fail=[expect(Q_DRIVE_DESEL, count=1)],
     )
 
-
 @cocotb.test()
 async def qpi_negative_strict_mode_raises(dut):
     """TC-QNEG-STRICT: ``strict=True`` raises at the first recorded violation."""
-    config = parse_run_config()
-    repro = _repro(config, "strict")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "strict")
     bringup, master = await _bring_up_passthrough(dut, strict_models=True)
     psram0 = bringup.psram0
 

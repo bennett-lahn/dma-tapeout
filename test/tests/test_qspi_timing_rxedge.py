@@ -16,7 +16,7 @@ from cocotb.triggers import RisingEdge, with_timeout
 from cocotb.triggers import SimTimeoutError
 
 from common.bringup import bring_up_top
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.constants import (
     DONE_MASK,
     DONE_TIMEOUT_NS,
@@ -34,35 +34,16 @@ from common.host import pulse_start
 from monitors.timing import Q_RXEDGE
 from reference.tcd import Tcd, encode_tcd
 
-
-def _repro(config: dict, test_filter: str) -> str:
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_test.sh "
-        "LEVEL={level} SIM={sim} SEED={seed} TIMING_PROFILE={profile} "
-        "COCOTB_TEST_MODULES=tests.test_qspi_timing_rxedge "
-        "TEST_FILTER={test_filter}"
-    ).format(
-        level=config["level"],
-        sim=config["sim"],
-        seed=config["seed"],
-        profile=config["timing_profile"],
-        test_filter=test_filter,
-    )
-
-
 async def _wait_for_done_pulse(dut) -> None:
     while int(dut.uo_out.value) & DONE_MASK:
         await RisingEdge(dut.clk)
     while not (int(dut.uo_out.value) & DONE_MASK):
         await RisingEdge(dut.clk)
 
-
 @cocotb.test()
 async def qspi_rxedge_l1_read_pass(dut):
     """TC-RXEDGE-L1-READ-PASS: timed L1 DMA read disposes Q-RXEDGE=pass."""
-    config = parse_run_config()
-    repro = _repro(config, "qspi_rxedge_l1_read_pass")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "qspi_rxedge_l1_read_pass")
 
     bringup = await bring_up_top(dut, fill=FILL)
     assert bringup.ce is not None, (

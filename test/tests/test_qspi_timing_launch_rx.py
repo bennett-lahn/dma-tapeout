@@ -44,7 +44,7 @@ from cocotb.simtime import get_sim_time
 from cocotb.triggers import FallingEdge, NextTimeStep, ReadOnly, RisingEdge, Timer
 
 from common.bringup import bring_up_engine
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.constants import DEFAULT_CLOCK_PERIOD_NS, FILL, RESULT_FAIL, RESULT_NA, RESULT_PASS
 from common.dispose import dispose_run, expect
 from common.engine_bfm import bytes_to_nibbles, engine_qpi_read, engine_qpi_write
@@ -55,26 +55,6 @@ _RX_PAYLOAD = bytes((0x91, 0x2E, 0x47))
 _BOUNDARY_TACLK_NS = (2.0, 5.5)
 _RACE_D_OUT_CE_NS = 20.0
 _RACE_D_OUT_SCK_NS = 0.0
-
-
-def _repro(config: dict, test_filter: str) -> str:
-    profile = config["timing_profile"]
-    extra = ""
-    if profile == "sweep":
-        extra = f" PSRAM_TACLK_NS={os.environ.get('PSRAM_TACLK_NS', '<unset>')}"
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_test.sh "
-        "LEVEL=engine SIM={sim} SEED={seed} TIMING_PROFILE={profile}{extra} "
-        "COCOTB_TEST_MODULES=tests.test_qspi_timing_launch_rx "
-        "TEST_FILTER={test_filter}"
-    ).format(
-        sim=config["sim"],
-        seed=config["seed"],
-        profile=profile,
-        extra=extra,
-        test_filter=test_filter,
-    )
-
 
 def _require_w2a_monitor(dut, bringup):
     """Attach W2a's public timing monitor or report its missing contract."""
@@ -110,7 +90,6 @@ def _require_w2a_monitor(dut, bringup):
     )
     return monitor
 
-
 async def _bring_up_timing(dut):
     """Attach only the timing monitor around direct L0 engine traffic."""
     bringup = await bring_up_engine(
@@ -128,7 +107,6 @@ async def _bring_up_timing(dut):
         f"{bringup.timing_profile!r}"
     )
     return bringup, _require_w2a_monitor(dut, bringup)
-
 
 async def _leave_read_capture_pending(dut, monitor):
     """Start a read and leave a timed read launch awaiting capture."""
@@ -157,7 +135,6 @@ async def _leave_read_capture_pending(dut, monitor):
         "cleanup directed setup did not observe a launched read nibble before capture"
     )
 
-
 def _require_sweep_endpoint(bringup) -> float:
     """Require the requested documented ``tACLK`` endpoint reached the wrapper."""
     raw = os.environ.get("PSRAM_TACLK_NS")
@@ -178,7 +155,6 @@ def _require_sweep_endpoint(bringup) -> float:
     )
     return requested
 
-
 def _device_plane_race_window_ready(bringup) -> bool:
     """True when sweep + D_OUT_* match the directed post-rise race point.
 
@@ -194,7 +170,6 @@ def _device_plane_race_window_ready(bringup) -> bool:
         and bringup.timing_params["D_OUT_SCK_NS"] == _RACE_D_OUT_SCK_NS
     )
 
-
 async def _inject_sio_change_while_sck_high(dut, *, timeout_edges: int = 128) -> None:
     """Replace the L0 ASIC SIO drive during an active high SCK half-cycle."""
     for _ in range(timeout_edges):
@@ -209,7 +184,6 @@ async def _inject_sio_change_while_sck_high(dut, *, timeout_edges: int = 128) ->
             return
     raise AssertionError("TC-LAUNCH-SCK-HIGH-VIOLATION: no selected SCK rise")
 
-
 async def _selected_write_window(dut, *, timeout_edges: int = 128) -> None:
     """Advance to a selected CE# with the engine driving SIO."""
     for _ in range(timeout_edges):
@@ -222,13 +196,11 @@ async def _selected_write_window(dut, *, timeout_edges: int = 128) -> None:
         return
     raise AssertionError("no selected write-phase SCK rise with SIO OE")
 
-
 async def _glitch_asic_oe(dut, *, hold_ns: float = 0.1) -> None:
     """Force an ASIC SIO OE falling edge via the L0 fault overlay."""
     dut.fault_sio_oe.value = 0xF
     await Timer(hold_ns, unit="ns")
     dut.fault_sio_oe.value = 0
-
 
 async def _inject_short_setup(dut, *, setup_ns: float = 0.5) -> None:
     """Change driven OE late in the SCK-low half (short tSP)."""
@@ -237,7 +209,6 @@ async def _inject_short_setup(dut, *, setup_ns: float = 0.5) -> None:
     # Engine SCK is clk/2; low half equals one clk period.
     await Timer(DEFAULT_CLOCK_PERIOD_NS - setup_ns, unit="ns")
     await _glitch_asic_oe(dut)
-
 
 async def _inject_short_hold(dut, *, hold_ns: float = 0.5) -> None:
     """Change driven OE shortly after a sampling rise (short or exact tHD).
@@ -251,13 +222,10 @@ async def _inject_short_hold(dut, *, hold_ns: float = 0.5) -> None:
     await Timer(hold_ns, unit="ns")
     await _glitch_asic_oe(dut)
 
-
 @cocotb.test()
 async def qspi_launch_directed(dut):
     """TC-LAUNCH-NOMINAL-PASS plus TC-LAUNCH-SCK-HIGH-VIOLATION."""
-    config = parse_run_config()
-    repro = _repro(config, "qspi_launch_directed")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "qspi_launch_directed")
 
     bringup, monitor = await _bring_up_timing(dut)
     await engine_qpi_write(
@@ -310,13 +278,10 @@ async def qspi_launch_directed(dut):
         repro=repro,
     )
 
-
 @cocotb.test()
 async def qspi_launch_short_setup_hold(dut):
     """TC-LAUNCH-TSP-VIOLATION, TC-LAUNCH-THD-VIOLATION, TC-LAUNCH-THD-SAME-FS."""
-    config = parse_run_config()
-    repro = _repro(config, "qspi_launch_short_setup_hold")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "qspi_launch_short_setup_hold")
 
     bringup, monitor = await _bring_up_timing(dut)
     write_task = cocotb.start_soon(
@@ -382,13 +347,10 @@ async def qspi_launch_short_setup_hold(dut):
         f"details={details}. {repro}"
     )
 
-
 @cocotb.test()
 async def qspi_launch_oe0_sio_ignored(dut):
     """TC-LAUNCH-OE0-SIO-IGNORED: SIO value changes while OE=0 are not launches."""
-    config = parse_run_config()
-    repro = _repro(config, "qspi_launch_oe0_sio_ignored")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "qspi_launch_oe0_sio_ignored")
 
     bringup, monitor = await _bring_up_timing(dut)
     bringup.psram1.write(_RX_ADDRESS, _RX_PAYLOAD)
@@ -428,13 +390,10 @@ async def qspi_launch_oe0_sio_ignored(dut):
         f"{monitor.results()[timing.Q_RXEDGE]!r} after a timed read. {repro}"
     )
 
-
 @cocotb.test()
 async def qspi_rxedge_directed(dut):
     """TC-RXEDGE-NOMINAL-PASS and the selected ``tACLK`` boundary read."""
-    config = parse_run_config()
-    repro = _repro(config, "qspi_rxedge_directed")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "qspi_rxedge_directed")
 
     bringup, monitor = await _bring_up_timing(dut)
     if bringup.timing_profile == "sweep":
@@ -480,13 +439,10 @@ async def qspi_rxedge_directed(dut):
         f"read with {monitor._rx_captures} captures. {repro}"
     )
 
-
 @cocotb.test()
 async def qspi_rxedge_device_plane_race(dut):
     """TC-RXEDGE-RACE-DEVICE-PLANE: post-rise launch is scope-audited once."""
-    config = parse_run_config()
-    repro = _repro(config, "qspi_rxedge_device_plane_race")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "qspi_rxedge_device_plane_race")
 
     bringup, monitor = await _bring_up_timing(dut)
     if not _device_plane_race_window_ready(bringup):
@@ -591,13 +547,10 @@ async def qspi_rxedge_device_plane_race(dut):
         "finding for the injected nibble"
     )
 
-
 @cocotb.test()
 async def qspi_rxedge_pending_lifecycle(dut):
     """TC-RXEDGE-PENDING-AT-STOP and TC-PENDING-SURVIVES-CLEAR."""
-    config = parse_run_config()
-    repro = _repro(config, "qspi_rxedge_pending_lifecycle")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "qspi_rxedge_pending_lifecycle")
 
     bringup, monitor = await _bring_up_timing(dut)
     await _leave_read_capture_pending(dut, monitor)
@@ -631,13 +584,10 @@ async def qspi_rxedge_pending_lifecycle(dut):
     )
     bringup.stop()
 
-
 @cocotb.test()
 async def qspi_timed_wrapper_stop_isolation(dut):
     """TC-TIMED-WRAPPER-STOP-ISOLATION: retired delayed work is inert."""
-    config = parse_run_config()
-    repro = _repro(config, "qspi_timed_wrapper_stop_isolation")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "qspi_timed_wrapper_stop_isolation")
 
     bringup, monitor = await _bring_up_timing(dut)
     old_wrapper = bringup.psram1
@@ -671,7 +621,6 @@ async def qspi_timed_wrapper_stop_isolation(dut):
         repro=repro,
     )
 
-
 @cocotb.test()
 async def qspi_rxedge_taclk_past_capture(dut):
     """TC-RXEDGE-TACLK-PAST-CAPTURE: tACLK longer than falling-to-rising SCK.
@@ -680,9 +629,15 @@ async def qspi_rxedge_taclk_past_capture(dut):
     rising SCK (~10 ns after the fall). ``PSRAM_TACLK_NS=12`` is past that
     edge. Requires ``TIMING_PROFILE=sweep`` and that override.
     """
-    config = parse_run_config()
-    repro = _repro(config, "qspi_rxedge_taclk_past_capture")
+    extra = {}
     raw = os.environ.get("PSRAM_TACLK_NS")
+    if raw:
+        extra["PSRAM_TACLK_NS"] = raw
+    config, repro = begin_run(
+        dut,
+        "qspi_rxedge_taclk_past_capture",
+        extra=extra or None,
+    )
     if config["timing_profile"] != "sweep" or raw is None or float(raw) < 12.0:
         dut._log.info(
             "TC-RXEDGE-TACLK-PAST-CAPTURE skipped (need TIMING_PROFILE=sweep "
@@ -691,7 +646,6 @@ async def qspi_rxedge_taclk_past_capture(dut):
         )
         return
 
-    dut._log.info(repro)
     bringup, monitor = await _bring_up_timing(dut)
     taclk = bringup.timing_params["PSRAM_TACLK_NS"]
     assert taclk >= 12.0, f"resolved tACLK={taclk} ns is not past capture. {repro}"

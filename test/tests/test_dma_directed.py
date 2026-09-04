@@ -39,7 +39,7 @@ compile-time ``DMA_BUF_DEPTH``, not the number of directed windows.
 import cocotb
 
 from common.bringup import bring_up_top
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.directed import run_directed_window as _run_directed_window
 from reference.chain import DATA_READ, DATA_WRITE, FETCH_READ, HEAD_ADDRESS, HEAD_DEVICE
 from reference.constants import PTR_BIT23, PTR_MAX
@@ -65,29 +65,11 @@ from reference.tcd import (
     encode_tcd,
 )
 
-
-def _repro(config: dict, test_filter: str) -> str:
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_test.sh "
-        "LEVEL={level} SIM={sim} SEED={seed} DMA_BUF_DEPTH={depth} "
-        "TIMING_PROFILE={timing} COCOTB_TEST_MODULES=tests.test_dma_directed "
-        "TEST_FILTER={test_filter}"
-    ).format(
-        level=config["level"],
-        sim=config["sim"],
-        seed=config["seed"],
-        depth=config["dma_buf_depth"],
-        timing=config["timing_profile"],
-        test_filter=test_filter,
-    )
-
-
 def _chunk_pairs(length: int, depth: int) -> int:
     """Expected ``DATA_READ``/``DATA_WRITE`` pair count for one TCD's transfer."""
     if length <= 0:
         return 0
     return -(-length // depth)
-
 
 def _pin_log(pin, golden, *, test: str, repro: str):
     """Return pin transactions aligned 1:1 with the golden ordered log.
@@ -105,11 +87,9 @@ def _pin_log(pin, golden, *, test: str, repro: str):
     )
     return pin, expected
 
-
 def _pin_by_kind(pin, golden, kind: str, *, test: str, repro: str):
     pin, expected = _pin_log(pin, golden, test=test, repro=repro)
     return [obs for obs, exp in zip(pin, expected) if exp.kind == kind]
-
 
 def _assert_ranges_overlap(tcd, *, test: str, repro: str) -> None:
     src_range = set(range(tcd.src_ptr, tcd.src_ptr + tcd.transfer_len))
@@ -120,14 +100,10 @@ def _assert_ranges_overlap(tcd, *, test: str, repro: str) -> None:
         f"len={tcd.transfer_len}. " + repro
     )
 
-
 @cocotb.test()
 async def tcd_big_endian_flags(dut):
     """TC-TCD-BE: known 11-byte descriptor encoding and flag decode."""
-    config = parse_run_config()
-    test = "TC-TCD-BE"
-    repro = _repro(config, "tcd_big_endian_flags")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "tcd_big_endian_flags", test="TC-TCD-BE")
 
     bringup = await bring_up_top(dut)
 
@@ -158,7 +134,6 @@ async def tcd_big_endian_flags(dut):
 
     await _run_directed_window(dut, bringup, chain, test=test, config=config, repro=repro)
 
-
 def _or_head_ptr_bit23(chain) -> None:
     """Set ``ptr[23]`` on the head TCD's SRC/DEST/NEXT (D35 don't-care)."""
     device, address = chain.descriptor_locations[0]
@@ -168,14 +143,10 @@ def _or_head_ptr_bit23(chain) -> None:
     raw[7] |= 0x80
     chain.memory.write(device, address, bytes(raw))
 
-
 @cocotb.test()
 async def tcd_dest1_bit23(dut):
     """TC-TCD-DEST1: dest_device=1 with dest_ptr[23]=1; pins see A[22:0]."""
-    config = parse_run_config()
-    test = "TC-TCD-DEST1"
-    repro = _repro(config, "tcd_dest1_bit23")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "tcd_dest1_bit23", test="TC-TCD-DEST1")
 
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
@@ -224,14 +195,10 @@ async def tcd_dest1_bit23(dut):
             f"(chunked at DMA_BUF_DEPTH={config['dma_buf_depth']}). " + repro
         )
 
-
 @cocotb.test()
 async def same_device_psram0(dut):
     """TC-SAME-0: PSRAM0 to PSRAM0 copy."""
-    config = parse_run_config()
-    test = "TC-SAME-0"
-    repro = _repro(config, "same_device_psram0")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "same_device_psram0", test="TC-SAME-0")
 
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
@@ -247,14 +214,10 @@ async def same_device_psram0(dut):
         f"{sorted(observed_devices)}. " + repro
     )
 
-
 @cocotb.test()
 async def same_device_psram1(dut):
     """TC-SAME-1: PSRAM1 to PSRAM1 copy after head fetch on PSRAM0."""
-    config = parse_run_config()
-    test = "TC-SAME-1"
-    repro = _repro(config, "same_device_psram1")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "same_device_psram1", test="TC-SAME-1")
 
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
@@ -282,14 +245,10 @@ async def same_device_psram1(dut):
         f"{data_devices}. " + repro
     )
 
-
 @cocotb.test()
 async def cross_device_0_to_1(dut):
     """TC-CROSS-01: PSRAM0 source to PSRAM1 destination."""
-    config = parse_run_config()
-    test = "TC-CROSS-01"
-    repro = _repro(config, "cross_device_0_to_1")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "cross_device_0_to_1", test="TC-CROSS-01")
 
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
@@ -313,14 +272,10 @@ async def cross_device_0_to_1(dut):
         f"reads={reads} writes={writes}. " + repro
     )
 
-
 @cocotb.test()
 async def cross_device_1_to_0(dut):
     """TC-CROSS-10: PSRAM1 source to PSRAM0 destination."""
-    config = parse_run_config()
-    test = "TC-CROSS-10"
-    repro = _repro(config, "cross_device_1_to_0")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "cross_device_1_to_0", test="TC-CROSS-10")
 
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
@@ -344,14 +299,10 @@ async def cross_device_1_to_0(dut):
         f"reads={reads} writes={writes}. " + repro
     )
 
-
 @cocotb.test()
 async def multi_tcd_chain(dut):
     """TC-CHAIN: at least three executable TCDs followed by quit."""
-    config = parse_run_config()
-    test = "TC-CHAIN"
-    repro = _repro(config, "multi_tcd_chain")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "multi_tcd_chain", test="TC-CHAIN")
 
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
@@ -378,14 +329,10 @@ async def multi_tcd_chain(dut):
         f"produced {len(pin_fetches)}. " + repro
     )
 
-
 @cocotb.test()
 async def next_device_alternate(dut):
     """TC-NEXT-DEVICE: chain with alternating NEXT_DEVICE selection."""
-    config = parse_run_config()
-    test = "TC-NEXT-DEVICE"
-    repro = _repro(config, "next_device_alternate")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "next_device_alternate", test="TC-NEXT-DEVICE")
 
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
@@ -416,14 +363,10 @@ async def next_device_alternate(dut):
         f"path was {devices}. " + repro
     )
 
-
 @cocotb.test()
 async def transfer_length_corners(dut):
     """TC-LEN-CORNERS: lengths 0, 1, N-1, N, N+1, 2N-1, 2N, 2N+1, and 255."""
-    config = parse_run_config()
-    test = "TC-LEN-CORNERS"
-    repro = _repro(config, "transfer_length_corners")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "transfer_length_corners", test="TC-LEN-CORNERS")
 
     bringup = await bring_up_top(dut)
     depth = config["dma_buf_depth"]
@@ -463,14 +406,10 @@ async def transfer_length_corners(dut):
             f"{observed_pairs}. " + repro
         )
 
-
 @cocotb.test()
 async def len_addr_corners(dut):
     """One window: 2N-1/2N/2N+1 plus COV-ADDR src:zero and next:highest."""
-    config = parse_run_config()
-    test = "TC-LEN-ADDR-CORNERS"
-    repro = _repro(config, "len_addr_corners")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "len_addr_corners", test="TC-LEN-ADDR-CORNERS")
 
     bringup = await bring_up_top(dut)
     depth = config["dma_buf_depth"]
@@ -490,14 +429,10 @@ async def len_addr_corners(dut):
         dut, bringup, chain, test=test, config=config, repro=repro
     )
 
-
 @cocotb.test()
 async def quit_descriptor_priority(dut):
     """TC-QUIT: quit TCD with nonzero pointer and length fields."""
-    config = parse_run_config()
-    test = "TC-QUIT"
-    repro = _repro(config, "quit_descriptor_priority")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "quit_descriptor_priority", test="TC-QUIT")
 
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
@@ -530,14 +465,10 @@ async def quit_descriptor_priority(dut):
         f"{[exp.kind for exp in expected]}. " + repro
     )
 
-
 @cocotb.test()
 async def empty_chain_at_head(dut):
     """TC-EMPTY: quit TCD at fixed head 0x000000 on PSRAM0."""
-    config = parse_run_config()
-    test = "TC-EMPTY"
-    repro = _repro(config, "empty_chain_at_head")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "empty_chain_at_head", test="TC-EMPTY")
 
     bringup = await bring_up_top(dut)
     chain = build_directed_chain((), seed=1009)
@@ -557,14 +488,10 @@ async def empty_chain_at_head(dut):
         f"kinds {[exp.kind for exp in expected]}. " + repro
     )
 
-
 @cocotb.test()
 async def restart_after_completion(dut):
     """TC-RESTART: complete a chain then issue a new START."""
-    config = parse_run_config()
-    test = "TC-RESTART"
-    repro = _repro(config, "restart_after_completion")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "restart_after_completion", test="TC-RESTART")
 
     bringup = await bring_up_top(dut)
 
@@ -590,21 +517,16 @@ async def restart_after_completion(dut):
         + repro
     )
 
-
 _ADDR_WIDE_CASES = (
     ("below_64k", ADDR_LOW),
     ("at_64k_boundary", ADDR_BOUNDARY_64K),
     ("near_top", ADDR_HIGH),
 )
 
-
 @cocotb.test()
 async def wide_address_space(dut):
     """TC-ADDR-WIDE: valid addresses below, at, and above 0x010000."""
-    config = parse_run_config()
-    test = "TC-ADDR-WIDE"
-    repro = _repro(config, "wide_address_space")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "wide_address_space", test="TC-ADDR-WIDE")
 
     bringup = await bring_up_top(dut)
     for index, (label, addr_class) in enumerate(_ADDR_WIDE_CASES):
@@ -668,14 +590,10 @@ async def wide_address_space(dut):
             f"0x{dest_base:06X}..0x{dest_base + 3:06X}. " + repro
         )
 
-
 @cocotb.test()
 async def overlapping_same_device_ranges(dut):
     """TC-OVERLAP: same-device overlapping source and destination."""
-    config = parse_run_config()
-    test = "TC-OVERLAP"
-    repro = _repro(config, "overlapping_same_device_ranges")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "overlapping_same_device_ranges", test="TC-OVERLAP")
 
     bringup = await bring_up_top(dut)
     depth = config["dma_buf_depth"]

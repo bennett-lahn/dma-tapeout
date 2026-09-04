@@ -24,7 +24,7 @@ import cocotb
 from cocotb.triggers import RisingEdge, Timer
 
 from common.bringup import bring_up_top
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.constants import FILL, LEGAL_GAP_NS
 from common.dispose import dispose_run, expect
 from common.host import UIO_PSRAM_CE_BITS, QpiPassthroughMaster, assert_bus_req
@@ -37,7 +37,6 @@ DIRECTED_TCPH_NS = 18.0
 SHORT_GAP_NS = 5.0  # < tCPH
 LONG_PULSE_NS = 150.0  # > directed tCEM
 
-
 async def _await_bus_gnt(dut, *, cycles: int = 32) -> None:
     await assert_bus_req(dut, hold=True)
     for _ in range(cycles):
@@ -45,7 +44,6 @@ async def _await_bus_gnt(dut, *, cycles: int = 32) -> None:
         if (int(dut.uo_out.value) >> 1) & 1:
             return
     raise AssertionError("BUS_GNT did not assert after BUS_REQ")
-
 
 async def _bring_up(dut):
     """Shared top bring-up, directed CE# monitor, BUS_GNT, parked MCU master.
@@ -81,15 +79,6 @@ async def _bring_up(dut):
     )
     return bringup, master
 
-
-def _repro(config: dict, test: str) -> str:
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_test.sh "
-        "LEVEL={level} SIM={sim} SEED={seed} "
-        "COCOTB_TEST_MODULES=tests.test_qspi_timing TEST_FILTER={test}"
-    ).format(level=config["level"], sim=config["sim"], seed=config["seed"], test=test)
-
-
 def _assert_detail(ce, check_id: str, *, test: str, detail_substr: str) -> None:
     """Keep the directed detail substrings the M1 cases asserted."""
     events = ce.violations_for(check_id)
@@ -97,7 +86,6 @@ def _assert_detail(ce, check_id: str, *, test: str, detail_substr: str) -> None:
     assert detail_substr in events[0].detail, (
         f"{test}: missing {detail_substr!r} in {events[0].detail}"
     )
-
 
 def _assert_positive_margins(ce, *, test: str, log) -> None:
     """W3b margin gate: recorded min margins on a legal pass must be > 0."""
@@ -117,7 +105,6 @@ def _assert_positive_margins(ce, *, test: str, log) -> None:
             f"{summary}"
         )
 
-
 async def _pulse_ce(master: QpiPassthroughMaster, device: int, low_ns: float) -> None:
     """Assert one RAM CE# for *low_ns*, then raise both CE# with no extra park wait."""
     master._set_bit(UIO_PSRAM_CE_BITS[device], 0)
@@ -127,17 +114,12 @@ async def _pulse_ce(master: QpiPassthroughMaster, device: int, low_ns: float) ->
         master._set_bit(ce_bit, 1)
     master._apply()
 
-
 @cocotb.test()
 async def qspi_timing_cem_cph(dut):
     """TC-CEM-BASELINE, TC-CEM-PULSE, and TC-CPH-GAP in one cocotb entry."""
-    config = parse_run_config()
-    dut._log.info(
-        "SEED=%d LEVEL=%s SIM=%s", config["seed"], config["level"], config["sim"]
-    )
+    config, repro = begin_run(dut, "qspi_timing_cem_cph")
 
     # -- TC-CEM-BASELINE: short legal pulses with legal CE# high gaps --------
-    dut._log.info(_repro(config, "baseline"))
     bringup, master = await _bring_up(dut)
     await _pulse_ce(master, 0, low_ns=40.0)
     await Timer(LEGAL_GAP_NS, unit="ns")
@@ -148,11 +130,10 @@ async def qspi_timing_cem_cph(dut):
         bringup.ce,
         test="TC-CEM-BASELINE",
         log=dut._log,
-        repro=_repro(config, "baseline"),
+        repro=repro,
     )
 
     # -- TC-CEM-PULSE: hold CE# low past directed tCEM → Q-CEM once -----------
-    dut._log.info(_repro(config, "cem"))
     bringup.clear()
     await _pulse_ce(master, 0, low_ns=LONG_PULSE_NS)
     await Timer(1, unit="ns")
@@ -161,7 +142,7 @@ async def qspi_timing_cem_cph(dut):
         test="TC-CEM-PULSE",
         expect_fail=[expect(Q_CEM, count=1)],
         log=dut._log,
-        repro=_repro(config, "cem"),
+        repro=repro,
     )
     _assert_detail(
         bringup.ce, Q_CEM, test="TC-CEM-PULSE", detail_substr="exceeds tCEM"
@@ -172,7 +153,6 @@ async def qspi_timing_cem_cph(dut):
     await Timer(LEGAL_GAP_NS, unit="ns")
 
     # -- TC-CPH-GAP: CE# high for less than tCPH → Q-CPH once ----------------
-    dut._log.info(_repro(config, "cph"))
     bringup.clear()
     await _pulse_ce(master, 0, low_ns=20.0)
     await Timer(SHORT_GAP_NS, unit="ns")
@@ -183,7 +163,7 @@ async def qspi_timing_cem_cph(dut):
         test="TC-CPH-GAP",
         expect_fail=[expect(Q_CPH, count=1)],
         log=dut._log,
-        repro=_repro(config, "cph"),
+        repro=repro,
     )
     _assert_detail(bringup.ce, Q_CPH, test="TC-CPH-GAP", detail_substr="< tCPH")
     dut._log.info("TC-CPH-GAP recorded: %s", bringup.ce.violations_for(Q_CPH)[0])

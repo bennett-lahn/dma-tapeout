@@ -18,7 +18,7 @@ import cocotb
 from cocotb.triggers import RisingEdge, Timer
 
 from common.bringup import bring_up_engine
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.constants import RESULT_PASS
 from common.dispose import dispose_run, expect
 from common.engine_bfm import (
@@ -58,21 +58,11 @@ _WRITE_CASES = (
     (1, 0x004000, 11, bytes((0xD0 + i) & 0xFF for i in range(11))),
 )
 
-
-def _repro(config: dict, test: str) -> str:
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_test.sh "
-        "LEVEL=engine SIM={sim} SEED={seed} "
-        "COCOTB_TEST_MODULES=tests.test_qspi TEST_FILTER={test}"
-    ).format(sim=config["sim"], seed=config["seed"], test=test)
-
-
 def _level(handle) -> "int | None":
     try:
         return int(handle.value)
     except ValueError:
         return None
-
 
 def _assert_ce_trace(ce_trace, device: int, *, repro: str) -> None:
     """Selected CE# must go low; the other device must stay deselected."""
@@ -92,7 +82,6 @@ def _assert_ce_trace(ce_trace, device: int, *, repro: str) -> None:
     assert saw_selected_low, (
         f"selected PSRAM{device} CE# never observed low during txn. {repro}"
     )
-
 
 def _assert_read_txn(txn, *, device: int, address: int, payload: bytes, repro: str) -> None:
     """Check model transaction log against the APS6404L / V1 ``0xEB`` shape."""
@@ -126,7 +115,6 @@ def _assert_read_txn(txn, *, device: int, address: int, payload: bytes, repro: s
         f"CE# low duration missing/zero: {txn.ce_low_ns}. {repro}"
     )
 
-
 def _assert_pin_dummy(
     bringup, *, device: int, address: int, dummy_cycles: int, repro: str
 ) -> None:
@@ -148,7 +136,6 @@ def _assert_pin_dummy(
         f"pin dummy_cycles={interval.dummy_cycles}, expected {dummy_cycles} "
         f"({interval.canonical()}). {repro}"
     )
-
 
 def _assert_write_txn(txn, *, device: int, address: int, payload: bytes, repro: str) -> None:
     """Check model transaction log against the APS6404L / V1 ``0x02`` shape."""
@@ -186,13 +173,10 @@ def _assert_write_txn(txn, *, device: int, address: int, payload: bytes, repro: 
         f"CE# low duration missing/zero: {txn.ce_low_ns}. {repro}"
     )
 
-
 @cocotb.test()
 async def qpi_read_variants(dut):
     """TC-QPI-READ: ``0xEB`` reads on each device, lengths 1 and 11."""
-    config = parse_run_config()
-    repro = _repro(config, "qpi_read_variants")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "qpi_read_variants")
 
     bringup = await bring_up_engine(dut, pin_monitor=True)
     devices = (bringup.psram0, bringup.psram1)
@@ -285,13 +269,10 @@ async def qpi_read_variants(dut):
         report.summary(),
     )
 
-
 @cocotb.test()
 async def qpi_write_variants(dut):
     """TC-QPI-WRITE: ``0x02`` writes on each device, lengths 1 and 11."""
-    config = parse_run_config()
-    repro = _repro(config, "qpi_write_variants")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "qpi_write_variants")
 
     bringup = await bring_up_engine(dut, pin_monitor=True)
     devices = (bringup.psram0, bringup.psram1)
@@ -389,7 +370,6 @@ async def qpi_write_variants(dut):
         report.summary(),
     )
 
-
 @cocotb.test()
 async def qpi_asic_ce_timing_legal_read(dut):
     """TC-QPI-ASIC-CE-TIMING: ASIC-generated L0 frame for Q-CSP / Q-CHD / Q-TERM.
@@ -397,9 +377,7 @@ async def qpi_asic_ce_timing_legal_read(dut):
     MCU pass-through isolation lives in ``test_qspi_timing_delay``; this case
     uses the engine BFM so CE#/SCK are ASIC-driven.
     """
-    config = parse_run_config()
-    repro = _repro(config, "qpi_asic_ce_timing_legal_read")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "qpi_asic_ce_timing_legal_read")
 
     bringup = await bring_up_engine(dut, ce_monitor=True)
     payload = bytes([0xA5])
@@ -414,7 +392,6 @@ async def qpi_asic_ce_timing_legal_read(dut):
         )
     dut._log.info("TC-QPI-ASIC-CE-TIMING passed | %s", report.summary())
 
-
 @cocotb.test()
 async def qpi_asic_selected_unresolved_sio(dut):
     """TC-QPI-ASIC-SIO-X: ASIC-selected write with contended SIO fails Q-SIO-X.
@@ -425,9 +402,7 @@ async def qpi_asic_selected_unresolved_sio(dut):
     (``asic_sio_oe = sio_oe & ~fault_sio_oe``), so contention is the selected
     model's extra SIO OE against ASIC, not the fault mux.
     """
-    config = parse_run_config()
-    repro = _repro(config, "qpi_asic_selected_unresolved_sio")
-    dut._log.info(repro)
+    config, repro = begin_run(dut, "qpi_asic_selected_unresolved_sio")
 
     bringup = await bring_up_engine(dut, pin_monitor=True)
     agent = bringup.psram0.agent

@@ -56,7 +56,6 @@ from common.seeds import child_random
 
 INJECTION_PATH = Path(__file__).resolve().parents[1] / "common" / "injection.py"
 
-
 def test_module_has_no_top_level_cocotb_or_host_import():
     tree = ast.parse(INJECTION_PATH.read_text(encoding="utf-8"))
     blocked = ("cocotb", "common.host", "monitors.handshake", "common.dispose", "common.bringup")
@@ -69,13 +68,11 @@ def test_module_has_no_top_level_cocotb_or_host_import():
             assert module not in blocked
             assert not module.startswith("cocotb")
 
-
 def test_child_stream_names_match_catalog():
     assert INJECTION_STREAMS == ("start", "bus_req", "reset")
     assert STREAM_START == "start"
     assert STREAM_BUS_REQ == "bus_req"
     assert STREAM_RESET == "reset"
-
 
 def test_child_streams_are_independent():
     planner = InjectionPlanner(17)
@@ -88,7 +85,6 @@ def test_child_streams_are_independent():
     fresh = InjectionPlanner(17)
     assert fresh.stream(STREAM_START).random() == start_first
     assert child_random(17, STREAM_START).random() == start_first
-
 
 def test_injection_streams_independent_across_multiple_items():
     """cov-refu-06: replay several items; perturb START, BUS_REQ, and reset independently."""
@@ -128,14 +124,12 @@ def test_injection_streams_independent_across_multiple_items():
     assert buses == baseline[1]
     assert resets != baseline[2]
 
-
 def test_same_seed_replays_start_plans():
     first = [InjectionPlanner(9).plan_start(capture=CAPTURE_REQUIRED).to_manifest() for _ in range(1)]
     second = [InjectionPlanner(9).plan_start(capture=CAPTURE_REQUIRED).to_manifest() for _ in range(1)]
     assert first == second
     other = InjectionPlanner(10).plan_start(capture=CAPTURE_REQUIRED).to_manifest()
     assert other != first[0]
-
 
 def test_classify_start_phase_bins():
     period = 10.0
@@ -146,12 +140,10 @@ def test_classify_start_phase_bins():
     assert classify_start_phase(7.5, period) == PHASE_LATE
     assert classify_start_phase(9.5, period) == PHASE_NEAR_EDGE_BEFORE
 
-
 @pytest.mark.parametrize("phase_bin", START_PHASE_BINS)
 def test_offset_for_phase_bin_round_trips(phase_bin):
     offset = offset_for_phase_bin(phase_bin, 10.0)
     assert classify_start_phase(offset, 10.0) == phase_bin
-
 
 def test_capture_required_hold_covers_three_periods_after_first_sample():
     period = 10.0
@@ -160,13 +152,11 @@ def test_capture_required_hold_covers_three_periods_after_first_sample():
     assert hold == to_first_sample + 3.0 * period
     assert hold >= 3.0 * period
 
-
 def test_capture_uncertain_hold_is_sub_period():
     assert 0.0 < capture_uncertain_hold_ns(10.0) < 10.0
     rng = child_random(3, STREAM_START)
     for _ in range(20):
         assert 0.0 < capture_uncertain_hold_ns(10.0, rng) < 10.0
-
 
 def test_plan_start_capture_classes():
     planner = InjectionPlanner(4)
@@ -179,7 +169,6 @@ def test_plan_start_capture_classes():
     assert uncertain.hold_ns < uncertain.clk_period_ns
     assert uncertain.deassert_phase_ns == 0.0
     assert start_pulse_width_ns(uncertain) < uncertain.clk_period_ns
-
 
 def test_uncertain_width_ignores_deassert_jitter():
     """Deassert phase on a short hold must not create two sync edges."""
@@ -201,7 +190,6 @@ def test_uncertain_width_ignores_deassert_jitter():
         assert start_pulse_width_ns(planned) < planned.clk_period_ns
         assert planned.deassert_phase_ns == 0.0
 
-
 def test_planner_threads_clk_period_ns():
     period = 15.15
     planner = InjectionPlanner(1, clk_period_ns=period)
@@ -215,13 +203,11 @@ def test_planner_threads_clk_period_ns():
     assert resolve_clk_period_ns(None) == 10.0
     assert SYNC_LATENCY_CYCLES == 2
 
-
 def test_plan_bus_req_rejects_stall():
     planner = InjectionPlanner(5)
     with pytest.raises(InjectionError, match="STALL"):
         planner.plan_bus_req(target_state="STALL")
     assert "STALL" in BUS_REQ_EXCLUDED_STATES
-
 
 def test_one_cycle_region_rejects_middle_and_final_landing():
     """tb-help-05 / tb-help-06: NEW_FETCH cannot use middle/final landing."""
@@ -237,7 +223,6 @@ def test_one_cycle_region_rejects_middle_and_final_landing():
     assert start.landing == LANDING_START
     auto = planner.plan_bus_req(target_state="NEW_OP")
     assert auto.landing == LANDING_START
-
 
 def test_capture_required_zero_edges_is_an_error():
     """tb-help-02: capture-required START with zero sync edges is illegal."""
@@ -266,7 +251,6 @@ def test_capture_required_zero_edges_is_an_error():
     )
     classify_start_capture(uncertain)
 
-
 def test_plan_bus_req_targets_and_landings():
     planner = InjectionPlanner(6)
     record = planner.plan_bus_req(target_state="FETCH", target_phase="command", landing=LANDING_MIDDLE)
@@ -277,7 +261,6 @@ def test_plan_bus_req_targets_and_landings():
     assert record.host_hold_cycles >= 1
     drawn = {InjectionPlanner(6).plan_bus_req(target_state=2).landing for _ in range(1)}
     assert drawn == {InjectionPlanner(6).plan_bus_req(target_state=2).landing}
-
 
 def test_resolve_state_and_phase_tables():
     assert resolve_ctrl_state("IDLE") == 0
@@ -304,7 +287,6 @@ def test_resolve_state_and_phase_tables():
     with pytest.raises(InjectionError):
         resolve_qpi_phase("not-a-phase")
 
-
 def test_reset_truncated_never_defaults_to_forbid():
     assert require_reset_truncated_policy(None) == REVIEW
     assert require_reset_truncated_policy(REVIEW) == REVIEW
@@ -315,7 +297,6 @@ def test_reset_truncated_never_defaults_to_forbid():
         require_reset_truncated_policy(FORBID, live_ce=False)
     with pytest.raises(InjectionError):
         require_reset_truncated_policy("ignore")
-
 
 def test_plan_reset_records_policy_for_dispose():
     planner = InjectionPlanner(8)
@@ -329,7 +310,6 @@ def test_plan_reset_records_policy_for_dispose():
     assert default.reset_truncated == REVIEW
     with pytest.raises(InjectionError):
         planner.plan_reset(reset_truncated=FORBID)
-
 
 def test_has_live_ce_monitor():
     assert has_live_ce_monitor(None) is False
@@ -346,7 +326,6 @@ def test_has_live_ce_monitor():
         ce = type("C", (), {"blocked": True})()
 
     assert has_live_ce_monitor(_Blocked()) is False
-
 
 def test_unknown_stream_and_landing_raise():
     planner = InjectionPlanner(1)

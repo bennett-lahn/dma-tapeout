@@ -86,11 +86,9 @@ from reference.generator import (
 )
 from reference.scoreboard import RunContext, Scoreboard
 
-
 def _assert_no_cocotb_import() -> None:
     """Fail if this test module pulled cocotb (sampler must stay sim-free)."""
     assert "cocotb" not in sys.modules
-
 
 def sampler(depth: int = 1, **kwargs) -> CoverageSampler:
     context = kwargs.pop(
@@ -99,14 +97,12 @@ def sampler(depth: int = 1, **kwargs) -> CoverageSampler:
     )
     return CoverageSampler(depth, context=context, **kwargs)
 
-
 def passing(depth: int, specs, **kwargs) -> CoverageSampler:
     chain = build_directed_chain(specs, dma_buf_depth=depth, seed=kwargs.pop("seed", 1))
     result = chain.interpret(depth)
     cov = sampler(depth, **kwargs)
     assert cov.record_passing(result, generated=chain) is True
     return cov
-
 
 def test_coverage_module_does_not_import_cocotb():
     import reference.coverage as coverage
@@ -116,7 +112,6 @@ def test_coverage_module_does_not_import_cocotb():
     assert "from cocotb" not in source
     _assert_no_cocotb_import()
 
-
 def test_l1_adapter_source_imports_shared_fsm_tables_without_this_test_importing_it():
     """The adapter must use the shared FSM name tables; this test only reads the file."""
     path = Path(__file__).resolve().parents[1] / "common" / "coverage_l1.py"
@@ -125,7 +120,6 @@ def test_l1_adapter_source_imports_shared_fsm_tables_without_this_test_importing
     assert "QSPI_ENGINE_STATES" in text
     assert "SYS_CONTROL_STATES" in text
     _assert_no_cocotb_import()
-
 
 def test_failing_window_does_not_count_hits():
     chain = build_directed_chain([TcdSpec(transfer_len=1)], dma_buf_depth=1)
@@ -137,14 +131,12 @@ def test_failing_window_does_not_count_hits():
     assert cov.hits == {}
     assert cov.fragment()["windows"][0]["counted"] is False
 
-
 def test_checkers_fail_does_not_count_hits():
     chain = build_directed_chain([TcdSpec(transfer_len=1)], dma_buf_depth=1)
     result = chain.interpret()
     cov = sampler(1)
     assert cov.record_passing(result, generated=chain, checkers_ok=False) is False
     assert cov.hits == {}
-
 
 def test_passing_window_counts_len_device_end_and_depth():
     cov = passing(1, [TcdSpec(transfer_len=1, src_device=0, dest_device=1)])
@@ -158,14 +150,12 @@ def test_passing_window_counts_len_device_end_and_depth():
     assert cov.hits[COV_DEPTH_LEN]["1:1"] == 1
     assert cov.hits[COV_CHUNK][CHUNK_ONLY] == 1
 
-
 def test_empty_chain_hits_chainlen_zero_and_quit():
     cov = passing(1, ())
     assert cov.hits[COV_CHAINLEN]["0"] == 1
     assert cov.hits[COV_END] == {END_QUIT: 1}
     assert COV_LEN not in cov.hits
     assert COV_DEVICE not in cov.hits
-
 
 def test_zero_length_follow_and_nextdev_transition():
     specs = [
@@ -180,12 +170,10 @@ def test_zero_length_follow_and_nextdev_transition():
     assert cov.hits[COV_NEXTDEV]["1x0"] == 1
     assert cov.hits[COV_CHAINLEN]["2"] == 1
 
-
 def test_chainlen_three_plus():
     specs = [TcdSpec(transfer_len=1) for _ in range(3)]
     cov = passing(1, specs)
     assert cov.hits[COV_CHAINLEN]["3+"] == 1
-
 
 def test_length_class_priority_and_middle():
     assert classify_length(0, 1) == "0"
@@ -199,7 +187,6 @@ def test_length_class_priority_and_middle():
     assert classify_length(7, 4) == "2N-1"
     assert classify_length(8, 4) == "2N"
     assert classify_length(9, 4) == "2N+1"
-
 
 def test_n_minus_one_at_depth_1_is_recorded_exclusion_not_a_hit():
     """``COV-LEN`` bin N-1 collapses onto 0 at depth 1; do not silent-skip."""
@@ -220,7 +207,6 @@ def test_n_minus_one_at_depth_1_is_recorded_exclusion_not_a_hit():
         row["id"] == COV_DEPTH_LEN and row["bin"] == "1:N-1" for row in cov.exclusions
     )
 
-
 def test_stall_bus_state_is_recorded_exclusion():
     """``COV-BUS-STATE`` STALL is excluded because the request is already high."""
     records = structural_exclusions(5, level="L1", sim="*")
@@ -237,7 +223,6 @@ def test_stall_bus_state_is_recorded_exclusion():
     assert COV_BUS_STATE not in cov.hits
     assert any(row["id"] == COV_BUS_STATE and row["bin"] == "STALL" for row in cov.exclusions)
 
-
 def test_depth_bins_are_full_harness_range_including_tapeout_five():
     assert DMA_BUF_DEPTH_MAX == 8
     assert DEPTH_BINS == (1, 2, 3, 4, 5, 6, 7, 8)
@@ -246,7 +231,6 @@ def test_depth_bins_are_full_harness_range_including_tapeout_five():
     assert cov.hits[COV_DEPTH] == {"5": 1}
     assert cov.hits[COV_LEN]["N"] == 1
     assert cov.hits[COV_DEPTH_LEN]["5:N"] == 1
-
 
 def test_chunk_classification_multi_and_partial():
     assert classify_chunks(1, 4) == (CHUNK_ONLY,)
@@ -263,7 +247,6 @@ def test_chunk_classification_multi_and_partial():
     assert cov.hits[COV_CHUNK][CHUNK_MIDDLE_FULL] == 1
     assert cov.hits[COV_CHUNK][CHUNK_FINAL_PARTIAL] == 1
     assert cov.hits[COV_END][END_MULTI] == 1
-
 
 def test_address_classes_overlap_and_roles():
     assert ADDR_ZERO in classify_address(0)
@@ -294,7 +277,6 @@ def test_address_classes_overlap_and_roles():
     assert cov.hits[COV_ADDR]["dest:at_or_above_64k"] == 1
     assert cov.hits[COV_ADDR]["next:highest"] == 1
 
-
 def test_len_addr_corner_chain_fills_depth_len_and_addr_holes():
     chain = build_directed_chain(len_addr_corner_specs(5), seed=99, dma_buf_depth=5)
     result = chain.interpret(5)
@@ -305,7 +287,6 @@ def test_len_addr_corner_chain_fills_depth_len_and_addr_holes():
     assert cov.hits[COV_DEPTH_LEN]["5:2N-1"] == 1
     assert cov.hits[COV_DEPTH_LEN]["5:2N"] == 1
     assert cov.hits[COV_DEPTH_LEN]["5:2N+1"] == 1
-
 
 def test_payload_patterns():
     assert classify_payload(b"\x00\x00") == DATA_ZERO
@@ -325,7 +306,6 @@ def test_payload_patterns():
     assert walk.hits[COV_DATA][DATA_WALK_ALT] == 1
     assert incr.hits[COV_DATA][DATA_INCREMENT] == 1
 
-
 def test_record_compare_accepts_scoreboard_and_still_needs_commit():
     chain = build_directed_chain([TcdSpec(transfer_len=1)], dma_buf_depth=1)
     result = chain.interpret()
@@ -336,7 +316,6 @@ def test_record_compare_accepts_scoreboard_and_still_needs_commit():
     assert cov.hits == {}
     assert cov.commit_window(checkers_ok=True, scoreboard_ok=True) is True
     assert cov.hits[COV_LEN]["1"] == 1
-
 
 def test_l1_observations_count_only_after_commit():
     cov = sampler(1)
@@ -351,7 +330,6 @@ def test_l1_observations_count_only_after_commit():
     assert cov.hits[COV_START_PHASE]["near_edge_before"] == 1
     assert cov.hits[COV_START_RESULT]["idle_accepted"] == 1
 
-
 def test_unknown_observation_raises():
     cov = sampler(1)
     with pytest.raises(CoverageError):
@@ -359,14 +337,12 @@ def test_unknown_observation_raises():
     with pytest.raises(CoverageError):
         cov.record_observation(COV_CTRL_STATE, "NOT_A_STATE")
 
-
 def test_depth_mismatch_raises():
     chain = build_directed_chain([TcdSpec(transfer_len=1)], dma_buf_depth=1)
     result = chain.interpret(1)
     cov = sampler(2)
     with pytest.raises(CoverageError, match="does not match"):
         cov.record_chain(result, generated=chain)
-
 
 def test_absorb_fragment_appends_without_losing_prior_hits(tmp_path):
     first = passing(5, [TcdSpec(transfer_len=5)], run_dir=str(tmp_path))
@@ -381,7 +357,6 @@ def test_absorb_fragment_appends_without_losing_prior_hits(tmp_path):
     assert second.hits[COV_START_RESULT]["idle_uncaptured"] == 1
     assert second.fragment()["windows"][0]["counted"] is True
 
-
 def test_write_fragment_uses_run_dir(tmp_path):
     cov = passing(1, [TcdSpec(transfer_len=1)], run_dir=str(tmp_path))
     path = cov.write_fragment()
@@ -394,12 +369,10 @@ def test_write_fragment_uses_run_dir(tmp_path):
     assert any(row["bin"] == "STALL" for row in payload["exclusions"])
     assert any(row["bin"] == "N-1" for row in payload["exclusions"])
 
-
 def test_write_fragment_requires_run_dir():
     cov = sampler(1)
     with pytest.raises(CoverageError, match="run_dir"):
         cov.write_fragment()
-
 
 def test_aggregator_sums_fragments_and_does_not_hand_edit_counts(tmp_path):
     first = passing(1, [TcdSpec(transfer_len=1)], run_dir=str(tmp_path / "a"))
@@ -434,13 +407,11 @@ def test_aggregator_sums_fragments_and_does_not_hand_edit_counts(tmp_path):
         [str(tmp_path / "a" / FRAGMENT_FILENAME), str(tmp_path / "b" / FRAGMENT_FILENAME)]
     )
 
-
 def test_aggregator_rejects_hand_broken_schema(tmp_path):
     path = tmp_path / FRAGMENT_FILENAME
     path.write_text(json.dumps({"schema": "hand-edited", "hits": {COV_LEN: {"1": 99}}}), encoding="utf-8")
     with pytest.raises(CoverageError, match="schema"):
         aggregate_fragments(str(tmp_path))
-
 
 def test_from_config_uses_artifacts_run_dir(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -459,7 +430,6 @@ def test_from_config_uses_artifacts_run_dir(tmp_path, monkeypatch):
     path = cov.write_fragment()
     assert Path(path).parent == Path(config["run_dir"])
 
-
 def test_uncommitted_pending_flag_on_fragment(tmp_path):
     chain = build_directed_chain([TcdSpec(transfer_len=1)], dma_buf_depth=1)
     cov = sampler(1, run_dir=str(tmp_path))
@@ -468,13 +438,11 @@ def test_uncommitted_pending_flag_on_fragment(tmp_path):
     assert payload["uncommitted_pending"] is True
     assert payload["hits"] == {}
 
-
 def test_collapsed_len_bins_at_depth_two():
     collapsed = {name: owner for name, _value, owner in collapsed_len_bins(2)}
     assert collapsed["N-1"] == "1"
     assert collapsed["2N-1"] == "N+1"
     assert "N" not in collapsed
-
 
 def test_scoreboard_na_counts_without_compare(tmp_path):
     cov = sampler(5, run_dir=str(tmp_path))
@@ -485,14 +453,12 @@ def test_scoreboard_na_counts_without_compare(tmp_path):
     with pytest.raises(CoverageError, match="both scoreboard_ok and scoreboard_na"):
         cov.commit_window(checkers_ok=True, scoreboard_ok=True, scoreboard_na=True)
 
-
 def test_begin_window_rejects_leaked_pending():
     cov = sampler(5)
     cov.record_observation(COV_CTRL_STATE, "FETCH")
     cov.begin_window(test="next")
     assert cov.pending_hits() == {}
     assert cov.fragment()["windows"][0]["counted"] is False
-
 
 def test_write_fragment_absorbs_existing_and_is_order_independent(tmp_path):
     first_dir = tmp_path / "first"
@@ -530,7 +496,6 @@ def test_write_fragment_absorbs_existing_and_is_order_independent(tmp_path):
     assert payload["hits"][COV_LEN]["1"] == 1
     assert payload["hits"][COV_LEN]["N"] == 1
 
-
 def test_n1_exclusion_does_not_hide_n5_nm1(tmp_path):
     n1 = passing(1, [TcdSpec(transfer_len=1)], run_dir=str(tmp_path / "n1"), seed=1)
     n1.write_fragment()
@@ -545,7 +510,6 @@ def test_n1_exclusion_does_not_hide_n5_nm1(tmp_path):
     n5_hit.write_fragment()
     closed_len = aggregate_fragments(str(tmp_path))
     assert "N-1" not in closed_len.missing.get(COV_LEN, [])
-
 
 def test_exclusion_reviewer_is_open_until_closure():
     from reference.coverage import EXCLUSION_REVIEWER

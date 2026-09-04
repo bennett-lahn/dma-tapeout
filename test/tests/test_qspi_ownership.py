@@ -41,7 +41,7 @@ from cocotb.triggers import RisingEdge, Timer
 
 from common.bringup import bring_up_top
 from common.clocks import apply_reset
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.constants import FILL
 from common.dispose import dispose_run, expect
 from common.host import (
@@ -74,7 +74,6 @@ EQUAL_SIO_NIBBLE = 0x1  # SIO0=1; equal-value dual drive on one bit
 # Real @cocotb.test function name; the only honest TEST_FILTER for this module.
 OWNERSHIP_TEST_FILTER = "ownership_shared_bus_negatives"
 
-
 def _sio_oe_mask(*sio_indices: int) -> int:
     """``uio`` OE mask for the listed SIO indices (default: all four)."""
     indices = sio_indices if sio_indices else range(len(SIO_UIO_BITS))
@@ -82,7 +81,6 @@ def _sio_oe_mask(*sio_indices: int) -> int:
     for index in indices:
         mask |= 1 << SIO_UIO_BITS[index]
     return mask
-
 
 def _pack_sio_uio(nibble: int) -> int:
     """Place a SIO[3:0] nibble onto the corresponding ``uio`` drive bits."""
@@ -92,11 +90,9 @@ def _pack_sio_uio(nibble: int) -> int:
             value |= 1 << uio_bit
     return value
 
-
 def _clear_fault(dut) -> None:
     dut.fault_uio_oe.value = 0
     dut.fault_uio_drive.value = 0
-
 
 async def _park_clean(dut, bringup) -> None:
     """Clear injectors, sync-reset, and start a fresh ownership log window."""
@@ -117,21 +113,6 @@ async def _park_clean(dut, bringup) -> None:
         agent.violations.clear()
         agent.transactions.clear()
 
-
-def _repro(config: dict) -> str:
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_test.sh "
-        "LEVEL={level} SIM={sim} SEED={seed} "
-        "COCOTB_TEST_MODULES=tests.test_qspi_ownership "
-        "TEST_FILTER={filter}"
-    ).format(
-        level=config["level"],
-        sim=config["sim"],
-        seed=config["seed"],
-        filter=OWNERSHIP_TEST_FILTER,
-    )
-
-
 async def _await_bus_gnt(dut, *, cycles: int = 32) -> None:
     await assert_bus_req(dut, hold=True)
     for _ in range(cycles):
@@ -140,7 +121,6 @@ async def _await_bus_gnt(dut, *, cycles: int = 32) -> None:
             return
     raise AssertionError("BUS_GNT did not assert after BUS_REQ")
 
-
 async def _release_bus_gnt(dut, *, cycles: int = 32) -> None:
     await assert_bus_req(dut, hold=False)
     for _ in range(cycles):
@@ -148,7 +128,6 @@ async def _release_bus_gnt(dut, *, cycles: int = 32) -> None:
         if not ((int(dut.uo_out.value) >> 1) & 1):
             return
     raise AssertionError("BUS_GNT did not drop after BUS_REQ release")
-
 
 def _assert_detail(bus, check_id: str, *, test: str, detail_substr: str, timing_id: str) -> list:
     """Require recorded events for *check_id* carry the expected detail / timing."""
@@ -160,7 +139,6 @@ def _assert_detail(bus, check_id: str, *, test: str, detail_substr: str, timing_
     details = " | ".join(event.detail for event in events)
     assert detail_substr in details, f"{test}: missing {detail_substr!r} in {details}"
     return events
-
 
 async def _tc_own_baseline(dut, bringup, repro: str) -> None:
     """Sub-step TC-OWN-BASELINE: parked idle and legal MCU traffic stay clean."""
@@ -180,7 +158,6 @@ async def _tc_own_baseline(dut, bringup, repro: str) -> None:
 
     assert psram0.read(0x000040, 2) == b"\x11\x22"
     dispose_run(bringup, test="TC-OWN-BASELINE", log=dut._log, repro=repro)
-
 
 async def _tc_own_cs_mutex(dut, bringup, repro: str) -> None:
     """Sub-step TC-OWN-CS-MUTEX: both RAM CE# low → ``CHK-PIN-CS-MUTEX`` / ``Q-MUX``."""
@@ -210,7 +187,6 @@ async def _tc_own_cs_mutex(dut, bringup, repro: str) -> None:
     _clear_fault(dut)
     await Timer(1, unit="ns")
 
-
 async def _tc_own_flash_cs(dut, bringup, repro: str) -> None:
     """Sub-step TC-OWN-FLASH-CS: flash CS low under ``~BUS_GNT`` → ``CHK-PIN-FLASH-HIGH``."""
     bus = bringup.bus
@@ -237,7 +213,6 @@ async def _tc_own_flash_cs(dut, bringup, repro: str) -> None:
     dut._log.info("TC-OWN-FLASH-CS recorded: %s", events[0])
     _clear_fault(dut)
     await Timer(1, unit="ns")
-
 
 async def _tc_own_sio_dual(dut, bringup, repro: str) -> None:
     """Sub-step TC-OWN-SIO-DUAL: ASIC-FAULT + device OE on SIO0 → ``CHK-PIN-SIO-OWN``."""
@@ -278,7 +253,6 @@ async def _tc_own_sio_dual(dut, bringup, repro: str) -> None:
         repro=repro,
     )
     dut._log.info("TC-OWN-SIO-DUAL recorded: %s", events[0])
-
 
 async def _tc_own_sio_dual_selected(dut, bringup, repro: str) -> None:
     """Sub-step TC-OWN-SIO-DUAL-SELECTED: dual SIO OE while CE# is low.
@@ -328,7 +302,6 @@ async def _tc_own_sio_dual_selected(dut, bringup, repro: str) -> None:
     )
     dut._log.info("TC-OWN-SIO-DUAL-SELECTED recorded: %s", events[0])
 
-
 async def _tc_own_cs_mutex_selected(dut, bringup, repro: str) -> None:
     """Sub-step TC-OWN-CS-MUTEX-SELECTED: second CE# low while PSRAM0 is selected.
 
@@ -373,7 +346,6 @@ async def _tc_own_cs_mutex_selected(dut, bringup, repro: str) -> None:
     )
     dut._log.info("TC-OWN-CS-MUTEX-SELECTED recorded: %s", events[0])
 
-
 async def _tc_own_sck_idle(dut, bringup, repro: str) -> None:
     """Sub-step TC-OWN-SCK-IDLE: SCK high while every CS high → ``CHK-PIN-SCK-PARK``."""
     bus = bringup.bus
@@ -400,7 +372,6 @@ async def _tc_own_sck_idle(dut, bringup, repro: str) -> None:
     dut._log.info("TC-OWN-SCK-IDLE recorded: %s", events[0])
     _clear_fault(dut)
     await Timer(1, unit="ns")
-
 
 async def _tc_own_cs_mutex_xz(dut, bringup, repro: str) -> None:
     """Sub-step TC-OWN-CS-MUTEX-XZ: both RAM CE# X → ``Q-MUX`` / ``CHK-PIN-CS-MUTEX``.
@@ -437,7 +408,6 @@ async def _tc_own_cs_mutex_xz(dut, bringup, repro: str) -> None:
     dut.host_uio_drive.value = 0
     await Timer(1, unit="ns")
 
-
 async def _tc_own_cs_mutex_oe(dut, bringup, repro: str) -> None:
     """Sub-step TC-OWN-CS-MUTEX-OE: both CE# OE=1 with out=0 → ``Q-MUX``.
 
@@ -468,7 +438,6 @@ async def _tc_own_cs_mutex_oe(dut, bringup, repro: str) -> None:
     dut._log.info("TC-OWN-CS-MUTEX-OE recorded: %s", events[0])
     dut.uio_out.value = Release()
     await Timer(1, unit="ns")
-
 
 async def _tc_own_sck_idle_ce_x(dut, bringup, repro: str) -> None:
     """Sub-step TC-OWN-SCK-IDLE-CE-X: keeper + one CE# X still judges ``Q-SCKIDLE``.
@@ -505,7 +474,6 @@ async def _tc_own_sck_idle_ce_x(dut, bringup, repro: str) -> None:
     dut.host_uio_drive.value = 0
     _clear_fault(dut)
     await Timer(1, unit="ns")
-
 
 async def _tc_gnt_quiet_ce_oe_x(dut, bringup, repro: str) -> None:
     """Sub-step TC-OWN-GNT-QUIET-OE-X: X on CE# OE while granted fails GNT-QUIET.
@@ -548,20 +516,12 @@ async def _tc_gnt_quiet_ce_oe_x(dut, bringup, repro: str) -> None:
     # the last sub-step, so the forced X may stay until sim teardown.
     await Timer(1, unit="ns")
 
-
 @cocotb.test()
 async def ownership_shared_bus_negatives(dut):
     """Run TC-OWN-* ownership sub-steps in one consolidated cocotb test."""
-    config = parse_run_config()
-    repro = _repro(config)
-    dut._log.info(
-        "SEED=%d LEVEL=%s SIM=%s TIMING_PROFILE=%s",
-        config["seed"],
-        config["level"],
-        config["sim"],
-        config["timing_profile"],
+    config, repro = begin_run(
+        dut, "ownership_shared_bus_negatives", test="TC-OWN"
     )
-    dut._log.info(repro)
 
     # Ownership suite only needs SharedBusMonitor; other always-on monitors stay
     # off so intentional fault injectors do not trip unrelated CHK-* rows.

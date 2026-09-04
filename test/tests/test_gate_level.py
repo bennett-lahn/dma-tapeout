@@ -36,7 +36,7 @@ from cocotb.triggers import (
 )
 
 from common.bringup import bring_up
-from common.config import parse_run_config
+from common.runlog import begin_run
 from common.constants import (
     BUS_GNT_MASK,
     GRANT_TIMEOUT_CYCLES,
@@ -60,14 +60,6 @@ from reference.tcd import TCD_BYTES, TC_TCD_BE_BYTES, TC_TCD_BE_TCD, decode_tcd,
 _RESET_SETTLE_CYCLES = 5
 _POST_RELEASE_IDLE_CYCLES = 10
 
-
-def _repro(config: dict, test_filter: str) -> str:
-    return (
-        "REPRO: source test/env.sh && test/scripts/run_gl.sh "
-        "SEED={seed} TEST_FILTER={test_filter}"
-    ).format(seed=config["seed"], test_filter=test_filter)
-
-
 def _require_l2(config: dict, *, repro: str) -> None:
     if config["level"] != "gl" or config["dut_level"] != "L2":
         raise AssertionError(
@@ -85,7 +77,6 @@ def _require_l2(config: dict, *, repro: str) -> None:
             "SDF is blocked for this campaign (zero-delay functional GL is not "
             "an SDF pass). Unset SDF. " + repro
         )
-
 
 def _log_netlist(dut, config: dict) -> None:
     netlist = os.environ.get("NETLIST", "gate_level_netlist.v")
@@ -110,7 +101,6 @@ def _log_netlist(dut, config: dict) -> None:
         config["timing_profile"],
     )
 
-
 def _known_int(handle, *, name: str, window: str, repro: str) -> int:
     """Integer-convert a top pin; X/Z is a failure (CHK-PIN-KNOWN)."""
     value = handle.value
@@ -121,10 +111,8 @@ def _known_int(handle, *, name: str, window: str, repro: str) -> int:
             f"{window}: {name} is {value!s} (unexpected X/Z; CHK-PIN-KNOWN). {repro}"
         ) from exc
 
-
 def _done(dut, *, window: str, repro: str) -> int:
     return _known_int(dut.uo_out, name="uo_out", window=window, repro=repro) & DONE_MASK
-
 
 def _bus_gnt(dut, *, window: str, repro: str) -> int:
     return (
@@ -136,17 +124,14 @@ def _bus_gnt(dut, *, window: str, repro: str) -> int:
         else 0
     )
 
-
 def _uio_oe(dut, *, window: str, repro: str) -> int:
     return _known_int(dut.uio_oe, name="uio_oe", window=window, repro=repro)
-
 
 def _ce_levels(dut, *, window: str, repro: str) -> tuple[int, int]:
     return (
         _known_int(dut.bus_ram_a_cs_n, name="bus_ram_a_cs_n", window=window, repro=repro),
         _known_int(dut.bus_ram_b_cs_n, name="bus_ram_b_cs_n", window=window, repro=repro),
     )
-
 
 def _assert_post_reset_known(dut, *, window: str, repro: str) -> None:
     """No unexpected X/Z on DONE, BUS_GNT, or uio_oe after reset release."""
@@ -160,12 +145,10 @@ def _assert_post_reset_known(dut, *, window: str, repro: str) -> None:
     # (uio_oe 0xC9). uio_oe==0 is required during reset and BUS_GNT, not here.
     _uio_oe(dut, window=window, repro=repro)
 
-
 async def _bring_up_l2(dut, config: dict, *, window: str, repro: str):
     bringup = await bring_up(dut)
     _assert_post_reset_known(dut, window=window, repro=repro)
     return bringup
-
 
 async def _assert_reset_safe(dut, *, window: str, repro: str, cycles: int = _RESET_SETTLE_CYCLES) -> None:
     """CHK-RST-OE / CHK-RST-STATUS on top pins for one forced-reset window."""
@@ -190,7 +173,6 @@ async def _assert_reset_safe(dut, *, window: str, repro: str, cycles: int = _RES
     assert ce0 == 1, f"{window}: PSRAM0 CE# not idle high. {repro}"
     assert ce1 == 1, f"{window}: PSRAM1 CE# not idle high. {repro}"
 
-
 async def _release_reset(dut) -> None:
     """Release ``rst_n`` away from a rising ``clk`` edge, then settle two clocks."""
     await Timer(10, unit="ns")
@@ -201,14 +183,12 @@ async def _release_reset(dut) -> None:
     await RisingEdge(dut.clk)
     await RisingEdge(dut.clk)
 
-
 async def _wait_done_low(dut, *, window: str, repro: str, timeout_cycles: int = STATE_TIMEOUT_CYCLES) -> None:
     for _ in range(timeout_cycles):
         await RisingEdge(dut.clk)
         if _done(dut, window=window, repro=repro) == 0:
             return
     raise AssertionError(f"{window}: DONE never dropped after START. {repro}")
-
 
 async def _wait_ce_low(dut, *, window: str, repro: str, timeout_cycles: int = STATE_TIMEOUT_CYCLES) -> None:
     for _ in range(timeout_cycles):
@@ -217,7 +197,6 @@ async def _wait_ce_low(dut, *, window: str, repro: str, timeout_cycles: int = ST
         if ce0 == 0 or ce1 == 0:
             return
     raise AssertionError(f"{window}: no RAM CE# fell (no QPI transaction). {repro}")
-
 
 async def _wait_both_ce_high(
     dut, *, window: str, repro: str, timeout_cycles: int = STATE_TIMEOUT_CYCLES
@@ -229,7 +208,6 @@ async def _wait_both_ce_high(
             return
     raise AssertionError(f"{window}: RAM CE# never both idle high. {repro}")
 
-
 async def _wait_bus_gnt(dut, *, want: int, window: str, repro: str) -> None:
     for _ in range(GRANT_TIMEOUT_CYCLES):
         await RisingEdge(dut.clk)
@@ -237,7 +215,6 @@ async def _wait_bus_gnt(dut, *, want: int, window: str, repro: str) -> None:
             return
     expected = "asserted" if want else "released"
     raise AssertionError(f"{window}: BUS_GNT never {expected}. {repro}")
-
 
 async def _pin_bus_req_cycle(dut, *, window: str, repro: str, wait_ce: bool = True) -> None:
     """Assert BUS_REQ, wait for atomic CE# high + grant, then release.
@@ -267,7 +244,6 @@ async def _pin_bus_req_cycle(dut, *, window: str, repro: str, wait_ce: bool = Tr
     await assert_bus_req(dut, hold=False)
     await _wait_bus_gnt(dut, want=0, window=window, repro=repro)
 
-
 async def _assert_no_resume(dut, *, window: str, repro: str, txn_count: int, bringup) -> None:
     for _ in range(_POST_RELEASE_IDLE_CYCLES):
         await RisingEdge(dut.clk)
@@ -284,21 +260,16 @@ async def _assert_no_resume(dut, *, window: str, repro: str, txn_count: int, bri
             f"(spontaneous resume). {repro}"
         )
 
-
 # =============================================================================
 # TC-SMOKE
 # =============================================================================
 
-
 @cocotb.test()
 async def gate_same_device_smoke(dut):
     """TC-SMOKE: one PSRAM0-to-PSRAM0 copy, length 1, then quit."""
-    config = parse_run_config()
-    test = "TC-GL-SMOKE"
-    repro = _repro(config, "gate_same_device_smoke")
+    config, repro = begin_run(dut, "gate_same_device_smoke", test="TC-GL-SMOKE")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
-    dut._log.info(repro)
 
     bringup = await _bring_up_l2(dut, config, window=test, repro=repro)
     chain = build_directed_chain(
@@ -306,21 +277,16 @@ async def gate_same_device_smoke(dut):
     )
     await run_directed_window(dut, bringup, chain, test=test, config=config, repro=repro)
 
-
 # =============================================================================
 # TC-TCD-BE / same / cross / chain / quit / restart
 # =============================================================================
 
-
 @cocotb.test()
 async def gate_tcd_big_endian_flags(dut):
     """TC-TCD-BE: known 11-byte descriptor encoding and flag decode."""
-    config = parse_run_config()
-    test = "TC-GL-TCD-BE"
-    repro = _repro(config, "gate_tcd_big_endian_flags")
+    config, repro = begin_run(dut, "gate_tcd_big_endian_flags", test="TC-GL-TCD-BE")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
-    dut._log.info(repro)
 
     bringup = await _bring_up_l2(dut, config, window=test, repro=repro)
     chain = build_directed_chain(
@@ -348,16 +314,12 @@ async def gate_tcd_big_endian_flags(dut):
     )
     await run_directed_window(dut, bringup, chain, test=test, config=config, repro=repro)
 
-
 @cocotb.test()
 async def gate_same_device_psram0(dut):
     """TC-SAME-0: PSRAM0 to PSRAM0 copy."""
-    config = parse_run_config()
-    test = "TC-GL-SAME-0"
-    repro = _repro(config, "gate_same_device_psram0")
+    config, repro = begin_run(dut, "gate_same_device_psram0", test="TC-GL-SAME-0")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
-    dut._log.info(repro)
 
     bringup = await _bring_up_l2(dut, config, window=test, repro=repro)
     chain = build_directed_chain(
@@ -371,16 +333,12 @@ async def gate_same_device_psram0(dut):
         f"{test}: expected only PSRAM0, observed {sorted(observed_devices)}. " + repro
     )
 
-
 @cocotb.test()
 async def gate_same_device_psram1(dut):
     """TC-SAME-1: PSRAM1 to PSRAM1 copy after head fetch on PSRAM0."""
-    config = parse_run_config()
-    test = "TC-GL-SAME-1"
-    repro = _repro(config, "gate_same_device_psram1")
+    config, repro = begin_run(dut, "gate_same_device_psram1", test="TC-GL-SAME-1")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
-    dut._log.info(repro)
 
     bringup = await _bring_up_l2(dut, config, window=test, repro=repro)
     chain = build_directed_chain(
@@ -413,16 +371,12 @@ async def gate_same_device_psram1(dut):
         + repro
     )
 
-
 @cocotb.test()
 async def gate_cross_device_0_to_1(dut):
     """TC-CROSS-01: PSRAM0 source to PSRAM1 destination."""
-    config = parse_run_config()
-    test = "TC-GL-CROSS-01"
-    repro = _repro(config, "gate_cross_device_0_to_1")
+    config, repro = begin_run(dut, "gate_cross_device_0_to_1", test="TC-GL-CROSS-01")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
-    dut._log.info(repro)
 
     bringup = await _bring_up_l2(dut, config, window=test, repro=repro)
     chain = build_directed_chain(
@@ -448,16 +402,12 @@ async def gate_cross_device_0_to_1(dut):
         f"observed reads={reads} writes={writes}. " + repro
     )
 
-
 @cocotb.test()
 async def gate_cross_device_1_to_0(dut):
     """TC-CROSS-10: PSRAM1 source to PSRAM0 destination."""
-    config = parse_run_config()
-    test = "TC-GL-CROSS-10"
-    repro = _repro(config, "gate_cross_device_1_to_0")
+    config, repro = begin_run(dut, "gate_cross_device_1_to_0", test="TC-GL-CROSS-10")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
-    dut._log.info(repro)
 
     bringup = await _bring_up_l2(dut, config, window=test, repro=repro)
     chain = build_directed_chain(
@@ -483,16 +433,12 @@ async def gate_cross_device_1_to_0(dut):
         f"observed reads={reads} writes={writes}. " + repro
     )
 
-
 @cocotb.test()
 async def gate_multi_tcd_chain(dut):
     """TC-CHAIN: at least three executable TCDs followed by quit."""
-    config = parse_run_config()
-    test = "TC-GL-CHAIN"
-    repro = _repro(config, "gate_multi_tcd_chain")
+    config, repro = begin_run(dut, "gate_multi_tcd_chain", test="TC-GL-CHAIN")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
-    dut._log.info(repro)
 
     bringup = await _bring_up_l2(dut, config, window=test, repro=repro)
     chain = build_directed_chain(
@@ -514,16 +460,12 @@ async def gate_multi_tcd_chain(dut):
         + repro
     )
 
-
 @cocotb.test()
 async def gate_quit_descriptor_priority(dut):
     """TC-QUIT: quit TCD with nonzero pointer and length fields."""
-    config = parse_run_config()
-    test = "TC-GL-QUIT"
-    repro = _repro(config, "gate_quit_descriptor_priority")
+    config, repro = begin_run(dut, "gate_quit_descriptor_priority", test="TC-GL-QUIT")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
-    dut._log.info(repro)
 
     bringup = await _bring_up_l2(dut, config, window=test, repro=repro)
     chain = build_directed_chain(
@@ -551,16 +493,12 @@ async def gate_quit_descriptor_priority(dut):
         f"{[txn.kind for txn in golden.transactions]}. " + repro
     )
 
-
 @cocotb.test()
 async def gate_restart_after_completion(dut):
     """TC-RESTART: complete a chain then issue a new START."""
-    config = parse_run_config()
-    test = "TC-GL-RESTART"
-    repro = _repro(config, "gate_restart_after_completion")
+    config, repro = begin_run(dut, "gate_restart_after_completion", test="TC-GL-RESTART")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
-    dut._log.info(repro)
 
     bringup = await _bring_up_l2(dut, config, window=test, repro=repro)
     first = build_directed_chain([TcdSpec(transfer_len=5)], seed=1010)
@@ -578,21 +516,16 @@ async def gate_restart_after_completion(dut):
         f"{golden.path[0]}. " + repro
     )
 
-
 # =============================================================================
 # TC-BUS-IDLE / TC-BUS-ACTIVE / TC-BUS-REPEAT
 # =============================================================================
 
-
 @cocotb.test()
 async def gate_bus_req_from_idle(dut):
     """TC-BUS-IDLE: BUS_REQ in IDLE; START while req/grant high is ignored."""
-    config = parse_run_config()
-    test = "TC-GL-BUS-IDLE"
-    repro = _repro(config, "gate_bus_req_from_idle")
+    config, repro = begin_run(dut, "gate_bus_req_from_idle", test="TC-GL-BUS-IDLE")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
-    dut._log.info(repro)
 
     bringup = await _bring_up_l2(dut, config, window=test, repro=repro)
     assert _done(dut, window=test, repro=repro) == 1
@@ -623,16 +556,12 @@ async def gate_bus_req_from_idle(dut):
     )
     await run_directed_window(dut, bringup, chain, test=test, config=config, repro=repro)
 
-
 @cocotb.test()
 async def gate_bus_req_during_transaction(dut):
     """TC-BUS-ACTIVE: BUS_REQ while a QPI transaction is on the pins."""
-    config = parse_run_config()
-    test = "TC-GL-BUS-ACTIVE"
-    repro = _repro(config, "gate_bus_req_during_transaction")
+    config, repro = begin_run(dut, "gate_bus_req_during_transaction", test="TC-GL-BUS-ACTIVE")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
-    dut._log.info(repro)
 
     bringup = await _bring_up_l2(dut, config, window=test, repro=repro)
     chain = build_directed_chain(
@@ -656,16 +585,12 @@ async def gate_bus_req_during_transaction(dut):
         ) from exc
     await compare_and_dispose(dut, bringup, chain, test=test, config=config, repro=repro)
 
-
 @cocotb.test()
 async def gate_bus_req_repeat_cycles(dut):
     """TC-BUS-REPEAT: multiple request/grant/release cycles in one chain."""
-    config = parse_run_config()
-    test = "TC-GL-BUS-REPEAT"
-    repro = _repro(config, "gate_bus_req_repeat_cycles")
+    config, repro = begin_run(dut, "gate_bus_req_repeat_cycles", test="TC-GL-BUS-REPEAT")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
-    dut._log.info(repro)
 
     bringup = await _bring_up_l2(dut, config, window=test, repro=repro)
     chain = build_directed_chain(
@@ -691,21 +616,16 @@ async def gate_bus_req_repeat_cycles(dut):
         ) from exc
     await compare_and_dispose(dut, bringup, chain, test=test, config=config, repro=repro)
 
-
 # =============================================================================
 # TC-RESET-IDLE / TC-RESET-ACTIVE
 # =============================================================================
 
-
 @cocotb.test()
 async def gate_reset_from_idle(dut):
     """TC-RESET-IDLE: reset from IDLE and while BUS_GNT is active."""
-    config = parse_run_config()
-    test = "TC-GL-RESET-IDLE"
-    repro = _repro(config, "gate_reset_from_idle")
+    config, repro = begin_run(dut, "gate_reset_from_idle", test="TC-GL-RESET-IDLE")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
-    dut._log.info(repro)
 
     bringup = await _bring_up_l2(dut, config, window=f"{test}[idle]", repro=repro)
     assert _done(dut, window=f"{test}[idle]", repro=repro) == 1
@@ -767,16 +687,12 @@ async def gate_reset_from_idle(dut):
         dut, bringup2, second, test=f"{test}[granted]", config=config, repro=repro
     )
 
-
 @cocotb.test()
 async def gate_reset_during_activity(dut):
     """TC-RESET-ACTIVE: reset during pin-observable active QPI / grant."""
-    config = parse_run_config()
-    test = "TC-GL-RESET-ACTIVE"
-    repro = _repro(config, "gate_reset_during_activity")
+    config, repro = begin_run(dut, "gate_reset_during_activity", test="TC-GL-RESET-ACTIVE")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
-    dut._log.info(repro)
 
     async def _reset_window(label: str, prepare) -> None:
         window = f"{test}[{label}]"
@@ -834,7 +750,6 @@ async def gate_reset_during_activity(dut):
     await _reset_window("inter-txn", _prep_gap)
     await _reset_window("granted", _prep_grant)
 
-
 @cocotb.test()
 async def gate_reset_random(dut):
     """TC-GL-RESET-RANDOM: seed-derived pin-observable reset, then 11-byte head fetch.
@@ -842,9 +757,7 @@ async def gate_reset_random(dut):
     M6 stays open: this is a feasible Icarus L2 reset campaign, not Verilator-X
     four-state coverage and not an SDF pass.
     """
-    config = parse_run_config()
-    test = "TC-GL-RESET-RANDOM"
-    repro = _repro(config, "gate_reset_random")
+    config, repro = begin_run(dut, "gate_reset_random", test="TC-GL-RESET-RANDOM")
     _require_l2(config, repro=repro)
     _log_netlist(dut, config)
     rng = random.Random(int(config["seed"]))
@@ -910,7 +823,6 @@ async def gate_reset_random(dut):
         f"pin {head.device}:0x{head.address:06X} len={head.length}. {repro}"
     )
     assert golden is not None
-
 
 def zlib_seed(label: str) -> int:
     """Stable per-window seed; not PYTHONHASHSEED-dependent."""

@@ -40,7 +40,6 @@ from reference.generator import (
 from reference.scoreboard import Scoreboard
 from reference.tcd import TCD_BYTES, decode_tcd, validate_tcd
 
-
 def test_empty_spec_list_puts_quit_at_the_fixed_head():
     """TC-EMPTY stimulus shape."""
     chain = build_directed_chain(())
@@ -48,7 +47,6 @@ def test_empty_spec_list_puts_quit_at_the_fixed_head():
     assert len(chain.tcds) == 1 and chain.tcds[0].quit
     result = chain.interpret()
     assert [txn.kind for txn in result.transactions] == [FETCH_READ]
-
 
 def test_directed_single_copy_is_legal_and_interprets():
     chain = build_directed_chain([TcdSpec(transfer_len=1)])
@@ -66,12 +64,10 @@ def test_directed_single_copy_is_legal_and_interprets():
         head.src_device, head.src_ptr, 1
     )
 
-
 def test_descriptor_bytes_land_at_their_locations():
     chain = build_directed_chain([TcdSpec(transfer_len=2)])
     for tcd, (device, address) in zip(chain.tcds, chain.descriptor_locations):
         assert decode_tcd(chain.memory.read(device, address, TCD_BYTES)) == tcd
-
 
 def test_chain_links_follow_next_device_and_next_tcd():
     specs = [
@@ -89,7 +85,6 @@ def test_chain_links_follow_next_device_and_next_tcd():
     assert result.path == chain.descriptor_locations
     assert result.fetch_count == 4
 
-
 @pytest.mark.parametrize(
     "src_device, dest_device", [(0, 0), (0, 1), (1, 0), (1, 1)]
 )
@@ -101,12 +96,10 @@ def test_all_four_device_directions_are_buildable(src_device, dest_device):
     assert {txn.device for txn in result.transactions if txn.kind == DATA_READ} == {src_device}
     assert {txn.device for txn in result.transactions if txn.kind == DATA_WRITE} == {dest_device}
 
-
 def test_zero_length_spec_produces_no_data_transaction():
     chain = build_directed_chain([TcdSpec(transfer_len=0)])
     result = chain.interpret()
     assert [txn.kind for txn in result.transactions] == [FETCH_READ, FETCH_READ]
-
 
 def test_explicit_data_and_addresses_are_honored():
     chain = build_directed_chain(
@@ -118,11 +111,9 @@ def test_explicit_data_and_addresses_are_honored():
     assert chain.memory.read(0, 0x002000, 3) == bytes([DEST_SENTINEL]) * 3
     assert chain.interpret().final_memory.read(0, 0x002000, 3) == b"\xDE\xAD\xBE"
 
-
 def test_data_length_must_match_transfer_len():
     with pytest.raises(GeneratorError):
         build_directed_chain([TcdSpec(transfer_len=2, data=b"\x01")])
-
 
 def test_overlap_layout_keeps_the_source_payload():
     chain = build_directed_chain(
@@ -140,7 +131,6 @@ def test_overlap_layout_keeps_the_source_payload():
     assert chain.memory.read(0, 0x001000, 4) == b"\x01\x02\x03\x04"
     result = chain.interpret()
     assert result.final_memory.read(0, 0x001000, 5) == b"\x01\x01\x01\x01\x01"
-
 
 def test_backward_overlap_layout_keeps_the_source_payload():
     """cov-refu-08: backward overlap on PSRAM0."""
@@ -160,7 +150,6 @@ def test_backward_overlap_layout_keeps_the_source_payload():
     assert head.dest_ptr < head.src_ptr
     result = chain.interpret()
     assert result.final_memory.read(0, 0x001000, 4) == b"\x01\x02\x03\x04"
-
 
 def test_dest_psram1_overlap_is_honored():
     """cov-refu-08: overlapping ranges on destination PSRAM1."""
@@ -187,7 +176,6 @@ def test_dest_psram1_overlap_is_honored():
     result = chain.interpret(dma_buf_depth=5)
     assert result.final_memory.read(1, head.dest_ptr, 1)
 
-
 def test_multi_chunk_length_derives_from_compile_n():
     """tb-ref-02: directed length is N+1 so every depth has a multi-chunk case."""
     assert multi_chunk_length(5) == 6
@@ -213,7 +201,6 @@ def test_multi_chunk_length_derives_from_compile_n():
         ]
         assert len(control_reads) == 1
 
-
 def test_self_pointing_head_exhausts_fetch_budget():
     """tb-ref-05: directed self-pointing head; legal random stays acyclic."""
     chain = ChainGenerator(3).build_self_pointing_head(TcdSpec(transfer_len=0))
@@ -227,7 +214,6 @@ def test_self_pointing_head_exhausts_fetch_budget():
     for tcd, (device, address) in zip(random_chain.executable, locations):
         nxt = (tcd.next_device, tcd.next_tcd)
         assert nxt != (device, address)
-
 
 def test_quit_descriptor_retains_nonzero_unexecuted_fields():
     """tb-ref-05: nonzero QUIT fields are stored but not executed."""
@@ -250,13 +236,11 @@ def test_quit_descriptor_retains_nonzero_unexecuted_fields():
     data_writes = [txn for txn in result.transactions if txn.kind == DATA_WRITE]
     assert all(txn.address != 0x005678 for txn in data_writes)
 
-
 def test_parameterized_guard_bytes_are_written():
     """tb-ref-04: guard size is a generator parameter, not a hard-coded 2."""
     chain = build_directed_chain([TcdSpec(transfer_len=2)], seed=8, guard_bytes=4)
     assert chain.guards
     assert any(region.length == 4 for region in chain.guards)
-
 
 def test_guards_and_regions_are_recorded_and_defined():
     chain = build_directed_chain([TcdSpec(transfer_len=2)])
@@ -267,7 +251,6 @@ def test_guards_and_regions_are_recorded_and_defined():
         for offset in range(region.length):
             assert chain.memory.is_defined(region.device, region.address + offset)
 
-
 def test_guards_never_overwrite_payload_or_descriptors():
     chain = build_directed_chain(
         [TcdSpec(transfer_len=4, src_addr=0x001000, dest_addr=0x001004, data=b"\x0A\x0B\x0C\x0D")]
@@ -276,16 +259,13 @@ def test_guards_never_overwrite_payload_or_descriptors():
     for tcd, (device, address) in zip(chain.tcds, chain.descriptor_locations):
         assert decode_tcd(chain.memory.read(device, address, TCD_BYTES)) == tcd
 
-
 def test_generated_chain_feeds_the_scoreboard():
     chain = build_directed_chain([TcdSpec(transfer_len=2), TcdSpec(transfer_len=1, dest_device=1)])
     result = chain.interpret()
     board = Scoreboard.from_result(result, guards=chain.guards, regions=chain.regions)
     board.compare(result.transactions, result.final_memory)
 
-
 # -- determinism and dimensions -------------------------------------------
-
 
 def test_same_seed_builds_an_identical_chain():
     first = ChainGenerator(4231).build_chain()
@@ -293,7 +273,6 @@ def test_same_seed_builds_an_identical_chain():
     assert first.tcds == second.tcds
     assert first.descriptor_locations == second.descriptor_locations
     assert first.memory.snapshot() == second.memory.snapshot()
-
 
 def test_different_seeds_differ():
     first = ChainGenerator(1).build_chain()
@@ -303,13 +282,11 @@ def test_different_seeds_differ():
         second.descriptor_locations,
     )
 
-
 def test_reset_streams_repeats_a_build():
     generator = ChainGenerator(99)
     first = generator.build_chain()
     generator.reset_streams()
     assert generator.build_chain().tcds == first.tcds
-
 
 @pytest.mark.parametrize("seed", [0, 1, 7, 17, 4231])
 def test_random_chains_are_legal_and_interpretable(seed):
@@ -322,7 +299,6 @@ def test_random_chains_are_legal_and_interpretable(seed):
     assert result.path[0] == (HEAD_DEVICE, HEAD_ADDRESS)
     assert result.fetch_count == len(chain.tcds)
 
-
 def test_drawing_one_dimension_does_not_perturb_another():
     """Independent child streams: extra length draws leave addresses stable."""
     baseline = ChainGenerator(5)
@@ -332,7 +308,6 @@ def test_drawing_one_dimension_does_not_perturb_another():
     assert [baseline.address_class() for _ in range(5)] == [
         perturbed.address_class() for _ in range(5)
     ]
-
 
 def test_next_device_stream_is_isolated_from_device_tuple():
     """tb-ref-03 / cov-refu-05: NEXT-device entropy does not share STREAM_DEVICES."""
@@ -361,7 +336,6 @@ def test_next_device_stream_is_isolated_from_device_tuple():
         ChainGenerator(11).next_device(1) for _ in range(8)
     ]
 
-
 def test_every_declared_stream_exists():
     generator = ChainGenerator(3)
     for name in STREAMS:
@@ -369,13 +343,11 @@ def test_every_declared_stream_exists():
     with pytest.raises(GeneratorError):
         generator.stream("nope")
 
-
 def test_chain_length_stays_inside_the_bias_bounds():
     generator = ChainGenerator(11)
     lengths = {generator.chain_length() for _ in range(40)}
     assert lengths
     assert min(lengths) >= 1 and max(lengths) <= 8
-
 
 def test_transfer_length_resolves_depth_relative_corners():
     generator = ChainGenerator(13, dma_buf_depth=4)
@@ -384,7 +356,6 @@ def test_transfer_length_resolves_depth_relative_corners():
     assert 0 in lengths or 1 in lengths
     assert {7, 8, 9} & lengths  # 2N-1 / 2N / 2N+1 at depth 4
 
-
 def test_len_addr_corner_specs_hit_src_zero_and_highest_next():
     specs = len_addr_corner_specs(5)
     assert [spec.transfer_len for spec in specs] == [9, 10, 11]
@@ -392,7 +363,6 @@ def test_len_addr_corner_specs_hit_src_zero_and_highest_next():
     head = chain.executable[0]
     assert head.src_device == 1 and head.src_ptr == 0
     assert head.next_tcd >= 0x7FFC00
-
 
 def test_bias_override_narrows_one_dimension():
     generator = ChainGenerator(
@@ -412,11 +382,9 @@ def test_bias_override_narrows_one_dimension():
     assert {generator.chain_length() for _ in range(10)} == {2}
     assert {generator.payload_pattern() for _ in range(10)} == {PATTERN_INCREMENT}
 
-
 def test_unknown_bias_dimension_is_rejected():
     with pytest.raises(GeneratorError):
         ChainGenerator(0, bias={"not_a_dimension": {}})
-
 
 def test_payload_patterns_have_the_requested_length():
     generator = ChainGenerator(0)
@@ -425,7 +393,6 @@ def test_payload_patterns_have_the_requested_length():
     assert generator.payload("zero", 0) == b""
     with pytest.raises(GeneratorError):
         generator.payload("bogus", 1)
-
 
 def test_high_address_class_stays_in_range():
     chain = build_directed_chain(
@@ -436,7 +403,6 @@ def test_high_address_class_stays_in_range():
     assert head.dest_ptr + 7 <= 0x7FFFFF
     chain.interpret()
 
-
 def test_manifest_lists_descriptor_bytes_and_regions():
     chain = build_directed_chain([TcdSpec(transfer_len=2)])
     manifest = chain.manifest()
@@ -445,20 +411,16 @@ def test_manifest_lists_descriptor_bytes_and_regions():
     assert manifest["descriptors"][-1]["quit"] is True
     assert any(region["kind"] == REGION_SOURCE for region in manifest["regions"])
 
-
 def test_bad_spec_type_is_rejected():
     with pytest.raises(GeneratorError):
         build_directed_chain(["not-a-spec"])
-
 
 def test_pinned_next_tcd_address_is_used():
     chain = build_directed_chain([TcdSpec(transfer_len=1, next_tcd_addr=0x000400)])
     assert chain.descriptor_locations[1] == (0, 0x000400)
     assert chain.tcds[0].next_tcd == 0x000400
 
-
 # -- pre-W4 blocker: generator must not clobber future TCDs ---------------
-
 
 def _descriptor_byte_addresses(locations):
     return {
@@ -466,7 +428,6 @@ def _descriptor_byte_addresses(locations):
         for device, address in locations
         for offset in range(TCD_BYTES)
     }
-
 
 @pytest.mark.parametrize("seed", range(50))
 def test_random_chains_never_write_into_descriptor_slots(seed):
@@ -482,7 +443,6 @@ def test_random_chains_never_write_into_descriptor_slots(seed):
             f"seed={seed}: {txn.canonical()} writes into a descriptor slot"
         )
 
-
 def test_pinned_dest_onto_a_future_descriptor_raises():
     """A pinned ``dest_addr`` landing on the next descriptor's slot is illegal."""
     with pytest.raises(GeneratorError):
@@ -493,14 +453,12 @@ def test_pinned_dest_onto_a_future_descriptor_raises():
             ]
         )
 
-
 def test_pinned_dest_away_from_any_descriptor_still_succeeds():
     """The new check must not reject a legal, disjoint pinned destination."""
     chain = build_directed_chain(
         [TcdSpec(transfer_len=4, dest_addr=0x002000, next_tcd_addr=0x000400)]
     )
     assert chain.tcds[0].dest_ptr == 0x002000
-
 
 def test_equal_layout_falls_back_to_disjoint_when_src_sits_on_a_descriptor():
     """``LAYOUT_EQUAL`` must not reuse a pinned src address that is a descriptor slot."""
@@ -515,7 +473,6 @@ def test_equal_layout_falls_back_to_disjoint_when_src_sits_on_a_descriptor():
     assert not dest_bytes & _descriptor_byte_addresses(chain.descriptor_locations)
     chain.interpret()
 
-
 def test_overlap_layout_falls_back_to_disjoint_when_it_would_hit_a_descriptor():
     """``LAYOUT_OVERLAP_FORWARD`` must redirect a shifted dest away from a descriptor."""
     chain = build_directed_chain(
@@ -528,7 +485,6 @@ def test_overlap_layout_falls_back_to_disjoint_when_it_would_hit_a_descriptor():
     assert not dest_bytes & _descriptor_byte_addresses(chain.descriptor_locations)
     chain.interpret()
 
-
 def test_quit_tcd_bytes_survive_interpretation_unchanged():
     """A legal chain's quit descriptor bytes are never touched by any data write."""
     chain = build_directed_chain(
@@ -540,7 +496,6 @@ def test_quit_tcd_bytes_survive_interpretation_unchanged():
     result = chain.interpret()
     after = result.final_memory.read(quit_device, quit_address, TCD_BYTES)
     assert before == after
-
 
 def test_overlap_payload_case_is_not_weakened_when_it_misses_descriptors():
     """TC-OVERLAP-style same-device overlap must still be honored away from TCDs."""
