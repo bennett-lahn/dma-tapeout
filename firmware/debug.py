@@ -1,38 +1,45 @@
 """Dump / peek / poke / decode TCD chains over chunked QPI.
 
 All reads and writes go through `Psram.read` / `Psram.write` so CE# pulses stay
-under tCEM (max CE# low). Do not dump a multi-kilobyte span in one unchunked
-transaction.
+under tCEM (max CE# low time). Do not dump a multi-kilobyte span in one
+unchunked transaction.
 
-Debug APIs require a Host that already holds BUS_GNT (or rst_n=0). They do
-not drive uio without grant (D26).
+Debug APIs require a `DmaController` that already holds BUS_GNT (or rst_n=0);
+they do not drive uio without grant (D26 bus keeper).
+
+Chain interpretation (what a chain should have copied) is not here: the golden
+oracle lives on the host PC, not on the MCU. These helpers only report what the
+devices currently hold.
 """
 
-from .asic import HostError
-from .chain import ADDR_MAX
+from .constants import PTR_MAX
+from .dma import DmaError
 from .tcd import TCD_BYTES, decode_tcd, format_bytes, format_tcd, validate_tcd
 
-
-def _require_grant(host):
-    if host is None:
-        raise HostError("debug QSPI requires a Host with BUS_GNT=1 or rst_n=0")
-    if not host.bus_gnt and not host.rst_n_low:
-        raise HostError("debug QSPI requires BUS_GNT=1 or rst_n=0")
+# NEXT is followed through A[22:0]; ptr[23] is don't-care (D35).
+ADDR_MAX = PTR_MAX
 
 
-def peek(host, psram, cs, addr, n=1):
-    _require_grant(host)
+def _require_grant(dma):
+    if dma is None:
+        raise DmaError("debug QSPI requires a DmaController with BUS_GNT=1 or rst_n=0")
+    if not dma.bus_gnt and not dma.rst_n_low:
+        raise DmaError("debug QSPI requires BUS_GNT=1 or rst_n=0")
+
+
+def peek(dma, psram, cs, addr, n=1):
+    _require_grant(dma)
     return psram.read(cs, addr, n)
 
 
-def poke(host, psram, cs, addr, data):
-    _require_grant(host)
+def poke(dma, psram, cs, addr, data):
+    _require_grant(dma)
     psram.write(cs, addr, data)
 
 
-def dump(host, psram, cs, addr, length, width=16):
+def dump(dma, psram, cs, addr, length, width=16):
     """Print hex lines for [addr, addr+length) on *cs* (device 0 or 1)."""
-    _require_grant(host)
+    _require_grant(dma)
     data = psram.read(cs, addr, length)
     lines = []
     offset = 0
@@ -45,13 +52,13 @@ def dump(host, psram, cs, addr, length, width=16):
     return data
 
 
-def decode_chain(host, psram, head_addr=0, head_dev=0, max_nodes=64):
+def decode_chain(dma, psram, head_addr=0, head_dev=0, max_nodes=64):
     """Fetch 11-byte records following NEXT_*; stop on QUIT, cycle, or max_nodes.
 
-    NEXT is masked to ADDR_MAX (A[22:0]; ptr[23] don't-care, D35), matching
-    interpret_chain. A validate_tcd error is printed and stops the walk.
+    NEXT is masked to ADDR_MAX (A[22:0]; ptr[23] don't-care, D35), matching the
+    host oracle. A validate_tcd error is printed and stops the walk.
     """
-    _require_grant(host)
+    _require_grant(dma)
     device = head_dev
     addr = head_addr & ADDR_MAX
     seen = []

@@ -1,6 +1,9 @@
-"""Firmware architecture constants.
+"""Firmware architecture constants: TCD layout, QPI protocol, MCU timing budgets.
 
-Leaf module: no imports of tcd, psram, asic, chain, or ``test/``.
+Leaf module: no imports of tcd, psram, dma, board, or ``test/``. Demoboard
+signal mapping (ui_in / uo_out bit indices, uio OE masks, PMOD GPIO numbers)
+lives in ``firmware/board/pins.py``, not here.
+
 Overlapping TCD / opcode / dummy / head / buffer names are a mechanical copy
 of ``test/reference/constants.py`` (copies of ``src/types.svh`` and
 ``docs/llm/04-tcd-and-datapath.md``, never parsed from SystemVerilog).
@@ -62,28 +65,7 @@ CMD_RESET = 0x99
 CMD_ENTER_QPI = 0x35
 CMD_EXIT_QPI = 0xF5
 
-# --- Host pin indices (ui_in / uo_out bit positions, not masks) ---
-
-START_BIT = 0
-BUS_REQ_BIT = 2
-DONE_BIT = 0
-BUS_GNT_BIT = 1
-
-PROJECT_CLOCK_HZ = 66_000_000
-DEFAULT_PROJECT = "tt_um_lahnb_sgdma"
-
-# uio bit: 0 flash CS, 1 SIO0, 2 SIO1, 3 SCK, 4 SIO2, 5 SIO3, 6 RAM A CS, 7 RAM B CS.
-# SDK: bits set to 1 are driven by the RP2.
-OE_HIZ = 0
-# SPI: drive flash CS, MOSI, SCK, RAM CS; MISO/SD2/SD3 are inputs (HOLD#/WP#).
-OE_SPI = (
-    (1 << 0) | (1 << 1) | (1 << 3) | (1 << 6) | (1 << 7)
-)
-# QPI command/addr/write: all eight uio bits driven by the RP2.
-OE_QPI = 0xFF
-# QPI read data/dummy: drive CS and SCK only; SIO0..3 must be Hi-Z.
-OE_QPI_READ = (1 << 0) | (1 << 3) | (1 << 6) | (1 << 7)
-SIO_OE_MASK = (1 << 1) | (1 << 2) | (1 << 4) | (1 << 5)
+# --- MCU host-protocol budgets (bit positions live in board/pins.py) ---
 
 # Conservative MCU payload bytes per CE# pulse. SCK-only planning can fit more
 # under tCEM (max CE# low); Python-fed PIO holds CE# across puts, so the MCU
@@ -96,21 +78,6 @@ MCU_QPI_PAYLOAD_MAX = 1
 START_HOLD_US = 0
 # Tight samples looking for DONE low. Not a timed wait; Python loops only.
 BUSY_SAMPLE_TRIES = 8
-
-# --- ETR uio[0..7] -> GPIO25..32 (Rohan Verma / TT QSPI guide) ---
-
-QSPI_BASE = 25
-PIN_FLASH_CS = QSPI_BASE + 0
-PIN_MOSI = QSPI_BASE + 1
-PIN_MISO = QSPI_BASE + 2
-PIN_SCK = QSPI_BASE + 3
-PIN_SD2 = QSPI_BASE + 4
-PIN_SD3 = QSPI_BASE + 5
-PIN_RAM_A_CS = QSPI_BASE + 6
-PIN_RAM_B_CS = QSPI_BASE + 7
-
-CS_PSRAM0 = 0
-CS_PSRAM1 = 1
 
 # --- MCU QPI planner (tCEM: max CE# low; tPU: CE# high after power) ---
 

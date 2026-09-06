@@ -2,34 +2,45 @@
 
 import pytest
 
-from firmware.constants import MCU_QPI_PAYLOAD_MAX, SCK_HZ_DEFAULT, TPU_US
-from firmware.psram import (
+from firmware.board.board import Board
+from firmware.board.pins import OE_QPI, OE_QPI_READ, OE_SPI, SIO_OE_MASK
+from firmware.board.qspi import QspiError, SPI_PIN_MODES
+from firmware.constants import (
     CMD_ENTER_QPI,
-    CMD_EXIT_QPI,
     CMD_QPI_READ,
     CMD_QPI_WRITE,
     CMD_RESET,
     CMD_RESET_ENABLE,
-    PIO_TRANSPORT_CLAIMS_PINS_IN_INIT,
+    MCU_QPI_PAYLOAD_MAX,
     QPI_DUMMY_CYCLES,
-    QPI_READ_PIO_INTENT,
-    SPI_PIN_MODES,
+    SCK_HZ_DEFAULT,
+    TPU_US,
+)
+from firmware.dma import DmaController
+from firmware.psram import (
     Psram,
     PsramError,
-    drain_sm,
+    be24,
     enter_qpi_frame,
     exit_qpi_frame,
-    make_board_transport,
-    park_and_switch_sm,
     qpi_chunk_bytes,
     qpi_exit_sck_count,
+    qpi_read_cmd_addr,
     qpi_write_frame,
-    rp2,
     spi_reset_frames,
-    wait_at_least_us,
 )
 
+from mock_board import MockDemoBoard
 from mock_transport import MockTransport
+
+
+def _granted_psram():
+    """DmaController holding BUS_GNT plus a Psram wired to the same OE state."""
+    tt = MockDemoBoard()
+    dma = DmaController(Board(tt, sleep_us=lambda us: None))
+    dma.request_bus()
+    transport = MockTransport(oe_getter=lambda: int(tt.uio_oe_pico))
+    return dma, Psram(transport, dma=dma), transport, tt
 
 
 def test_illegal_sck_rejected():
@@ -39,10 +50,28 @@ def test_illegal_sck_rejected():
         Psram(MockTransport(), sck_hz=1_000_000)
 
 
+def test_chunk_planner_rejects_a_non_qpi_opcode():
+    with pytest.raises(PsramError, match="0xEB / 0x02"):
+        qpi_chunk_bytes(CMD_ENTER_QPI, SCK_HZ_DEFAULT)
+
+
 def test_chunk_sizes_at_default_20mhz():
     assert qpi_chunk_bytes(CMD_QPI_READ, SCK_HZ_DEFAULT) == 23
     assert qpi_chunk_bytes(CMD_QPI_WRITE, SCK_HZ_DEFAULT) == 26
-    assert qpi_chunk_bytes(CMD_QPI_WRITE, SCK_HZ_DEFAULT, mcu_payload_max=MCU_QPI_PAYLOAD_MAX) == 1
+    assert (
+        qpi_chunk_bytes(
+            CMD_QPI_WRITE, SCK_HZ_DEFAULT, mcu_payload_max=MCU_QPI_PAYLOAD_MAX
+        )
+        == 1
+    )
+
+
+def test_frames_are_big_endian_with_the_apS6404l_opcodes():
+    assert spi_reset_frames() == (bytes([CMD_RESET_ENABLE]), bytes([CMD_RESET]))
+    assert enter_qpi_frame() == bytes([CMD_ENTER_QPI])
+    assert be24(0x123456) == b"\x12\x34\x56"
+    assert qpi_write_frame(0x123456, b"Z") == bytes([CMD_QPI_WRITE]) + b"\x12\x34\x56Z"
+    assert qpi_read_cmd_addr(0x000010) == bytes([CMD_QPI_READ]) + b"\x00\x00\x10"
 
 
 def test_enter_then_qpi_write_and_exit_is_two_sck():
@@ -64,6 +93,15 @@ def test_enter_then_qpi_write_and_exit_is_two_sck():
     assert exit_rows
     assert exit_rows[0][3] == qpi_exit_sck_count() == 2
     assert transport.pin_modes == SPI_PIN_MODES
+
+
+def test_bring_up_waits_tpu_before_the_first_command():
+    transport = MockTransport()
+    psram = Psram(transport)
+    psram.bring_up_both()
+    assert transport.sleeps
+    assert transport.sleeps[0] == TPU_US
+    assert transport.log[0][0] == "sleep_us"
 
 
 def test_qpi_write_chunks_raise_ce_between_bytes():
@@ -96,81 +134,55 @@ def test_qpi_read_chunks_and_dummy_cycles():
     assert reads[0][4] == 1
 
 
+def test_short_qpi_read_is_reported_not_padded():
+    class ShortTransport(MockTransport):
+        def qpi_read(self, cs, header, dummy_cycles, n):
+            return b""
+
+    transport = ShortTransport()
+    transport.qpi[0] = True
+    psram = Psram(transport)
+    with pytest.raises(PsramError, match="expected 1"):
+        psram.read(0, 0, 1)
+
+
 def test_mock_refuses_spi_after_enter_and_qpi_before():
     transport = MockTransport()
     psram = Psram(transport)
-    with pytest.raises(PsramError, match="QPI write"):
+    with pytest.raises(QspiError, match="QPI write"):
         psram.write(0, 0, b"A")
     psram.enter_qpi(0)
-    with pytest.raises(PsramError, match="SPI while"):
+    with pytest.raises(QspiError, match="SPI while"):
         psram.enter_qpi(0)
 
 
 def test_oversized_ce_pulse_rejected_by_mock():
     transport = MockTransport(max_payload_per_ce=1)
     transport.qpi[0] = True
-    with pytest.raises(PsramError, match="CE# held"):
+    with pytest.raises(QspiError, match="CE# held"):
         transport.qpi_write(0, qpi_write_frame(0, b"AB"))
 
 
-def test_spi_reset_and_enter_frames():
-    assert spi_reset_frames() == (bytes([CMD_RESET_ENABLE]), bytes([CMD_RESET]))
-    assert enter_qpi_frame() == bytes([CMD_ENTER_QPI])
+def test_oe_delegates_to_the_dma_controller_per_phase():
+    dma, psram, transport, _tt = _granted_psram()
+    psram.spi_reset(0)
+    assert dma.oe == OE_SPI
+    psram.enter_qpi(0)
+    psram.write(0, 0, b"A")
+    assert dma.oe == OE_QPI
+    psram.read(0, 0, 1)
+    assert dma.oe == OE_QPI_READ
+    assert transport.oe_during_read == [OE_QPI_READ]
+    assert all(oe & SIO_OE_MASK == 0 for oe in transport.oe_during_read)
+    psram.exit_qpi(0)
+    assert dma.oe == OE_SPI
 
 
-def test_cpython_import_has_no_rp2_and_board_transport_refuses():
-    assert rp2 is None
-    with pytest.raises(PsramError, match="rp2"):
-        make_board_transport()
-
-
-def test_wait_at_least_us_uses_elapsed_time_not_one_short_sleep():
-    calls = []
-
-    def short_sleep(us):
-        calls.append(us)
-
-    wait_at_least_us(TPU_US, sleep=short_sleep)
-    assert calls
-    assert calls[0] == TPU_US
-
-
-def test_qpi_read_intent_is_rising_sck():
-    from pathlib import Path
-
-    assert QPI_READ_PIO_INTENT == (("nop", 0), ("in_", 1, 4))
-    src = Path(__file__).resolve().parents[1].joinpath("psram.py").read_text(encoding="utf-8")
-    assert "in_(pins, 4).side(1)" in src
-    assert PIO_TRANSPORT_CLAIMS_PINS_IN_INIT is False
-    assert "self.flash_cs = Pin(PIN_FLASH_CS, Pin.OUT)" not in src.split("def arm")[0]
-
-
-class _FakeSM:
-    def __init__(self):
-        self.active_flag = 0
-        self.drained = False
-
-    def wait_idle(self):
-        self.drained = True
-
-    def active(self, value):
-        if value and self.active_flag:
-            raise AssertionError("overlapping active(1)")
-        if value == 0 and not self.drained:
-            raise PsramError("state machine deactivated before drain")
-        self.active_flag = value
-        if value == 0:
-            self.drained = False
-
-
-def test_park_and_switch_drains_before_activate():
-    old = _FakeSM()
-    new = _FakeSM()
-    old.active_flag = 1
-    parked = []
-    park_and_switch_sm(old, new, park_sck=lambda: parked.append(1))
-    assert old.active_flag == 0
-    assert new.active_flag == 1
-    assert parked == [1]
-    drain_sm(new)
-    new.active(0)
+def test_psram_without_a_dma_controller_never_touches_oe():
+    tt = MockDemoBoard()
+    board = Board(tt, sleep_us=lambda us: None)
+    transport = MockTransport()
+    psram = Psram(transport)
+    psram.enter_qpi(0)
+    psram.write(0, 0, b"A")
+    assert board.read_uio_oe() == 0

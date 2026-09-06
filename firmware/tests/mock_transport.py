@@ -1,19 +1,19 @@
-"""Mock SPI/QPI master with optional sparse PSRAM contents (no rp2).
+"""Mock SPI/QPI master with sparse PSRAM contents (no rp2).
 
-SPI while a CS is already in QPI raises; QPI before Enter Quad raises.
-Grant/START on MockDemoBoard is protocol-shape only (combinational GNT,
-START ACK on falling START), not D21/D16 coverage.
+SPI while a CS is already in QPI raises; QPI before Enter Quad raises. A CE#
+pulse carrying more than *max_payload_per_ce* payload bytes raises, standing in
+for tCEM (max CE# low time) that host pytest cannot measure in wall clock.
 """
 
-from firmware.constants import MCU_QPI_PAYLOAD_MAX, OE_QPI_READ, SIO_OE_MASK
-from firmware.psram import (
+from firmware.board.pins import OE_QPI_READ, SIO_OE_MASK
+from firmware.board.qspi import SPI_PIN_MODES, QspiError
+from firmware.constants import (
     CMD_ENTER_QPI,
     CMD_EXIT_QPI,
     CMD_QPI_READ,
     CMD_QPI_WRITE,
     CMD_RESET,
-    SPI_PIN_MODES,
-    PsramError,
+    MCU_QPI_PAYLOAD_MAX,
 )
 
 
@@ -40,7 +40,7 @@ class MockTransport:
     def spi_write(self, cs, data):
         payload = bytes(data)
         if self.qpi.get(cs):
-            raise PsramError("SPI while CS %s is in QPI" % cs)
+            raise QspiError("SPI while CS %s is in QPI" % cs)
         self.log.append(("spi", cs, payload))
         if payload == bytes([CMD_ENTER_QPI]):
             self.qpi[cs] = True
@@ -49,14 +49,14 @@ class MockTransport:
 
     def qpi_write(self, cs, data):
         if not self.qpi.get(cs):
-            raise PsramError("QPI write while CS %s is not in QPI" % cs)
+            raise QspiError("QPI write while CS %s is not in QPI" % cs)
         payload = bytes(data)
         sck = 2 * len(payload)
         n_payload = max(0, len(payload) - 4)
         if payload == bytes([CMD_EXIT_QPI]):
             n_payload = 0
         if self.max_payload_per_ce is not None and n_payload > self.max_payload_per_ce:
-            raise PsramError(
+            raise QspiError(
                 "CE# held for %d payload bytes (max %d); raise CE# between chunks"
                 % (n_payload, self.max_payload_per_ce)
             )
@@ -73,13 +73,13 @@ class MockTransport:
 
     def qpi_read(self, cs, header, dummy_cycles, n):
         if not self.qpi.get(cs):
-            raise PsramError("QPI read while CS %s is not in QPI" % cs)
+            raise QspiError("QPI read while CS %s is not in QPI" % cs)
         header = bytes(header)
         if self.oe_getter is not None:
             oe = int(self.oe_getter())
             self.oe_during_read.append(oe)
             if oe & SIO_OE_MASK:
-                raise PsramError(
+                raise QspiError(
                     "SIO OE must be 0 during QPI read (have 0x%02X, expect 0x%02X)"
                     % (oe, OE_QPI_READ)
                 )
@@ -90,40 +90,3 @@ class MockTransport:
             addr = int.from_bytes(header[1:4], "big")
         bank = self.mem.get(cs, {})
         return bytes(bank.get(addr + i, 0) for i in range(n))
-
-
-def attach_mock_dma(
-    tt,
-    transport,
-    dma_buf_depth=None,
-    interpret=True,
-    mismatch=False,
-):
-    """On START accept, interpret installed PSRAM and write dest bytes back.
-
-    Mock grant/START is protocol-shape only, not ASIC two-flop REQ or DONE-low
-    from the controller. Pass interpret=False to skip DMA, mismatch=True to
-    corrupt dest so dump compare fails.
-    """
-    from firmware.chain import DEFAULT_DMA_BUF_DEPTH, MemoryImage, interpret_chain
-
-    depth = DEFAULT_DMA_BUF_DEPTH if dma_buf_depth is None else dma_buf_depth
-
-    def hook():
-        if not interpret:
-            return
-        mem = MemoryImage()
-        for device, bank in transport.mem.items():
-            for addr, value in bank.items():
-                mem.poke(device, addr, value)
-        result = interpret_chain(mem, dma_buf_depth=depth)
-        snap = result.final_memory.snapshot()
-        transport.mem = {device: dict(values) for device, values in snap.items()}
-        if mismatch:
-            for (device, addr) in result.expected_writes:
-                bank = transport.mem.setdefault(device, {})
-                if addr in bank:
-                    bank[addr] = (bank[addr] + 1) & 0xFF
-                    return
-
-    tt.dma_hook = hook

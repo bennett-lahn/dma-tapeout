@@ -2,7 +2,7 @@
 
 CPython tests use the real dataclasses module. This shim is only imported when
 `import dataclasses` fails. It covers `@dataclass` / `@dataclass(frozen=True)`,
-`field(default=..., compare=...)`, and `replace` as used by tcd.py and chain.py.
+`field(default=..., compare=...)`, and `replace` as used by tcd.py.
 
 Hash and constructor rules match CPython dataclasses:
 unfrozen instances are unhashable; extra positional args raise TypeError;

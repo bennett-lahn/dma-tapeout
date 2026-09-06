@@ -1,5 +1,7 @@
 """CPython mock of Tiny Tapeout DemoBoard pin ports (no serial, no ttboard)."""
 
+PROJECT_NAME = "tt_um_lahnb_sgdma"
+
 
 class BitPort:
     def __init__(self, value=0, on_change=None):
@@ -41,8 +43,16 @@ class MockShuttleDesign:
 
 
 class MockShuttle:
+    """Only PROJECT_NAME exists; any other name is an unknown design."""
+
     def __init__(self):
-        self.tt_um_lahnb_sgdma = MockShuttleDesign()
+        setattr(self, PROJECT_NAME, MockShuttleDesign())
+
+    def __getitem__(self, name):
+        design = getattr(self, name, None)
+        if design is None:
+            raise KeyError(name)
+        return design
 
 
 class MockDemoBoard:
@@ -107,7 +117,7 @@ class MockDemoBoard:
                     self._complete_dma = True
 
     def poll_tick(self):
-        """Raise DONE after wait_busy has observed the low (runner tests)."""
+        """Raise DONE after wait_busy has observed the low."""
         if self._complete_dma and self.uo_out[0] == 0:
             self.uo_out[0] = 1
             self._complete_dma = False
