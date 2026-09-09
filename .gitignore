@@ -31,6 +31,9 @@ __pycache__/
 venv/
 dma-venv/
 
+# HIL interactive runner last selection recall
+hil/.last-selection
+
 
 # Sim / build artifacts
 *.vcd
