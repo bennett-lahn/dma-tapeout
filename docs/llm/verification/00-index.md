@@ -13,6 +13,7 @@ This directory is the canonical, verbose verification plan for the V1 descriptor
 7. `07-formal.md` - formal harnesses, properties, engines, and proof expectations
 8. `08-stimulus-and-coverage.md` - directed tests, constrained random stimulus, and coverage closure
 9. `09-gate-level-and-x.md` - gate-level regression, SDF, X propagation, and reset randomization
+10. `10-fpga-bitstream.md` - M7 UP5K bitstream toolchain (`python -m hil bitstream`; not `test/Makefile`); human walkthrough [`../../human/verification/fpga.md`](../../human/verification/fpga.md)
 
 Files 03 through 09 define the model, timing, scoreboard, checker, formal, stimulus, coverage, gate-level, and X-verification contracts.
 
@@ -103,7 +104,7 @@ For every `pass`, retain the simulator or formal engine, level, seed where appli
 | Random and coverage      | `COV-*`                  | pass           | M5 rematch 2026-08-25; merge `closed=true` (`missing={}`; reviewer `tb-closure-2026-08-25`) |
 | Buffer-depth sweep       | `TC-DEPTH`, `COV-DEPTH*` | pass           | `TC-DEPTH` **pass** N=1..8 (Icarus 15/15 per depth 2026-08-25, `run_depth_sweep-20260825-190207.log`); `COV-DEPTH*` bins in closed merge |
 | Gate-level and X         | M6 exit                  | todo           | M6                                                                                |
-| FPGA hardware validation | M7 exit                  | todo           | M7                                                                                |
+| FPGA hardware validation | M7 exit                  | wip            | Bitstream via `python -m hil bitstream`; demoboard `hil --target=fpga` sign-off pending |
 | Physical timing          | `T-*`                    | todo           | Post-M6/M7 closure                                                                |
 
 

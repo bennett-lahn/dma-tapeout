@@ -266,7 +266,7 @@ Directed cleanup evidence: `TC-RXEDGE-PENDING-AT-STOP`, `TC-PENDING-SURVIVES-CLE
 - At least one controlled negative test per monitor group proves the monitor can fail and emits the required ID and context.
 - Icarus and Verilator agree on all checks assigned to both simulators.
 
-**Status:** `pass` (2026-08-08) for M2 directed DMA paths and migrated M1 suites under shared bring-up. Ordinary dispose prefers pin-axis `dispose_run` / `dispose_pin_checks`. `test_qspi_pin_disposition` asserts model `Q-SIO-X` only and does not map that ID onto `CHK-PIN-KNOWN`.
+**Status:** `pass` (2026-08-08) for M2 directed DMA paths and migrated M1 suites under shared bring-up. Ordinary dispose prefers pin-axis `dispose_run`. `test_qspi_pin_disposition` asserts model `Q-SIO-X` only and does not map that ID onto `CHK-PIN-KNOWN`.
 
 **Residuals (do not reopen M2):**
 

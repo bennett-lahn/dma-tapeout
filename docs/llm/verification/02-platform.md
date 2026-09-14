@@ -94,11 +94,13 @@ Responsibilities:
 
 - `tb/` contains only HDL wrappers, shared-bus resolution, dump setup, and visibility needed by a DUT level. `tb_uio_bus.svh` resolves the physical `uio` plane for L1/L2 (Hi-Z SIO/SCK; CS pull-ups on bits 0/6/7 only). Top-level host `uio_oe` is ungated in SV (D26 pass-through negatives live in Python). L0 honors `WAVES_DISABLE` to skip VCD/FST dumps.
 - `tests/` contains cocotb test entry points. Test names carry `TC-*` IDs in docstrings or metadata, not in Python identifiers. L0 CE#/SCK idle self-check lives inside `bring_up_engine` (former `test_engine_attach` deleted).
-- `common/` contains host actions, clock/reset helpers, shared bring-up / dispose / directed plumbing, the pending-item lifecycle (`lifecycle.py`: `PendingLedger` / `finalize_all`), the blessed write BFM, run configuration, sim-only shared constants (`constants.py`), deterministic random support, and artifact naming. Cleanup contract detail: `06-checkers.md`.
+- `common/` contains host actions (`await_bus_gnt` / `release_bus_gnt` next to `assert_bus_req`), clock/reset helpers, shared bring-up / dispose / directed plumbing (`run_device_copy`, `pin_log` / `pin_by_kind`), the pending-item lifecycle (`lifecycle.py`: `PendingLedger` / `finalize_all`), the blessed write BFM (`level_or_none` is the public int-or-None handle helper), run configuration, sim-only shared constants (`constants.py`), deterministic random support, and artifact naming. Cleanup contract detail: `06-checkers.md`.
 - `models/` contains the two independent APS6404L instances and delay layer.
 - `reference/` contains architecture constants (`constants.py`; mechanical twin of `firmware/constants.py`), the pure-Python TCD encoder/decoder, chain interpreter, the modularized legal-chain generator class described in `08-stimulus-and-coverage.md`, and scoreboards. None of these may call DUT internals, and the generator is kept in its own module (`generator.py`) separate from the golden interpreter (`chain.py`) it depends on, since generating stimulus and interpreting it are distinct responsibilities that must stay separately testable.
 - `monitors/` contains passive protocol decoders and always-on `CHK-*` checks.
 - `formal/` contains `.sby` jobs, harnesses, and bind files. It shares RTL sources and constants conceptually, but does not import cocotb code.
+
+FPGA bitstream compile/upload is **not** under `test/`. It is a subset of `python -m hil` (`bitstream` / `upload`) for HIL / firmware and is not a GitHub Action. Contract: `10-fpga-bitstream.md`.
 
 Do not make one monolithic `test.py`. Model, monitor, reference, and stimulus code must remain independently testable and reusable across levels.
 
@@ -122,7 +124,7 @@ Pin-monitor independence (`05-reference-model.md`) is about not reading the PSRA
 
 Local values that are truly one-test (a directed negative opcode such as `0x38`, a single fixture address, the independent `MANDATORY_BYTES` restatement of `TC-TCD-BE`) stay local. `CHK-*` / most `Q-*` / `COV-*` ID strings stay in their catalog owner. `Q-*` IDs are simulation-provable QSPI protocol and edge checks; `CHK-*` IDs are always-on cocotb runtime monitors; `COV-*` IDs are functional coverage points.
 
-Firmware `asic.py` `DONE_BIT` is a `uo_out` **index**. Test `DONE_MASK` (`0x1`) is a **mask**. Do not unify them with `test_qspi_negative.py` `_BUS_GNT_BIT` (UIO **index**).
+Firmware `asic.py` `DONE_BIT` is a `uo_out` **index**. Test `DONE_MASK` (`0x1`) is a **mask**. Host grant wait uses `BUS_GNT_MASK` (`0x2`), not a UIO bit index.
 
 ### Complete function comments and a repo commenting standard
 
@@ -428,4 +430,5 @@ Hook scripts under `test/scripts/` should be git `+x`, but CI must not depend on
 - QPI constants and timing: `../05-qspi-psram.md`
 - Gate-level and physical timing checklist: `../11-timing-analysis.md`
 - Firmware housekeeping twin: `../12-firmware.md`
+- FPGA bitstream / M7 walkthrough (`python -m hil bitstream`, not this Makefile): `10-fpga-bitstream.md` / [`../../human/verification/fpga.md`](../../human/verification/fpga.md)
 - Human checklist: `../../human/roadmap.md`

@@ -16,7 +16,7 @@ This directory is the canonical, verbose project context for AI agents working a
 10. `09-references.md` - links and external notes
 11. `11-timing-analysis.md` - post-RTL timing checklist (PSRAM QSPI AC; extensible)
 12. `13-hardening-librelane.md` - local LibreLane / Nix harden runbook (TTIHP26b, `ttihp-verilog-template`, area audits)
-13. `verification/00-index.md` - verification strategy, cocotb platform, timed PSRAM model, scoreboards, checkers, formal, coverage, and gate-level/X closure
+13. `verification/00-index.md` - verification strategy, cocotb platform, timed PSRAM model, scoreboards, checkers, formal, coverage, gate-level/X, and M7 FPGA bitstream
 14. `prior-art/tinydma-2c.md` - **separate** TinyDMA-2C prior-art dump (optional; read only when comparing)
 
 ## Companion docs
@@ -25,6 +25,7 @@ This directory is the canonical, verbose project context for AI agents working a
 - Local harden (condensed): `../human/architecture/hardening.md` (twin of `13-hardening-librelane.md`)
 - Verification (verbose): `verification/00-index.md` (M0-M6 ladder; simulation, formal, and physical-closure handoff)
 - Verification (condensed): `../human/verification/00-index.md`
+- FPGA bitstream walkthrough (condensed): `../human/verification/fpga.md` (twin of `verification/10-fpga-bitstream.md`)
 - **Parity:** durable facts here must also appear in `../human/` in some form. llm elaborates; it is not a private source of truth. See `../README.md`. Known debt: `verification/06-checkers.md` (`CHK-*`) is still mostly llm-only.
 - Datasheets (PDF + converted markdown): `../datasheets/` (see `../datasheets/README.md` for conversion)
 - Handwritten notes (read-only, outside repo):

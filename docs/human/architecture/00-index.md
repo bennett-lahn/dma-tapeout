@@ -43,6 +43,7 @@ Verbose agent context: `../../llm/03-architecture.md`, `../../llm/04-tcd-and-dat
 | Verification strategy and sign-off | [`../verification/`](../verification/00-index.md) |
 | Timing analysis (post-RTL) | [`timing.md`](timing.md) |
 | Local LibreLane harden | [`hardening.md`](hardening.md) |
+| FPGA bitstream (M7) | [`../verification/fpga.md`](../verification/fpga.md) |
 | Open questions (detailed) | [`../../llm/08-open-questions.md`](../../llm/08-open-questions.md) |
 | Bulk-mover use case | [`../../llm/06-system-use-case.md`](../../llm/06-system-use-case.md) |
 | Decision log | [`../../llm/07-decision-log.md`](../../llm/07-decision-log.md) |

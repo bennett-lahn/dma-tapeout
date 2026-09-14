@@ -51,7 +51,7 @@ Once the cocotb/RTL verification milestones that gate M7 entry are complete, **F
 - [ ] RP2 demoboard scripts (bulk A↔B / scatter-gather patterns) - firmware bring-up complete enough that M7 can start
 - [x] Area/DFF audit vs 1-tile / **1x1** budget - manual LibreLane: **158** DFFs; **1x1 @ 66 MHz** closes (2026-08); keep re-auditing after RTL growth (D36; [`architecture/hardening.md`](architecture/hardening.md))
 - [ ] M6 - gate-level and X checks, then hand remaining physical `T-*` rows to STA and demoboard closure
-- [ ] M7 - FPGA hardware validation: load synthesizable RTL on an FPGA standing in for the ASIC on the same carrier board and MCU, run firmware-driven high-value hardware regression before freezing RTL for shuttle
+- [ ] M7 - FPGA hardware validation: load synthesizable RTL on an FPGA standing in for the ASIC on the same carrier board and MCU, run firmware-driven high-value hardware regression before freezing RTL for shuttle. Bitstream walkthrough: [`verification/fpga.md`](verification/fpga.md) (`python -m hil bitstream`; not `test/Makefile`)
 - [ ] Close **66 MHz `clk` / 33 MHz SCK** / rising-edge RX (D16 / D27): use delay-annotated simulation for `Q-*` pre-checks, STA for IHP pad + TT mux margin, and the demoboard for final number validity; see [`verification/strategy.md`](verification/strategy.md), [`architecture/timing.md`](architecture/timing.md), and [`../llm/verification/04-timing-in-sim.md`](../llm/verification/04-timing-in-sim.md)
 - [ ] CI + GDS flow green
 - [ ] Freeze RTL for shuttle

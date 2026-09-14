@@ -574,3 +574,25 @@ Detail: `docs/llm/08-open-questions.md`, `docs/llm/03-architecture.md`, `docs/ll
 **Supersedes:** D27 item 6 operational tile count and the ~500 DFF / 2-tile soft ceiling. IHP 1x1 / 1x2 geometry numbers in D27 remain valid as published tile boxes.
 
 Detail: `02-constraints.md`, `13-hardening-librelane.md`, human `overview.md`, `architecture/limitations.md`, `architecture/hardening.md`.
+
+## D37 - Firmware architecture refactoring and host-driven HIL testbench (amending D30)
+
+**Decision:**
+
+1. **Three-layer MCU tree under `firmware/`:**
+   - **Reusable demoboard control** (`firmware/board/`: `pins.py`, `board.py`, `qspi.py`) - project-agnostic ETR demoboard and PIO transport primitives. External tools (for example design-muxing utilities) may import `firmware.board` alone without pulling DMA or PSRAM protocol code.
+   - **DMA host protocol** (`firmware/dma.py`) - TinyDMA `START` / `DONE` / `BUS_REQ` / `BUS_GNT` (bus grant: MCU may drive shared QSPI while high) and D26 bus-keeper OE enforcement on top of `Board`.
+   - **PSRAM device protocol** (`firmware/psram.py`) - APS6404L commands, `tCEM` (max CE# low time) chunk planning, `tPU` (CE# high after power before the first command) bring-up.
+   Supporting modules: `firmware/constants.py`, copied `firmware/tcd.py`, `firmware/link.py` (OK/ERR envelope), `firmware/session.py` (persistent module singleton for remote exec), `firmware/debug.py`, `firmware/tests/`.
+2. **Golden oracle on the host PC:** delete duplicate MCU copies of chain building and run/compare (`firmware/chain.py`, `firmware/runner.py`, `firmware/build.py`, `firmware/demo.py`, and the old `firmware/asic.py` host wrapper). The host-side HIL testbench under `hil/` imports `test.reference.chain` (`MemoryImage`, `interpret_chain`) and `test.reference.generator` (`ChainGenerator`) directly, eliminating copy drift while preserving the rule that **MCU code never imports `test/`**.
+3. **Transport and session:** host commands use `mpremote` raw-paste mode with a single-line OK/ERR envelope (`firmware/link.py` on the MCU, `hil/link.py` on the host). A persistent module singleton on the MCU (`firmware/session.py`) and a Pythonic host wrapper (`hil/session.py`) keep `Board` / `DmaController` / `Psram` alive across remote calls; payloads cross as base64 on the text REPL line.
+4. **Test orchestration:** the full M7 regression suite is host pytest under `hil/` (interactive runner `python -m hil`), with target profiles `loopback` (in-process fake hardware), `fpga` (M7 breakout bitstream under `/bitstreams`), and `asic` (shuttle silicon). Directed `TC-*` builders live in `hil/cases.py`; shared pass/fail checks in `hil/checks.py`; `hil/fake_hw.py` injects fake demoboard hardware for loopback.
+5. **M7 evidence boundary unchanged:** M7 FPGA / demoboard hardware validation closes functional and integration correctness on real dual APS6404L devices, but closes **no** physical timing `T-*` rows (STA / demoboard closure only).
+
+**Why:** Separates reusable demoboard plumbing from TinyDMA-specific protocol code, removes a second oracle copy on the MCU, and lets HIL reuse the same reference model and generator as cocotb while keeping MicroPython import boundaries clean.
+
+**DFF / tile impact:** none; firmware / process decision only.
+
+**Amends:** D30 items 1 and 5 (no MCU `chain.py` / `build.py` / `demo.py`; no per-ID catalog under `firmware/`; HIL is host pytest under `hil/` with directed `TC-*` in `hil/cases.py`).
+
+Detail: `docs/llm/12-firmware.md`, `docs/human/architecture/firmware.md`, `docs/llm/verification/01-strategy.md`, `docs/human/verification/strategy.md`.

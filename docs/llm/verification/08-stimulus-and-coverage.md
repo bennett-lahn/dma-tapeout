@@ -52,7 +52,7 @@ All M2 rows in the table above (everything except `TC-DEPTH`) are `pass` at L1 I
 
 - Descriptor/data: `tests.test_dma_directed` (13 cases); `TC-DEPTH` (directed suite at each compile-time `DMA_BUF_DEPTH`) is M5-only via `make depth` / `run_depth_sweep.sh`, not a case inside that module
 - START / bus / reset: `tests.test_reset_and_bus` (11/11)
-- Shared helpers: `test/common/directed.py` (install, read-back, done-wait, dual-axis compare, dispose window)
+- Shared helpers: `test/common/directed.py` (install, read-back, done-wait, dual-axis compare, dispose window, `pin_log` / `pin_by_kind`, L1+L2 `run_device_copy`). The four device-direction `TC-*` IDs (`TC-*`: directed test IDs) stay on named tests: `TC-SAME-0` / `TC-SAME-1` / `TC-CROSS-01` / `TC-CROSS-10` and L2 `TC-GL-SAME-0` / `TC-GL-SAME-1` / `TC-GL-CROSS-01` / `TC-GL-CROSS-10`. Host grant helpers are `await_bus_gnt` / `release_bus_gnt` in `test/common/host.py`. Handle int-or-None is `level_or_none` in `test/common/engine_bfm.py`.
 - Makefile `make directed` default filter enumerates the 13 directed function names and excludes the skipped depth sweep (do not use a dishonest bare `TEST_FILTER=directed`)
 
 Ownership negatives live in `tests.test_qspi_ownership` as one consolidated test (`ownership_shared_bus_negatives`); `TC-OWN-*` IDs are sub-steps, not selectable filters. Full per-case re-split is deferred past M2.
@@ -228,7 +228,7 @@ Coverage is sampled from decoded transactions, host-visible behavior, reference-
 
 ## Coverage closure and exclusions
 
-**M5 coverage rematch (2026-08-25).** Regenerated `test/runs/m5_coverage_closure.json` from retained L1/L2 fragments: `closed=true`; `missing={}`; depths 1..8; reviewer `tb-closure-2026-08-25`. `COV-BUS-PHASE` and `COV-BUS-RESUME` remain 1-D enums (bin names unchanged; not a BUS-PHASE x RESUME cross). Exclusion matching is `(id, bin, depth)` so an N=1 `N-1` exclusion does not hide N=5 `N-1`. `TC-DEPTH` is 15/15 directed cases per compile-time N (Icarus, `make depth` / `run_depth_sweep.sh`). The 2026-08-16 first-exit claim used reviewer `M5-close` on an open rematch; that stamp is retired. M6 stays open: SDF blocked, Verilator-X is not four-state. Firmware oracle-hash / budget drift vs `test/reference/chain.py` remains a firmware follow-up (D30: firmware must not import `test/`).
+**M5 coverage rematch (2026-08-25).** Regenerated `test/runs/m5_coverage_closure.json` from retained L1/L2 fragments: `closed=true`; `missing={}`; depths 1..8; reviewer `tb-closure-2026-08-25`. `COV-BUS-PHASE` and `COV-BUS-RESUME` remain 1-D enums (bin names unchanged; not a BUS-PHASE x RESUME cross). Exclusion matching is `(id, bin, depth)` so an N=1 `N-1` exclusion does not hide N=5 `N-1`. `TC-DEPTH` is 15/15 directed cases per compile-time N (Icarus, `make depth` / `run_depth_sweep.sh`). The 2026-08-16 first-exit claim used reviewer `M5-close` on an open rematch; that stamp is retired. M6 stays open: SDF blocked, Verilator-X is not four-state. M7 directed/random stimulus lives in `hil/cases.py` and `hil/tests/test_random.py`, importing `test/reference` directly on the host (D37); the MCU tree keeps only copied `firmware/tcd.py` pack/unpack.
 
 M5 closes when:
 

@@ -25,3 +25,4 @@ Architecture and verification are parallel documentation sets under both `human/
 - Agent: [`llm/00-index.md`](llm/00-index.md)
 - Agent verification: [`llm/verification/00-index.md`](llm/verification/00-index.md)
 - Local LibreLane harden: [`human/architecture/hardening.md`](human/architecture/hardening.md) / [`llm/13-hardening-librelane.md`](llm/13-hardening-librelane.md)
+- FPGA bitstream: [`human/verification/fpga.md`](human/verification/fpga.md) / [`llm/verification/10-fpga-bitstream.md`](llm/verification/10-fpga-bitstream.md)

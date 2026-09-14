@@ -39,6 +39,8 @@ Do not modify these files from the repo agent workflow. If notes and repo docs d
   - Clock / GPIO pages on tinytapeout.com still describe **sky130** pad ratings; do not apply those MHz figures to IHP without re-deriving
   - Local harden runbook (Nix LibreLane, `tt_tool`, pitfalls, area audits): [`13-hardening-librelane.md`](13-hardening-librelane.md) / human [`../human/architecture/hardening.md`](../human/architecture/hardening.md)
   - Upstream local harden guide: https://www.tinytapeout.com/guides/local-hardening/
+  - FPGA ASIC simulator breakout (UP5K bitstream): https://www.tinytapeout.com/guides/fpga-asic-simulator-breakout/
+  - Local bitstream toolchain + walkthrough: [`verification/10-fpga-bitstream.md`](verification/10-fpga-bitstream.md) / [`../human/verification/fpga.md`](../human/verification/fpga.md)
   - LibreLane docs: https://librelane.readthedocs.io/
 
 ## Prior art (separate context; do not copy)

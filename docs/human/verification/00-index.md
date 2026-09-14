@@ -6,7 +6,8 @@ Condensed map of the V1 verification plan. Verbose catalogs live in [`../../llm/
 
 1. [`strategy.md`](strategy.md) - venues, DUT levels, milestones, and evidence boundaries
 2. [`signoff.md`](signoff.md) - RTL and shuttle freeze criteria
-3. [`../../llm/verification/00-index.md`](../../llm/verification/00-index.md) - full reading order, catalogs, and status vocabulary
+3. [`fpga.md`](fpga.md) - one-time M7 bitstream walkthrough (`python -m hil bitstream`; not `test/Makefile`)
+4. [`../../llm/verification/00-index.md`](../../llm/verification/00-index.md) - full reading order, catalogs, and status vocabulary
 
 ## Stable map
 
@@ -75,7 +76,7 @@ GitHub Actions: `test.yaml` (L1 Icarus smoke), `timing.yaml` (`bash test/scripts
 | SDF run | `blocked` | No compatible final-netlist SDF artifact; a zero-delay GL run is not an SDF pass |
 | `TC-DEPTH` (`1..8`) | `pass` | 2026-08-25: Icarus 15/15 directed suite per compile-time `DMA_BUF_DEPTH` via `make depth` / `run_depth_sweep.sh` (`run_depth_sweep-20260825-190207.log`) |
 | `DMA_BUF_DEPTH` elaboration `1..8` | `pass` | Tapeout and default sim/Make depth **N=5**; sweep N=1..8 green for directed suite |
-| M7 FPGA hardware validation | `wip` | Host `hil/` testbench in place (`loopback` pytest green); demoboard `fpga`/`asic` sign-off pending |
+| M7 FPGA hardware validation | `wip` | Host `hil/` loopback green (opt-in `--target=loopback`, fake hardware); bitstream via `python -m hil bitstream` or automatically on `--target=fpga`; demoboard `fpga`/`asic` sign-off pending. Walkthrough: [`fpga.md`](fpga.md) |
 | `T-*` closure | `todo` | STA and demoboard evidence follow M6 |
 | CI smoke job | `todo` | Local smoke green; CI job still open |
 | Independent `QspiPinMonitor` | live | CE#-framed decode; pin KNOWN dispose `via=pin` with `Q-SIO-X` twin row (`ADDR23` retired D35); L0 default `pin_monitor=False` leaves those IDs `na`; ordinary paths use `dispose_run` |
@@ -104,6 +105,6 @@ Do not treat delay-annotated simulation, zero-delay gate simulation, or missing 
 
 Not a shuttle freeze gate. Full text: [`../../llm/verification/02-platform.md`](../../llm/verification/02-platform.md). Firmware twin: [`../architecture/firmware.md`](../architecture/firmware.md). Checklist: [`../roadmap.md`](../roadmap.md).
 
-1. **Centralize constants.** Architecture numbers live in `test/reference/constants.py` (mechanical twin of `firmware/constants.py`). Sim-only shared numbers (DONE mask, timeouts, `FILL`, FSM encodings) live in `test/common/constants.py`. `Q-*` IDs are simulation-provable QSPI protocol and edge checks; `CHK-*` IDs are always-on cocotb runtime monitors; `COV-*` IDs are functional coverage points and stay in their catalog owner. Firmware still must not import `test/` (D30).
+1. **Centralize constants.** Architecture numbers live in `test/reference/constants.py` (mechanical twin of `firmware/constants.py`). Sim-only shared numbers (DONE mask, `BUS_GNT` mask, timeouts, `FILL`, FSM encodings) live in `test/common/constants.py`. Firmware `DONE_BIT` is a `uo_out` index; test `DONE_MASK` / `BUS_GNT_MASK` are masks. Host grant wait is `await_bus_gnt` / `release_bus_gnt`. `Q-*` IDs are simulation-provable QSPI protocol and edge checks; `CHK-*` IDs are always-on cocotb runtime monitors; `COV-*` IDs are functional coverage points and stay in their catalog owner. Firmware still must not import `test/` (D30).
 2. **Complete function comments, plus a repo commenting standard.** Review verification docs and add a complete comment on every testbench function. Write the commenting standard in that same change; later RTL and scripts follow it.
 3. **Centralize testbench interaction and make output easier to read.** Done. Cocotb tests call `common.runlog.begin_run` for `REPRO` / SEED banners (both `run_test.sh` and `make test` forms; L2 uses `run_gl.sh`). Passing dispose output is a compact summary; a fail still prints every `CHK-*` / `Q-*` ID. Checker pass/fail semantics stay the same.

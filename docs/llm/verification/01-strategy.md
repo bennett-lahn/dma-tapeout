@@ -47,12 +47,13 @@ Before RTL is frozen for the shuttle, the synthesizable `tt_um_lahnb_sgdma` RTL 
 
 This venue owns:
 
-- a high-value hardware regression subset of `TC-*` (same-device copies, both cross-device directions, chaining, `QUIT`, zero length, bus handoff, and reset recovery) driven by real MCU firmware instead of a cocotb host driver
+- a host-driven HIL regression under `hil/` (D37) that orchestrates real MCU firmware over `mpremote` while building stimulus and golden checks on the PC using `test.reference.chain` (`MemoryImage`, `interpret_chain`) and `test.reference.generator` (`ChainGenerator`)
+- the directed feature matrix exercised in `hil/tests/test_directed.py`: `TC-SAME-0`, `TC-SAME-1`, `TC-CROSS-01`, `TC-CROSS-10`, `TC-CHAIN`, `TC-NEXT-DEVICE`, `TC-LEN-CORNERS`, `TC-QUIT`, `TC-EMPTY`, `TC-RESTART`, `TC-ADDR-WIDE`, `TC-OVERLAP`, plus bus handoff and reset recovery cases, and a seeded random campaign in `hil/tests/test_random.py`
 - real board timing, real bus loading, and real APS6404L devices in place of the Python PSRAM model
 - firmware and system-integration bugs that an idealized clock, a symbolic formal environment, or a behavioral PSRAM model cannot expose
 - one hardware checkpoint before an irreversible shuttle commit, taken while an RTL fix is still cheap
 
-Reaching this venue may require adapting existing testbench-derived stimulus (for example, reusing the reference-model chain generator's intent as fixed firmware test vectors) and writing new MCU firmware test code that is not part of the cocotb `test/` tree. That firmware and its test scripts are retained and tied to the RTL revision they validated.
+Target profiles are `loopback` (in-process fake hardware), `fpga` (M7 breakout bitstream under `/bitstreams`), and `asic` (shuttle silicon). `--target` has no default and loopback must be named, so a fake-hardware pass is never mistaken for hardware evidence. Interactive selection: `python -m hil --target=...`; full suite: `pytest hil/tests/ --target=...`. The MCU tree under `firmware/` must not import `test/`; only the host `hil/` package imports the reference model directly.
 
 FPGA hardware validation does not prove IHP pad, TT mux, or routed-net timing. FPGA I/O electrical characteristics differ from IHP SG13G2 pads and do not substitute for `T-*` evidence. It also does not replace M6 gate-level and X checks, which require the actual synthesized ASIC netlist rather than an FPGA bitstream. A pass here is hardware-level functional and firmware-integration confidence, not physical timing sign-off.
 
@@ -288,15 +289,16 @@ Out of M3 (residuals, do not reopen the M3 gate):
 
 ### M7 - FPGA hardware validation
 
-**Entry:** M0 through M5 complete. Once that cocotb/RTL sim gate is met, FPGA testing must be ready to run: demoboard/FPGA bring-up including MicroPython firmware under `firmware/` (D30; see [`12-firmware.md`](../12-firmware.md) and human roadmap) is allowed and needed before or as M7 starts, not deferred until after M7. Host-side `firmware/tests` unit logic may start earlier; demoboard HIL is this milestone. M6 may proceed independently since it requires a different artifact, the synthesized ASIC netlist, while M7 requires only an FPGA-synthesizable build of the same RTL.
+**Entry:** M0 through M5 complete. Once that cocotb/RTL sim gate is met, FPGA testing must be ready to run: demoboard/FPGA bring-up including MicroPython firmware under `firmware/`, the host HIL testbench under `hil/`, and a UP5K bitstream from `python -m hil bitstream` (D30/D37; see [`12-firmware.md`](../12-firmware.md), [`10-fpga-bitstream.md`](10-fpga-bitstream.md), and human roadmap) is allowed and needed before or as M7 starts, not deferred until after M7. Host-side `firmware/tests` unit logic and `hil/tests` loopback regression may start earlier; demoboard HIL against `fpga` or `asic` is this milestone. M6 may proceed independently since it requires a different artifact, the synthesized ASIC netlist, while M7 requires only an FPGA-synthesizable build of the same RTL.
 
 **Exit:**
 
 - the RTL synthesizes for the selected FPGA target and fits the carrier board's connector and voltage requirements in the ASIC's pin position
-- MCU firmware drives START, TCD installation, and DONE handshaking against the FPGA exactly as it will drive the ASIC
-- the selected high-value hardware regression subset passes with real dual-PSRAM devices: same-device copies, both cross-device directions, chaining, `QUIT`, zero length, bus handoff, and reset recovery
+- host `hil/` drives real MCU firmware (`firmware/session.py` over `mpremote`) against the FPGA or ASIC exactly as it will for silicon bring-up
+- the directed `TC-*` feature matrix and seeded random campaign pass with real dual-PSRAM devices (or documented waivers for hardware-only gaps): `TC-SAME-0`, `TC-SAME-1`, `TC-CROSS-01`, `TC-CROSS-10`, `TC-CHAIN`, `TC-NEXT-DEVICE`, `TC-LEN-CORNERS`, `TC-QUIT`, `TC-EMPTY`, `TC-RESTART`, `TC-ADDR-WIDE`, `TC-OVERLAP`, plus bus handoff and reset recovery
 - any divergence from simulation is triaged as a firmware, board, FPGA-only artifact, or RTL defect before it is dismissed
-- the firmware and hardware test scripts used are retained and tied to the RTL revision they validated
+- the `hil/` suite, firmware revision, and hardware target profile used are retained and tied to the RTL revision they validated
+- M7 closes functional and integration correctness on real devices; it closes **no** physical timing `T-*` rows
 
 ## Sign-off gates
 

@@ -47,7 +47,7 @@ L2 IDs are `TC-GL-*` so they are not counted as L1 closure. Extra PSRAM1 / cross
 
 Run the final tapeout depth, `DMA_BUF_DEPTH=5`. The synthesized `tt_um_lahnb_sgdma` instance in `test/tb/tb_gl.sv` is flattened at that depth: do not pass `#(.DMA_BUF_DEPTH(...))` on the netlist instance, and do not treat Makefile `-Ptb_gl.DMA_BUF_DEPTH` as a resynthesis. Other depths across `1..DMA_BUF_DEPTH_MAX` are for L1 sweeps via the module parameter; they are not required at L2 unless separate netlists are intentionally hardened.
 
-Implementation entry: `tests.test_gate_level` via `test/scripts/run_gl.sh` or `GATES=yes make` / `make gl_test`. `run_gl.sh` copies the designated 189-DFF N=5 unpowered netlist `test/gate_level_netlist.189-aug18.v` (SHA256 `9a769ad4bcc09d7cff699e8f178acab4fb5b7228e242cfdf7d027ed2274beb7a`) to `test/gate_level_netlist.v` and fails on mismatch or if `SDF` is set. It does not silently prefer a ttihp template netlist. `_require_l2` repeats that SHA pin. A missing netlist or `PDK_ROOT` is `blocked`, not a pass. M6 stays open: Verilator-X (`make verilator_x`, `--x-assign unique --x-initial unique`) isolates `RUN_DIR`/`SIM_BUILD` under `x-unique` so it cannot clobber Icarus builds; it is a binary sensitivity campaign, not four-state gate sim, and SDF remains blocked. Isolated evidence: `test/runs/run_verilator_x-20260825-191818.log` (1/1 smoke).
+Implementation entry: `tests.test_gate_level` via `test/scripts/run_gl.sh` or `GATES=yes make` / `make gl_test`. `run_gl.sh` stages the unpowered netlist `test/gate_level_netlist.v` and fails if `SDF` is set or if the netlist is missing; it logs the netlist SHA256 in the test run log. A missing netlist or `PDK_ROOT` is `blocked`, not a pass. M6 stays open: Verilator-X (`make verilator_x`, `--x-assign unique --x-initial unique`) isolates `RUN_DIR`/`SIM_BUILD` under `x-unique` so it cannot clobber Icarus builds; it is a binary sensitivity campaign, not four-state gate sim, and SDF remains blocked. Isolated evidence: `test/runs/run_verilator_x-20260825-191818.log` (1/1 smoke).
 
 L2 tests use only top-level pins, resolved shared-bus signals, decoded QPI transactions, final memory, and ordered transaction logs as pass criteria. They must not depend on RTL hierarchy, source enum values, internal register names, or synthesis-generated instance names.
 
@@ -151,7 +151,7 @@ Run these experiments primarily at L0 and L1 for fast diagnosis. Optional L2 Ver
 
 ### Status model
 
-Current SDF status: `blocked`. No qualified netlist-matched SDF annotation has been run. A zero-delay Icarus L2 run on the designated 189-DFF N=5 netlist `test/gate_level_netlist.189-aug18.v` (SHA256 `9a769ad4bcc09d7cff699e8f178acab4fb5b7228e242cfdf7d027ed2274beb7a`) is not an SDF pass. Do not cite an earlier ~153-DFF hash as the tapeout netlist identity. Icarus prints `ifnone` specify-path "sorry" messages on the cell models; compile still produces a `sim.vvp`.
+Current SDF status: `blocked`. No qualified netlist-matched SDF annotation has been run. A zero-delay Icarus L2 run on the N=5 gate netlist `test/gate_level_netlist.v` is not an SDF pass. Icarus prints `ifnone` specify-path "sorry" messages on the cell models; compile still produces a `sim.vvp`.
 
 SDF is optional until the hardening flow produces a compatible SDF artifact. Record one of:
 
