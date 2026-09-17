@@ -26,6 +26,7 @@ from hil.link import (
     envelope_line,
     loopback_link,
     parse_payload,
+    wait_for_mpremote_port,
 )
 
 ALL_BYTES = bytes(range(256))
@@ -54,25 +55,25 @@ class StubTransport:
 # --- base64 payload codec ---
 
 
-def test_b64_round_trip_covers_every_byte_value():
+def test_selftest_b64_round_trip_covers_every_byte_value():
     payload = b64encode(ALL_BYTES)
     assert "\n" not in payload and "\r" not in payload
     assert b64decode(payload) == ALL_BYTES
 
 
-def test_b64_round_trip_of_empty_and_unpadded_lengths():
+def test_selftest_b64_round_trip_of_empty_and_unpadded_lengths():
     for data in (b"", b"a", b"ab", b"abc", b"abcd"):
         assert b64decode(b64encode(data)) == data
 
 
-def test_b64decode_accepts_bytes_as_well_as_str():
+def test_selftest_b64decode_accepts_bytes_as_well_as_str():
     assert b64decode(b64encode(b"span").encode("ascii")) == b"span"
 
 
 # --- OK / ERR line formatting ---
 
 
-def test_format_ok_encodes_by_return_type():
+def test_selftest_format_ok_encodes_by_return_type():
     assert format_ok(None) == "OK"
     assert format_ok(b"\x00\xff") == "OK " + b64encode(b"\x00\xff")
     assert format_ok("already-qpi") == "OK already-qpi"
@@ -82,38 +83,38 @@ def test_format_ok_encodes_by_return_type():
     assert format_ok({"done": True}) == 'OK {"done": true}'
 
 
-def test_format_ok_refuses_a_multiline_str_payload():
+def test_selftest_format_ok_refuses_a_multiline_str_payload():
     with pytest.raises(LinkError, match="one line"):
         format_ok("first\nsecond")
 
 
-def test_format_ok_refuses_a_type_with_no_payload_encoding():
+def test_selftest_format_ok_refuses_a_type_with_no_payload_encoding():
     with pytest.raises(LinkError, match="no payload encoding for object"):
         format_ok(object())
 
 
-def test_format_err_names_the_exception_type_and_message():
+def test_selftest_format_err_names_the_exception_type_and_message():
     assert format_err(ValueError("bad span")) == "ERR ValueError bad span"
 
 
-def test_format_err_omits_an_empty_message():
+def test_selftest_format_err_omits_an_empty_message():
     assert format_err(RuntimeError()) == "ERR RuntimeError"
 
 
-def test_format_err_collapses_a_multiline_message_to_one_line():
+def test_selftest_format_err_collapses_a_multiline_message_to_one_line():
     line = format_err(ValueError("first\nsecond\tthird"))
     assert line == "ERR ValueError first second third"
     assert len(line.splitlines()) == 1
 
 
-def test_one_line_collapses_every_whitespace_run():
+def test_selftest_one_line_collapses_every_whitespace_run():
     assert one_line("a\n\n b\t c ") == "a b c"
 
 
 # --- envelope wrapper ---
 
 
-def test_envelope_prints_exactly_one_line_and_returns_it(capsys):
+def test_selftest_envelope_prints_exactly_one_line_and_returns_it(capsys):
     wrapped = envelope(lambda: {"oe": 0})
     line = wrapped()
     printed = capsys.readouterr().out
@@ -121,12 +122,12 @@ def test_envelope_prints_exactly_one_line_and_returns_it(capsys):
     assert printed == line + "\n"
 
 
-def test_envelope_passes_arguments_through():
+def test_selftest_envelope_passes_arguments_through():
     wrapped = envelope(lambda device, addr=0: bytes([device, addr]))
     assert wrapped(1, addr=2) == "OK " + b64encode(b"\x01\x02")
 
 
-def test_envelope_reports_an_exception_instead_of_raising(capsys):
+def test_selftest_envelope_reports_an_exception_instead_of_raising(capsys):
     def boom():
         raise KeyError("no such device")
 
@@ -135,7 +136,7 @@ def test_envelope_reports_an_exception_instead_of_raising(capsys):
     assert capsys.readouterr().out == line + "\n"
 
 
-def test_envelope_reports_an_unencodable_payload_as_a_link_error():
+def test_selftest_envelope_reports_an_unencodable_payload_as_a_link_error():
     line = envelope(lambda: object())()
     assert line.startswith(ERR_PREFIX + " LinkError")
 
@@ -143,44 +144,44 @@ def test_envelope_reports_an_unencodable_payload_as_a_link_error():
 # --- host-side parsing ---
 
 
-def test_parse_payload_reads_ok_with_and_without_a_payload():
+def test_selftest_parse_payload_reads_ok_with_and_without_a_payload():
     assert parse_payload("OK\n") == ""
     assert parse_payload("OK already-qpi\n") == "already-qpi"
     assert parse_payload('OK {"done": true}\n') == '{"done": true}'
 
 
-def test_parse_payload_raises_remote_error_with_type_and_message():
+def test_selftest_parse_payload_raises_remote_error_with_type_and_message():
     with pytest.raises(RemoteError) as caught:
         parse_payload("ERR DmaError timeout waiting for DONE high\n")
     assert caught.value.exc_type == "DmaError"
     assert caught.value.message == "timeout waiting for DONE high"
 
 
-def test_parse_payload_handles_err_with_no_message():
+def test_selftest_parse_payload_handles_err_with_no_message():
     with pytest.raises(RemoteError) as caught:
         parse_payload("ERR SessionError")
     assert caught.value.exc_type == "SessionError"
     assert caught.value.message == ""
 
 
-def test_parse_payload_rejects_a_line_that_is_not_an_envelope():
+def test_selftest_parse_payload_rejects_a_line_that_is_not_an_envelope():
     with pytest.raises(TransportError, match="unparsable"):
         parse_payload("OKAY fine\n")
 
 
-def test_parse_payload_rejects_output_with_no_line():
+def test_selftest_parse_payload_rejects_output_with_no_line():
     with pytest.raises(TransportError, match="no envelope line"):
         parse_payload("\n  \n")
 
 
-def test_envelope_line_takes_the_last_printed_line():
+def test_selftest_envelope_line_takes_the_last_printed_line():
     assert envelope_line("dev0 0x000000  01 02\nOK\n") == OK_PREFIX
 
 
 # --- Link over a stub transport ---
 
 
-def test_link_sends_the_preamble_once_then_the_statements():
+def test_selftest_link_sends_the_preamble_once_then_the_statements():
     transport = StubTransport()
     link = Link(transport)
     link.call("session.pulse_start()")
@@ -192,7 +193,7 @@ def test_link_sends_the_preamble_once_then_the_statements():
     ]
 
 
-def test_link_reset_reboots_the_remote_and_resends_the_preamble():
+def test_selftest_link_reset_reboots_the_remote_and_resends_the_preamble():
     transport = StubTransport()
     link = Link(transport)
     link.call("session.status()")
@@ -202,7 +203,7 @@ def test_link_reset_reboots_the_remote_and_resends_the_preamble():
     assert transport.codes.count(PREAMBLE) == 2
 
 
-def test_link_typed_calls_decode_json_bytes_and_bare_ok():
+def test_selftest_link_typed_calls_decode_json_bytes_and_bare_ok():
     transport = StubTransport(
         {
             "json": 'OK {"bus_gnt": false, "oe": 0}\n',
@@ -218,19 +219,19 @@ def test_link_typed_calls_decode_json_bytes_and_bare_ok():
     assert link.call_text("text") == "qpi"
 
 
-def test_link_call_none_rejects_an_unexpected_payload():
+def test_selftest_link_call_none_rejects_an_unexpected_payload():
     link = Link(StubTransport({"noisy": "OK 1\n"}))
     with pytest.raises(TransportError, match="bare OK"):
         link.call_none("noisy")
 
 
-def test_link_call_json_rejects_a_non_json_payload():
+def test_selftest_link_call_json_rejects_a_non_json_payload():
     link = Link(StubTransport({"text": "OK qpi\n"}))
     with pytest.raises(TransportError, match="not JSON"):
         link.call_json("text")
 
 
-def test_serial_transport_builds_the_mpremote_command(monkeypatch):
+def test_selftest_serial_transport_builds_the_mpremote_command(monkeypatch):
     """The real-hardware path, checked without a board: only the argv is built."""
     calls = []
 
@@ -244,22 +245,25 @@ def test_serial_transport_builds_the_mpremote_command(monkeypatch):
         return Done()
 
     monkeypatch.setattr(hil.link.subprocess, "run", fake_run)
-    transport = SerialTransport(port="/dev/ttyACM0", settle_s=0)
+    transport = SerialTransport(port="/dev/ttyACM0", settle_s=0, port_wait_s=0)
     assert transport.exec("session.status()") == "OK qpi\n"
     transport.reset()
     assert calls == [
-        ["mpremote", "connect", "/dev/ttyACM0", "exec", "session.status()"],
+        # `resume` disables mpremote's default auto-soft-reset, which would
+        # otherwise wipe the board's Python heap (and any prior import) at
+        # the start of this connection, before `exec` even runs.
+        ["mpremote", "connect", "/dev/ttyACM0", "resume", "exec", "session.status()"],
         ["mpremote", "connect", "/dev/ttyACM0", "reset"],
     ]
 
 
-def test_serial_transport_reports_a_missing_mpremote_binary():
+def test_selftest_serial_transport_reports_a_missing_mpremote_binary():
     transport = SerialTransport(mpremote="mpremote-not-installed-here")
     with pytest.raises(TransportError, match="cannot run"):
         transport.exec("session.status()")
 
 
-def test_serial_transport_reports_a_nonzero_exit(monkeypatch):
+def test_selftest_serial_transport_reports_a_nonzero_exit(monkeypatch):
     class Done:
         returncode = 1
         stdout = ""
@@ -267,10 +271,55 @@ def test_serial_transport_reports_a_nonzero_exit(monkeypatch):
 
     monkeypatch.setattr(hil.link.subprocess, "run", lambda command, **kw: Done())
     with pytest.raises(TransportError, match="could not enter raw repl"):
-        SerialTransport().exec("session.status()")
+        SerialTransport(port_wait_s=0).exec("session.status()")
 
 
-def test_link_close_closes_the_transport():
+def test_selftest_serial_transport_retries_until_the_port_reappears(monkeypatch):
+    calls = []
+
+    class Done:
+        def __init__(self, code, err="", out=""):
+            self.returncode = code
+            self.stdout = out
+            self.stderr = err
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if len(calls) < 3:
+            return Done(
+                1,
+                err="mpremote: failed to access COM10 (it may be in use by another program)",
+            )
+        return Done(0, out="OK\n")
+
+    monkeypatch.setattr(hil.link.subprocess, "run", fake_run)
+    monkeypatch.setattr(hil.link.time, "sleep", lambda s: None)
+    transport = SerialTransport(port="COM10", settle_s=0, port_wait_s=5)
+    assert transport.exec("import firmware.session as session") == "OK\n"
+    assert len(calls) == 3
+
+
+def test_selftest_wait_for_mpremote_port_times_out(monkeypatch):
+    monkeypatch.setattr(hil.link.time, "sleep", lambda s: None)
+
+    def fake_run(command, **kwargs):
+        return type(
+            "Done",
+            (),
+            {
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "mpremote: failed to access COM10",
+            },
+        )()
+
+    with pytest.raises(TransportError, match="not ready"):
+        wait_for_mpremote_port(
+            "COM10", timeout_s=0.01, interval_s=0, run=fake_run
+        )
+
+
+def test_selftest_link_close_closes_the_transport():
     transport = StubTransport()
     link = Link(transport)
     link.exec("session.status()")
@@ -281,7 +330,7 @@ def test_link_close_closes_the_transport():
 # --- loopback transport against firmware.session ---
 
 
-def test_loopback_runs_session_entry_points_and_captures_stdout():
+def test_selftest_loopback_runs_session_entry_points_and_captures_stdout():
     link = loopback_link()
     result = link.call_json("session.init('tt_um_lahnb_sgdma')")
     assert result["design"] == "tt_um_lahnb_sgdma"
@@ -289,7 +338,7 @@ def test_loopback_runs_session_entry_points_and_captures_stdout():
     assert link.call_json("session.status()")["done"] is True
 
 
-def test_loopback_reports_a_session_exception_as_a_remote_error():
+def test_selftest_loopback_reports_a_session_exception_as_a_remote_error():
     link = loopback_link()
     with pytest.raises(RemoteError) as caught:
         link.call("session.status()")
@@ -297,13 +346,13 @@ def test_loopback_reports_a_session_exception_as_a_remote_error():
     assert "init" in caught.value.message
 
 
-def test_loopback_raises_transport_error_when_the_statement_itself_fails():
+def test_selftest_loopback_raises_transport_error_when_the_statement_itself_fails():
     link = loopback_link()
     with pytest.raises(TransportError, match="AttributeError"):
         link.call("session.not_an_entry_point()")
 
 
-def test_loopback_reset_drops_session_state_like_a_soft_reboot():
+def test_selftest_loopback_reset_drops_session_state_like_a_soft_reboot():
     transport = LoopbackTransport(FakeHardware())
     link = Link(transport)
     link.call_json("session.init('tt_um_lahnb_sgdma')")
@@ -313,14 +362,14 @@ def test_loopback_reset_drops_session_state_like_a_soft_reboot():
     assert transport.history.count(PREAMBLE) == 2
 
 
-def test_loopback_close_detaches_the_fake_hardware_factory():
+def test_selftest_loopback_close_detaches_the_fake_hardware_factory():
     transport = LoopbackTransport(FakeHardware())
     assert transport.session.HARDWARE_FACTORY is transport.hardware
     Link(transport).close()
     assert transport.session.HARDWARE_FACTORY is None
 
 
-def test_loopback_rejects_an_unknown_design_name():
+def test_selftest_loopback_rejects_an_unknown_design_name():
     link = loopback_link()
     with pytest.raises(RemoteError) as caught:
         link.call("session.init('tt_um_not_this_project')")
@@ -330,7 +379,7 @@ def test_loopback_rejects_an_unknown_design_name():
 # --- base64 data transfer end to end through the loopback ---
 
 
-def test_loopback_carries_span_bytes_as_base64_both_ways():
+def test_selftest_loopback_carries_span_bytes_as_base64_both_ways():
     hardware = FakeHardware()
     link = loopback_link(hardware)
     link.call_json("session.init('tt_um_lahnb_sgdma')")
@@ -344,7 +393,7 @@ def test_loopback_carries_span_bytes_as_base64_both_ways():
     assert link.call_bytes("session.read_span(1, 4096, 256)") == ALL_BYTES
 
 
-def test_loopback_reads_back_an_empty_span_as_a_bare_ok():
+def test_selftest_loopback_reads_back_an_empty_span_as_a_bare_ok():
     link = loopback_link()
     link.call_json("session.init('tt_um_lahnb_sgdma')")
     link.call_text("session.bring_up_psram()")
@@ -352,7 +401,7 @@ def test_loopback_reads_back_an_empty_span_as_a_bare_ok():
     assert link.call_bytes("session.read_span(0, 0, 0)") == b""
 
 
-def test_loopback_rejects_an_unknown_device_index():
+def test_selftest_loopback_rejects_an_unknown_device_index():
     link = loopback_link()
     link.call_json("session.init('tt_um_lahnb_sgdma')")
     with pytest.raises(RemoteError) as caught:
@@ -363,7 +412,7 @@ def test_loopback_rejects_an_unknown_device_index():
 # --- the fake board polices the frozen pin rules ---
 
 
-def test_fake_board_refuses_mcu_drive_without_grant_or_reset():
+def test_selftest_fake_board_refuses_mcu_drive_without_grant_or_reset():
     """D26 bus keeper: Hi-Z is the only legal OE while rst_n=1 and BUS_GNT=0."""
     with pytest.raises(FakeHardwareError, match="D26"):
         FakeDemoBoard().uio_oe_pico.value = OE_QPI
@@ -380,14 +429,14 @@ def test_fake_board_refuses_mcu_drive_without_grant_or_reset():
     assert int(while_granted.uio_oe_pico) == OE_QPI
 
 
-def test_fake_board_refuses_a_driven_unused_ui_in_bit():
+def test_selftest_fake_board_refuses_a_driven_unused_ui_in_bit():
     """D34: the ASIC does not use ui_in[1] or ui_in[7:3]; firmware keeps them 0."""
     board = FakeDemoBoard()
     with pytest.raises(FakeHardwareError, match="D34"):
         board.ui_in.value = UI_IN_UNUSED_MASK
 
 
-def test_session_calls_leave_the_mcu_hi_z_and_ui_in_zero():
+def test_selftest_session_calls_leave_the_mcu_hi_z_and_ui_in_zero():
     hardware = FakeHardware()
     link = loopback_link(hardware)
     link.call_json("session.init('tt_um_lahnb_sgdma')")

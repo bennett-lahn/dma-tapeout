@@ -1,56 +1,157 @@
 """Interactive terminal runner for demoboard HIL pytest suites.
 
-Collects real node IDs from ``hil/tests/``, groups them by marker or name into
-feature categories, and offers a stdlib-only menu (ranges, ``/filter``, last
-selection recall) before invoking pytest with any forwarded CLI options.
+Collects real node IDs from ``hil/tests/``, groups them by pytest marker
+(preferred) or a tight name fallback, and offers a stdlib-only menu before
+invoking pytest with any forwarded CLI options.
+
+`--target` is mandatory and is forwarded to pytest, so nobody lands on fake
+loopback hardware by accident.
+
+The menu always separates two kinds of category. **Hardware** categories
+(``hw_*``) hold tests that take the shared ``session`` fixture and so drive
+whatever ``--target`` is (real DUT on fpga/asic, fake on loopback); these are
+the product under test. **Self-test** holds every host-only test of the
+harness itself (parsing, formatting, the FPGA tool, and any loopback-only
+test that builds its own session instead of taking the fixture) - it never
+touches ``--target`` and passing it proves nothing about the RTL. See
+``HARDWARE_CATEGORIES`` / ``SELF_TEST_CATEGORY`` below.
 
 Usage::
 
-    python -m hil
-    python -m hil --target=asic --port=/dev/ttyACM0 --seed=42 -v
+    python -m hil --target=loopback
+    python -m hil --target=fpga
+    python -m hil --target=asic --seed=42 -v
 """
 
 from __future__ import annotations
 
+import io
+import os
 import re
 import subprocess
 import sys
 from collections import OrderedDict
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-# Ordered category keys shown in the menu. Grouping prefers pytest markers of
-# the same name, then substring matches on the node ID / test function name.
-CATEGORIES: tuple[str, ...] = (
-    "smoke",
-    "same_device",
-    "cross_device",
-    "chain",
-    "length",
-    "quit",
-    "address",
-    "overlap",
-    "start",
-    "bus",
-    "reset",
-    "random",
-    "unit",
+# Hardware/DUT categories: every member takes the `session` fixture (real
+# I/O against whatever `--target` is), is auto-tagged `hw` by
+# `hil/conftest.py`, and its function name carries a `test_hw_` prefix. These
+# are the product under test.
+HARDWARE_CATEGORIES: tuple[str, ...] = (
+    "hw_smoke",
+    "hw_same_device",
+    "hw_cross_device",
+    "hw_chain",
+    "hw_length",
+    "hw_quit",
+    "hw_address",
+    "hw_overlap",
+    "hw_start",
+    "hw_bus",
+    "hw_reset",
+    "hw_random",
+    "hw_checks",
 )
 
-# Name-based fallbacks when markers are absent (first match wins, else unit).
-_CATEGORY_NAME_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("smoke", ("smoke",)),
-    ("same_device", ("same_device", "same-device", "tc_same", "tc-same")),
-    ("cross_device", ("cross_device", "cross-device", "tc_cross", "tc-cross")),
-    ("chain", ("chain", "tc_chain", "tc-chain", "next_device", "next-device")),
-    ("length", ("length", "len_corner", "len-corner", "tc_len", "tc-len")),
-    ("quit", ("quit", "tc_quit", "tc-quit", "tc_empty", "tc-empty")),
-    ("address", ("address", "addr_wide", "addr-wide", "tc_addr", "tc-addr")),
-    ("overlap", ("overlap", "tc_overlap", "tc-overlap")),
-    ("start", ("start", "restart", "tc_restart", "tc-restart")),
-    ("bus", ("bus", "bus_req", "bus-req", "bus_gnt", "bus-gnt")),
-    ("reset", ("reset",)),
-    ("random", ("random", "fuzz")),
+# Everything that is not hardware/DUT: host-only tests of the harness itself
+# (parsing, formatting, categorization, the FPGA tool, and self-tests that
+# build their own loopback session locally instead of taking the `session`
+# fixture). Never touches `--target`. Kept as one bucket, deliberately not
+# broken out by file/feature, so it cannot be confused with the hardware
+# categories above.
+SELF_TEST_CATEGORY = "self_test"
+
+# Ordered category keys shown in the menu. Empty groups are hidden. Hardware
+# categories always precede the self-test bucket so the menu (`hil/run.py`'s
+# `format_category_menu`) can print one banner over each half.
+CATEGORIES: tuple[str, ...] = HARDWARE_CATEGORIES + (SELF_TEST_CATEGORY,)
+
+# The marker `hil/conftest.py` auto-applies to any test taking the `session`
+# fixture. A node without this marker is never placed in a hardware category
+# here, regardless of any feature marker (`same_device`, `chain`, ...) it
+# might also carry: `hil/tests/test_session.py`'s loopback self-tests
+# deliberately carry no feature markers for this exact reason, but this
+# guard also protects against a future test doing so by mistake.
+HARDWARE_MARKER = "hw"
+
+# Feature markers that mean a specific hardware category, checked only on
+# nodes that already carry `HARDWARE_MARKER`.
+_MARKER_ALIASES: dict[str, str] = {
+    "smoke": "hw_smoke",
+    "same_device": "hw_same_device",
+    "cross_device": "hw_cross_device",
+    "chain": "hw_chain",
+    "next_device": "hw_chain",
+    "length": "hw_length",
+    "quit": "hw_quit",
+    "address": "hw_address",
+    "overlap": "hw_overlap",
+    "start": "hw_start",
+    "restart": "hw_start",
+    "bus": "hw_bus",
+    "reset": "hw_reset",
+    "random": "hw_random",
+    "checks": "hw_checks",
+}
+
+# Name fallback when markers were not collected at all (e.g. the subprocess
+# collection fallback path). A node is only considered hardware if its leaf
+# test name carries the `test_hw_` prefix; everything else is `self_test`
+# regardless of what words appear in the name. Patterns below then pick the
+# specific hardware category, and any `test_hw_*` name matching none of them
+# lands in `hw_checks` (the catch-all for session/checker sanity).
+_HW_NAME_PREFIX = "test_hw_"
+_HW_CATEGORY_NAME_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("hw_smoke", ("test_hw_smoke", "tc-smoke", "tc_smoke")),
+    (
+        "hw_same_device",
+        ("same_device", "same-device", "same_0", "same_1", "tc_same", "tc-same"),
+    ),
+    (
+        "hw_cross_device",
+        (
+            "cross_device",
+            "cross-device",
+            "cross_01",
+            "cross_10",
+            "tc_cross",
+            "tc-cross",
+        ),
+    ),
+    ("hw_random", ("test_hw_random", "random_chain")),
+    (
+        "hw_chain",
+        (
+            "test_hw_chain",
+            "tc_chain",
+            "tc-chain",
+            "next_device",
+            "next-device",
+        ),
+    ),
+    ("hw_length", ("length_corners", "len_corner", "len-corner", "tc_len", "tc-len")),
+    (
+        "hw_quit",
+        (
+            "test_hw_quit",
+            "test_hw_empty",
+            "tc_quit",
+            "tc-quit",
+            "tc_empty",
+            "tc-empty",
+        ),
+    ),
+    ("hw_address", ("address_corners", "addr_wide", "addr-wide", "tc_addr", "tc-addr")),
+    ("hw_overlap", ("test_hw_overlap", "tc_overlap", "tc-overlap")),
+    ("hw_start", ("test_hw_restart", "tc_restart", "tc-restart", "restart")),
+    ("hw_bus", ("test_hw_bus", "tc_bus", "tc-bus")),
+    ("hw_reset", ("reset_recovery", "tc_reset", "tc-reset")),
+    (
+        "hw_checks",
+        ("descriptors_intact", "host_status", "session_fixture_bring_up", "session_shutdown"),
+    ),
 )
 
 _HIL_DIR = Path(__file__).resolve().parent
@@ -81,6 +182,66 @@ def parse_collect_output(text: str) -> list[str]:
     return nodeids
 
 
+class _CollectionPlugin:
+    """In-process pytest plugin that records node IDs and marker names."""
+
+    def __init__(self) -> None:
+        self.nodeids: list[str] = []
+        self.markers: dict[str, tuple[str, ...]] = {}
+
+    def pytest_collection_finish(self, session) -> None:
+        seen: set[str] = set()
+        for item in session.items:
+            nodeid = item.nodeid
+            if nodeid in seen:
+                continue
+            seen.add(nodeid)
+            self.nodeids.append(nodeid)
+            self.markers[nodeid] = tuple(m.name for m in item.iter_markers())
+
+
+def collect_catalog(
+    tests_path: Path | str | None = None,
+    *,
+    python: str | None = None,
+    cwd: Path | str | None = None,
+) -> tuple[list[str], dict[str, tuple[str, ...]]]:
+    """Collect ``hil/tests/`` node IDs plus each node's pytest markers."""
+    path = Path(tests_path) if tests_path is not None else _TESTS_DIR
+    work = Path(cwd) if cwd is not None else _REPO_ROOT
+    try:
+        collect_arg = str(path.resolve().relative_to(work.resolve()))
+    except ValueError:
+        collect_arg = str(path)
+    plugin = _CollectionPlugin()
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    previous = os.getcwd()
+    code = 5
+    try:
+        os.chdir(str(work))
+        import pytest
+
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = pytest.main(
+                [collect_arg, "--collect-only", "-q", "-p", "no:cacheprovider"],
+                plugins=[plugin],
+            )
+    finally:
+        os.chdir(previous)
+    if plugin.nodeids:
+        return plugin.nodeids, plugin.markers
+    # Fall back to subprocess stdout if the in-process plugin saw nothing.
+    nodeids = collect_tests(path, python=python, cwd=work)
+    if not nodeids and code not in (0, 5):
+        combined = stdout.getvalue() + "\n" + stderr.getvalue()
+        raise RuntimeError(
+            "pytest collection failed (exit %s):\n%s"
+            % (code, combined.strip() or "(no output)")
+        )
+    return nodeids, {}
+
+
 def collect_tests(
     tests_path: Path | str | None = None,
     *,
@@ -109,6 +270,21 @@ def collect_tests(
     return nodeids
 
 
+def _hw_feature_categories(marks: Iterable[str]) -> set[str]:
+    """Return hardware menu categories implied by a node's feature markers.
+
+    Only meaningful once the caller has already confirmed `HARDWARE_MARKER`
+    is present; a feature marker alone (e.g. `same_device`) never implies a
+    hardware category by itself, so it cannot pull a self-test in.
+    """
+    found: set[str] = set()
+    for raw in marks:
+        category = _MARKER_ALIASES.get(raw.lower())
+        if category in HARDWARE_CATEGORIES:
+            found.add(category)
+    return found
+
+
 def _node_name(nodeid: str) -> str:
     """Return the leaf test name portion of a node ID (after the last ``::``)."""
     return nodeid.rsplit("::", 1)[-1].lower()
@@ -118,20 +294,40 @@ def _node_haystack(nodeid: str) -> str:
     return nodeid.lower().replace("\\", "/")
 
 
+def _is_hw_name(nodeid: str) -> bool:
+    """True when a node's leaf test name carries the `test_hw_` prefix.
+
+    Name-only fallback for the marker-less collection path; the marker path
+    (`categorize_tests` with `markers_by_node`) uses `HARDWARE_MARKER`
+    instead and is authoritative whenever it is available.
+    """
+    return _node_name(nodeid).startswith(_HW_NAME_PREFIX)
+
+
 def categorize_from_names(nodeids: Sequence[str]) -> OrderedDict[str, list[str]]:
-    """Group node IDs by category using name/path heuristics (no markers)."""
+    """Group node IDs by category using name/path heuristics (no markers).
+
+    A node only ever lands in a hardware category when its name carries the
+    `test_hw_` prefix (`_is_hw_name`); every other node is `self_test`, no
+    matter what feature words its name happens to contain. This is what
+    keeps a loopback self-test named e.g. `test_selftest_..._reset_recovery`
+    out of `hw_reset`.
+    """
     groups: OrderedDict[str, list[str]] = OrderedDict((c, []) for c in CATEGORIES)
     for nodeid in nodeids:
+        if not _is_hw_name(nodeid):
+            groups[SELF_TEST_CATEGORY].append(nodeid)
+            continue
         hay = _node_haystack(nodeid)
         name = _node_name(nodeid)
         placed = False
-        for category, patterns in _CATEGORY_NAME_PATTERNS:
+        for category, patterns in _HW_CATEGORY_NAME_PATTERNS:
             if any(p in hay or p in name for p in patterns):
                 groups[category].append(nodeid)
                 placed = True
                 break
         if not placed:
-            groups["unit"].append(nodeid)
+            groups["hw_checks"].append(nodeid)
     return groups
 
 
@@ -141,37 +337,32 @@ def categorize_tests(
 ) -> OrderedDict[str, list[str]]:
     """Group tests by marker when provided, otherwise by name heuristics.
 
-    A node may appear in multiple marker categories. Unmatched nodes land in
-    ``unit``. Name-based grouping assigns each node to at most one category.
+    A node needs `HARDWARE_MARKER` to land in any hardware category; it may
+    then appear in several (one per matching feature marker), defaulting to
+    `hw_checks` if none matched. Every other node - no `HARDWARE_MARKER`, no
+    markers recorded, or (for the marker-less path) no `test_hw_` name
+    prefix - lands in `self_test`, regardless of any feature marker it might
+    also carry.
     """
     if not markers_by_node:
         return categorize_from_names(nodeids)
 
-    known = set(CATEGORIES)
     groups: OrderedDict[str, list[str]] = OrderedDict((c, []) for c in CATEGORIES)
-    placed: set[str] = set()
     for nodeid in nodeids:
-        marks = {m.lower() for m in markers_by_node.get(nodeid, ())}
-        matched = False
-        for category in CATEGORIES:
-            if category == "unit":
-                continue
-            if category in marks:
-                groups[category].append(nodeid)
-                matched = True
-                placed.add(nodeid)
-        # Unknown markers are ignored; fall through to name heuristics / unit.
-        if not matched:
-            # Prefer name heuristics over dumping everything into unit.
-            name_groups = categorize_from_names([nodeid])
-            for category, members in name_groups.items():
-                if members and category in known:
+        marks = set(markers_by_node.get(nodeid, ()))
+        if not marks:
+            # Nothing recorded for this node: fall back to its name alone.
+            for category, members in categorize_from_names([nodeid]).items():
+                if members:
                     groups[category].extend(members)
-                    placed.add(nodeid)
                     break
-    for nodeid in nodeids:
-        if nodeid not in placed:
-            groups["unit"].append(nodeid)
+            continue
+        if HARDWARE_MARKER not in marks:
+            groups[SELF_TEST_CATEGORY].append(nodeid)
+            continue
+        categories = _hw_feature_categories(marks) or {"hw_checks"}
+        for category in categories:
+            groups[category].append(nodeid)
     return groups
 
 
@@ -298,17 +489,41 @@ def run_pytest(
 
 
 def format_category_menu(groups: Mapping[str, Sequence[str]]) -> str:
-    """Render the top-level category list with counts."""
+    """Render the top-level category list with counts.
+
+    Hardware (``hw_*``) and self-test categories are always printed under
+    separate banners, in that order, even though both live in one flat,
+    continuously-numbered list for selection purposes.
+    """
     rows = categories_with_counts(groups)
+    hardware_nodeids = {
+        nodeid
+        for name, nodeids in groups.items()
+        if name != SELF_TEST_CATEGORY
+        for nodeid in nodeids
+    }
+    selftest_nodeids = set(groups.get(SELF_TEST_CATEGORY, ()))
+    total = len(hardware_nodeids | selftest_nodeids)
     lines = [
         "HIL test runner",
         "===============",
-        "Collected %d tests in %d categories"
-        % (sum(c for _, c in rows), len(rows)),
+        "Collected %d unique tests in %d categories (%d hardware / %d self-test)"
+        % (total, len(rows), len(hardware_nodeids), len(selftest_nodeids)),
         "",
     ]
     width = max((len(name) for name, _ in rows), default=4)
+    printed_hw_banner = False
+    printed_self_test_banner = False
     for i, (name, count) in enumerate(rows, start=1):
+        if name == SELF_TEST_CATEGORY:
+            if not printed_self_test_banner:
+                if printed_hw_banner:
+                    lines.append("")
+                lines.append("SELF-TEST (host-only harness checks; no --target)")
+                printed_self_test_banner = True
+        elif not printed_hw_banner:
+            lines.append("HARDWARE (drives --target; the product under test)")
+            printed_hw_banner = True
         lines.append("  %2d. %-*s  (%d)" % (i, width, name, count))
     lines.extend(
         [
@@ -328,8 +543,13 @@ def format_category_menu(groups: Mapping[str, Sequence[str]]) -> str:
 
 def format_test_menu(category: str, nodeids: Sequence[str]) -> str:
     """Render an expanded category's individual node IDs."""
+    kind = (
+        "self-test; host-only, no --target"
+        if category == SELF_TEST_CATEGORY
+        else "hardware; drives --target"
+    )
     lines = [
-        "Category: %s (%d tests)" % (category, len(nodeids)),
+        "Category: %s (%d tests, %s)" % (category, len(nodeids), kind),
         "",
     ]
     for i, nodeid in enumerate(nodeids, start=1):
@@ -482,18 +702,32 @@ def interactive_loop(
         return run_fn(selected, extra_args)
 
 
+def has_target_arg(args: Sequence[str]) -> bool:
+    """True when `--target` was passed (`--target=x` or `--target x`)."""
+    return any(arg == "--target" or arg.startswith("--target=") for arg in args)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry: collect, menu, then pytest with forwarded options."""
     extra = list(sys.argv[1:] if argv is None else argv)
+    if not has_target_arg(extra):
+        print(
+            "python -m hil needs a target: --target=loopback | fpga | asic.\n"
+            "  loopback is in-process fake hardware and must be asked for by "
+            "name.\n"
+            "  --target=fpga compiles and uploads a fresh bitstream on its own.",
+            file=sys.stderr,
+        )
+        return 2
     try:
-        nodeids = collect_tests()
+        nodeids, markers = collect_catalog()
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     if not nodeids:
         print("No tests collected under hil/tests/.", file=sys.stderr)
         return 5
-    groups = categorize_tests(nodeids)
+    groups = categorize_tests(nodeids, markers)
     return interactive_loop(groups, all_nodeids=nodeids, extra_args=extra)
 
 

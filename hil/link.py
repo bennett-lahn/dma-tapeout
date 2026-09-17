@@ -36,7 +36,29 @@ PREAMBLE = "import firmware.session as session"
 
 DEFAULT_TIMEOUT_S = 30
 # Seconds to let the MCU reboot and re-read config.ini after `mpremote reset`.
+# USB CDC then drops; Windows COM / Linux ttyACM* need a further wait (below).
 DEFAULT_RESET_SETTLE_S = 1.0
+# How long to keep retrying `mpremote connect` after a reset or FPGA upload
+# until the CDC port re-enumerates. "failed to access COM10" is this race,
+# not a missing board.
+DEFAULT_PORT_WAIT_S = 20.0
+DEFAULT_PORT_RETRY_INTERVAL_S = 0.5
+DEFAULT_PORT_PROBE_TIMEOUT_S = 5.0
+
+_TRANSIENT_PORT_MARKERS = (
+    "failed to access",
+    "could not open port",
+    "filenotfounderror",
+    "no such file or directory",
+    "the system cannot find the file",
+    "device or resource busy",
+    "serialexception",
+    "in use by another",
+)
+_TRANSIENT_REPL_MARKERS = (
+    "could not enter raw repl",
+    "failed to enter raw repl",
+)
 
 
 class LinkError(Exception):
@@ -55,6 +77,73 @@ class RemoteError(LinkError):
         LinkError.__init__(self, text)
         self.exc_type = exc_type
         self.message = message
+
+
+def is_transient_port_error(detail):
+    """True when *detail* is a CDC port that is gone or still exclusive-locked."""
+    text = (detail or "").lower()
+    return any(marker in text for marker in _TRANSIENT_PORT_MARKERS)
+
+
+def is_transient_repl_error(detail):
+    """True when *detail* is a port that opened before MicroPython is in the REPL."""
+    text = (detail or "").lower()
+    return any(marker in text for marker in _TRANSIENT_REPL_MARKERS)
+
+
+def wait_for_mpremote_port(
+    port,
+    *,
+    mpremote="mpremote",
+    timeout_s=DEFAULT_PORT_WAIT_S,
+    interval_s=DEFAULT_PORT_RETRY_INTERVAL_S,
+    probe_timeout_s=DEFAULT_PORT_PROBE_TIMEOUT_S,
+    run=None,
+):
+    """Block until `mpremote` can open *port* after USB CDC re-enumeration.
+
+    `mpremote reset` (including the reset after FPGA bitstream upload) drops
+    the CDC interface. The COM / ttyACM name often stays the same, but the
+    next connect races the re-enumerate and fails with "failed to access".
+    The probe uses `resume exec True` so it does not soft-reset a board that
+    just finished scanning `/bitstreams`.
+    """
+    runner = subprocess.run if run is None else run
+    command = [mpremote]
+    if port:
+        command += ["connect", port]
+    command += ["resume", "exec", "True"]
+    deadline = time.monotonic() + float(timeout_s)
+    last = ""
+    while True:
+        try:
+            done = runner(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=probe_timeout_s,
+            )
+        except OSError as error:
+            last = str(error)
+            done = None
+        except subprocess.TimeoutExpired:
+            last = "probe timed out after %s s" % probe_timeout_s
+            done = None
+        else:
+            if done.returncode == 0:
+                return
+            last = (done.stderr or done.stdout or "").strip()
+            if not (
+                is_transient_port_error(last) or is_transient_repl_error(last)
+            ):
+                raise TransportError(
+                    "%s exited %d: %s" % (" ".join(command), done.returncode, last)
+                )
+        if time.monotonic() >= deadline:
+            raise TransportError(
+                "%s not ready after %s s: %s" % (port or "auto", timeout_s, last)
+            )
+        time.sleep(interval_s)
 
 
 def envelope_line(output):
@@ -106,46 +195,86 @@ class SerialTransport:
         mpremote="mpremote",
         timeout_s=DEFAULT_TIMEOUT_S,
         settle_s=DEFAULT_RESET_SETTLE_S,
+        port_wait_s=DEFAULT_PORT_WAIT_S,
+        port_retry_interval_s=DEFAULT_PORT_RETRY_INTERVAL_S,
     ):
         self.port = port
         self.mpremote = mpremote
         self.timeout_s = timeout_s
         self.settle_s = settle_s
+        self.port_wait_s = port_wait_s
+        self.port_retry_interval_s = port_retry_interval_s
 
     def _run(self, args):
         command = [self.mpremote]
         if self.port:
             command += ["connect", self.port]
         command += args
-        try:
-            done = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_s,
-            )
-        except OSError as error:
-            raise TransportError("cannot run %s: %s" % (self.mpremote, error))
-        except subprocess.TimeoutExpired:
-            raise TransportError(
-                "%s timed out after %s s" % (" ".join(command), self.timeout_s)
-            )
-        if done.returncode != 0:
+        deadline = time.monotonic() + float(self.port_wait_s)
+        while True:
+            try:
+                done = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_s,
+                )
+            except OSError as error:
+                raise TransportError("cannot run %s: %s" % (self.mpremote, error))
+            except subprocess.TimeoutExpired:
+                raise TransportError(
+                    "%s timed out after %s s" % (" ".join(command), self.timeout_s)
+                )
+            if done.returncode == 0:
+                return done.stdout
             detail = (done.stderr or done.stdout or "").strip()
+            if (
+                self.port_wait_s
+                and is_transient_port_error(detail)
+                and time.monotonic() < deadline
+            ):
+                time.sleep(self.port_retry_interval_s)
+                continue
             raise TransportError(
                 "%s exited %d: %s" % (" ".join(command), done.returncode, detail)
             )
-        return done.stdout
 
     def exec(self, code):
-        """Run one statement on the MCU and return its stdout."""
-        return self._run(["exec", code])
+        """Run one statement on the MCU and return its stdout.
+
+        Every call is its own `mpremote` subprocess (see `_run`), i.e. its
+        own fresh connection. By default `mpremote` auto soft-resets the
+        device (wipes the Python heap, drops every import) the first time it
+        runs `exec` on a new connection - so without `resume` here, the
+        preamble's `import firmware.session as session` (`Link.open()`)
+        would always be wiped again before the very next `exec` call ever
+        sees it, and every real statement would fail with `NameError: name
+        'session' isn't defined`, on every run, deterministically. `resume`
+        is mpremote's own documented way to keep interpreter state across
+        separate connections; explicit resets (`reset()` below,
+        `session.reset_recovery()`) stay in charge of actually clearing
+        board state.
+        """
+        return self._run(["resume", "exec", code])
 
     def reset(self):
-        """Soft-reboot the MCU, dropping all module state."""
+        """Soft-reboot the MCU, dropping all module state.
+
+        After the reset command returns, the USB CDC port disappears until
+        the bootloader re-enumerates. Sleep `settle_s`, then wait until
+        `mpremote` can open the port again so the next `exec` is not a
+        "failed to access" race.
+        """
         self._run(["reset"])
         if self.settle_s:
             time.sleep(self.settle_s)
+        if self.port_wait_s:
+            wait_for_mpremote_port(
+                self.port,
+                mpremote=self.mpremote,
+                timeout_s=self.port_wait_s,
+                interval_s=self.port_retry_interval_s,
+            )
 
 
 class LoopbackTransport:
@@ -284,6 +413,7 @@ def loopback_link(hardware=None):
 
 
 __all__ = [
+    "DEFAULT_PORT_WAIT_S",
     "DEFAULT_RESET_SETTLE_S",
     "DEFAULT_TIMEOUT_S",
     "PREAMBLE",
@@ -296,6 +426,8 @@ __all__ = [
     "b64decode",
     "b64encode",
     "envelope_line",
+    "is_transient_port_error",
     "loopback_link",
     "parse_payload",
+    "wait_for_mpremote_port",
 ]

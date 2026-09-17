@@ -16,8 +16,18 @@ from test.reference.tcd import TCD_BYTES, decode_tcd, validate_tcd
 _EMPTY_WRITE_IDS = frozenset({"TC-QUIT", "TC-EMPTY"})
 
 
-@pytest.mark.parametrize("case", get_all_cases(), ids=lambda c: c.id)
-def test_case_builds_valid_memory_and_oracle(case):
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            case,
+            id=case.id,
+            marks=[getattr(pytest.mark, marker) for marker in case.markers],
+        )
+        for case in get_all_cases()
+    ],
+)
+def test_selftest_case_builds_valid_memory_and_oracle(case):
     assert case.id
     assert case.name
     assert case.spans, f"{case.id}: spans must include installed TCDs/payload"

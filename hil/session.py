@@ -16,6 +16,7 @@ from firmware.board.pins import PROJECT_CLOCK_HZ
 from firmware.constants import SCK_HZ_DEFAULT
 from firmware.link import b64encode
 
+from .fpga.tool import fpga_clock_hz
 from .link import Link, LoopbackTransport
 
 # info.yaml top_module; also the /bitstreams name for the M7 FPGA stand-in.
@@ -67,7 +68,7 @@ class TargetProfile:
 TARGET_PROFILES = {
     "loopback": TargetProfile("loopback"),
     "asic": TargetProfile("asic"),
-    "fpga": TargetProfile("fpga"),
+    "fpga": TargetProfile("fpga", clock_hz=fpga_clock_hz()),
 }
 
 
@@ -177,6 +178,29 @@ class Session:
             for offset, value in enumerate(data):
                 out[(device, addr + offset)] = value
         return out
+
+    def qpi_probe_read(self, device, addr, length):
+        """Bring-up probe: read *length* bytes in one `0xEB` frame, unchunked.
+
+        Unlike `read_spans` this does not split on `Psram.eb_chunk`, so the
+        returned bytes are one uninterrupted nibble stream and a read-phase
+        error shows up as a shift across the whole frame.
+
+        Raises:
+            SessionError: the frame came back short.
+        """
+        device = int(device)
+        addr = int(addr)
+        length = int(length)
+        data = self.link.call_bytes(
+            "session.qpi_probe_read(%d, %d, %d)" % (device, addr, length)
+        )
+        if len(data) != length:
+            raise SessionError(
+                "probe read %d:0x%06X expected %d bytes, got %d"
+                % (device, addr, length, len(data))
+            )
+        return data
 
     # --- run ---
 

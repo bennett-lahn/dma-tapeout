@@ -1,5 +1,5 @@
-"""Allow ``python -m hil`` to launch the interactive HIL test runner."""
+"""``python -m hil``: bitstream compile/upload subset, or the HIL test runner."""
 
-from hil.run import main
+from hil.cli import dispatch
 
-raise SystemExit(main())
+raise SystemExit(dispatch())

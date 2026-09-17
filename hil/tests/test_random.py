@@ -10,6 +10,12 @@ Determinism is the point. `--seed` picks the campaign, `child_random` derives
 one independent child seed per chain, and every failure prints the REPRO line
 that replays exactly that chain plus an oracle log window around the first bad
 byte. The default `--target=loopback` needs no demoboard.
+
+`test_hw_random_chain` is the only hardware/DUT test in this file (it takes
+the `session` fixture, hence the `test_hw_` prefix and auto-applied `hw`
+marker); `test_child_seeds_are_distinct_and_deterministic` and
+`test_random_chain_is_reproducible` are pure host self-tests of the generator
+and never touch `--target`.
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ from hil.checks import (
     check_descriptors_intact,
     check_dest_writes,
     check_guard_bytes,
+    check_head_tcd_installed,
     check_host_status,
     collapse_extents,
     contiguous_spans,
@@ -79,8 +86,12 @@ def poison_destinations(session, expected_writes, read_addresses) -> int:
 
 @pytest.mark.random
 @pytest.mark.parametrize("index", range(CHAIN_COUNT))
-def test_random_chain(session, request, index):
-    """One generated chain: install, poison, START, read back, check."""
+def test_hw_random_chain(session, request, detail, index):
+    """One generated chain against the live target: install, poison, START,
+    read back, check. Takes the `session` fixture, so this is a hardware/DUT
+    test (auto-tagged `hw`); the two campaign self-tests below take no
+    fixture and never touch `--target`.
+    """
     base_seed = int(request.config.getoption("--seed"))
     seed = child_seed(base_seed, index)
     target = request.config.getoption("--target")
@@ -92,16 +103,35 @@ def test_random_chain(session, request, index):
     expected = dict(result.expected_writes)
     extents = collapse_extents(expected)
 
-    session.write_spans(contiguous_spans(chain.memory))
+    spans = contiguous_spans(chain.memory)
+    session.write_spans(spans)
     poison_destinations(session, expected, result.read_addresses)
+    check_head_tcd_installed(chain, session)
     session.start_and_wait(timeout_ms=TIMEOUT_MS)
     dumped = session.read_spans(extents) if extents else {}
+    status = session.get_status()
 
+    guard = None
     try:
-        check_dest_writes(expected, dumped, label="%s dest writes" % case_id)
-        check_guard_bytes(chain.memory, extents, session)
-        check_descriptors_intact(chain, session)
-        check_host_status(session.get_status())
+        # `finally` so a failing chain still prints its detail block first.
+        try:
+            check_dest_writes(expected, dumped, label="%s dest writes" % case_id)
+            guard = check_guard_bytes(chain.memory, extents, session)
+            check_descriptors_intact(chain, session)
+            check_host_status(status)
+        finally:
+            detail.report_case(
+                case_id,
+                markers=("random",),
+                memory=chain.memory,
+                result=result,
+                expected=expected,
+                dumped=dumped,
+                spans=spans,
+                status=status,
+                guard=guard,
+                notes=("child seed %d of campaign seed %d" % (seed, base_seed),),
+            )
     except AssertionError as error:
         raise AssertionError(
             "\n".join(
@@ -116,7 +146,7 @@ def test_random_chain(session, request, index):
 
 
 @pytest.mark.random
-def test_child_seeds_are_distinct_and_deterministic():
+def test_selftest_child_seeds_are_distinct_and_deterministic():
     """The campaign must be replayable and must not repeat one chain."""
     seeds = [child_seed(0, index) for index in range(CHAIN_COUNT)]
     assert len(set(seeds)) == CHAIN_COUNT
@@ -126,7 +156,7 @@ def test_child_seeds_are_distinct_and_deterministic():
 
 @pytest.mark.random
 @pytest.mark.parametrize("index", range(CHAIN_COUNT))
-def test_random_chain_is_reproducible(index):
+def test_selftest_random_chain_is_reproducible(index):
     """The same seed must rebuild a byte-identical chain (no hardware needed)."""
     seed = child_seed(0, index)
     depth = DEFAULT_DMA_BUF_DEPTH

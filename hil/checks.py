@@ -1,7 +1,8 @@
 """Succinct HIL assertions plus the diagnostics a failure needs to be actionable.
 
-A HIL test should read as four lines - dest writes, guard bytes, descriptors,
-host port - and still print enough on failure to skip a debug session. Each
+A HIL test should read as five lines - head TCD peek, dest writes, guard
+bytes, descriptors, host port - and still print enough on failure to skip a
+debug session. Each
 `check_*` raises `AssertionError` with a formatted table instead of dumping two
 raw dicts, and each `format_*` builds one reproduction or log excerpt.
 
@@ -30,7 +31,11 @@ from test.reference.chain import (  # noqa: E402
     format_log,
     interpret_chain,
 )
-from test.reference.constants import TCD_BYTES  # noqa: E402
+from test.reference.constants import (  # noqa: E402
+    HEAD_ADDRESS,
+    HEAD_DEVICE,
+    TCD_BYTES,
+)
 from test.reference.scoreboard import (  # noqa: E402
     CLASS_MISSING_WRITE,
     CLASS_UNEXPECTED_WRITE,
@@ -42,6 +47,20 @@ from test.reference.tcd import format_bytes  # noqa: E402
 # Failure tables stay readable in a pytest tail; the count line still reports
 # every differing byte, so truncation never hides the true failure size.
 MAX_REPORTED_ROWS = 16
+
+# `probe_qpi_read_phase` scratch, clear of the head TCD and of every directed
+# case's data. Every nibble is distinct, so the observed stream names the exact
+# permutation: a shift, a dropped sample, and a duplicated sample all look
+# different. A pattern of complement pairs (A/5, 3/C) cannot do that, because
+# bit-reverse, bitwise-NOT, and lane-swap all produce the same answer on it.
+#
+# Three bytes, read back as four: the frame ceiling is MCU_QPI_READ_FRAME_MAX
+# (4 data bytes, once the dummy words and the realign spare are subtracted from
+# the joined RX FIFO), so this is the longest pattern that still leaves spare
+# nibbles for a residual shift to show up in.
+PROBE_DEVICE = 0
+PROBE_ADDRESS = 0x001000
+PROBE_PATTERN = b"\x12\x34\x56"
 
 # Bytes either side of a destination extent that an out-of-bounds write would
 # land in. 16 covers a whole overrun chunk at any legal DMA_BUF_DEPTH (N, the
@@ -102,15 +121,17 @@ def contiguous_spans(memory):
 # --- formatting internals -----------------------------------------------
 
 
-def _addr_text(address):
+def format_address(address):
+    """Render a 23-bit PSRAM address as `0xAABBCC`."""
     return "0x%06X" % (int(address) & ADDR_MAX)
 
 
-def _byte_text(value, absent=MISSING):
+def format_byte(value, absent=MISSING):
+    """Render one byte as `0xNN`, or `absent` when there is no value."""
     return absent if value is None else "0x%02X" % (int(value) & 0xFF)
 
 
-def _table(header, rows, *, indent="  "):
+def format_table(header, rows, *, indent="  "):
     """Render `rows` under `header` as a fixed-width text table."""
     cells = [[str(cell) for cell in row] for row in rows]
     widths = [
@@ -174,9 +195,9 @@ def check_dest_writes(
             (
                 kind,
                 device,
-                _addr_text(address),
-                _byte_text(want, NO_EXPECTATION),
-                _byte_text(have),
+                format_address(address),
+                format_byte(want, NO_EXPECTATION),
+                format_byte(have),
             )
         )
     if not rows:
@@ -193,7 +214,7 @@ def check_dest_writes(
             len(observed),
         )
     ]
-    lines.extend(_table(("class", "dev", "address", "expected", "got"), shown))
+    lines.extend(format_table(("class", "dev", "address", "expected", "got"), shown))
     if hidden:
         lines.append("  ... %d more differing byte(s)" % hidden)
     raise AssertionError("\n".join(lines))
@@ -261,7 +282,7 @@ def check_guard_bytes(
         if want == have:
             continue
         device, address = key
-        rows.append((device, _addr_text(address), _byte_text(want), _byte_text(have)))
+        rows.append((device, format_address(address), format_byte(want), format_byte(have)))
     if not rows:
         return wanted
 
@@ -270,7 +291,7 @@ def check_guard_bytes(
         "guard bytes: %d of %d byte(s) outside the destination extents changed "
         "(out-of-bounds write); guard_len=%d" % (len(rows), len(wanted), guard_len)
     ]
-    lines.extend(_table(("dev", "address", "expected", "got"), shown))
+    lines.extend(format_table(("dev", "address", "expected", "got"), shown))
     if hidden:
         lines.append("  ... %d more corrupted guard byte(s)" % hidden)
     raise AssertionError("\n".join(lines))
@@ -284,6 +305,209 @@ def _image_byte(image, device, address, skip_undefined):
         return None
     fill = getattr(image, "fill", None)
     return None if fill is None else fill & 0xFF
+
+
+def _nibbles(data):
+    """Return *data* as the wire nibble sequence, high nibble of each byte first."""
+    out = []
+    for value in bytes(data):
+        out.append((value >> 4) & 0x0F)
+        out.append(value & 0x0F)
+    return out
+
+
+def _nibble_source_map(want, have):
+    """Render each observed nibble as the index of the written nibble it equals.
+
+    Only meaningful when `want` has no repeated nibble; then `0 1 2 3 ...` is a
+    clean read, `- 0 1 2 ...` is one sample of lag, and a repeat such as
+    `2 2` is a doubled sample.
+    """
+    index = {value: position for position, value in enumerate(want)}
+    return " ".join(
+        "%d" % index[value] if value in index else "-" for value in have
+    )
+
+
+def probe_qpi_read_phase(
+    session, *, device=PROBE_DEVICE, address=PROBE_ADDRESS, pattern=PROBE_PATTERN
+):
+    """Write a distinct-nibble pattern and report how it comes back.
+
+    A QPI byte is two SCK on the wire, high nibble first, so a capture-point
+    error moves the whole nibble stream rather than scrambling bytes. Two reads
+    are taken of the same bytes:
+
+    * one `0xEB` frame covering the pattern plus a trailing byte, via
+      `qpi_probe_read`, which shows the uninterrupted nibble stream;
+    * the ordinary `read_spans` path, which chunks at `MCU_QPI_PAYLOAD_MAX`
+      (the FIFO payload ceiling).
+
+    Comparing the two separates the two candidate faults. If they disagree, the
+    capture depends on frame length and the fault is in the read path. If they
+    agree but differ from what was written, the bytes in the array really are
+    wrong and the fault is in the write path.
+
+    `pattern` must have no repeated nibble, or the source map is ambiguous.
+
+    Returns:
+        dict: `shift` in nibbles (0 = aligned, None = no shift explains it),
+        `pattern`, `framed` (single frame), and `chunked` (ordinary read path).
+
+    Raises:
+        AssertionError: the pattern did not come back intact.
+    """
+    pattern = bytes(pattern)
+    want = _nibbles(pattern)
+    if len(set(want)) != len(want):
+        raise ValueError("probe pattern %r repeats a nibble" % (pattern,))
+
+    session.write_spans(((device, address, pattern),))
+    framed = bytes(session.qpi_probe_read(device, address, len(pattern) + 1))
+    observed = session.read_spans(((device, address, len(pattern)),))
+    chunked = bytes(
+        observed.get((device, address + offset), 0) for offset in range(len(pattern))
+    )
+
+    have = _nibbles(framed)
+    shift = None
+    for candidate in range(len(have) - len(want) + 1):
+        if have[candidate : candidate + len(want)] == want:
+            shift = candidate
+            break
+
+    report = {
+        "shift": shift,
+        "pattern": pattern,
+        "framed": framed,
+        "chunked": chunked,
+    }
+    if shift == 0 and chunked == pattern:
+        return report
+
+    lines = [
+        "QPI read phase probe at %d:%s" % (device, format_address(address)),
+        "wrote            %s" % format_bytes(pattern),
+        "one %d-byte frame %s" % (len(framed), format_bytes(framed)),
+        "chunked read     %s" % format_bytes(chunked),
+        "nibble sources   %s   (index into the written nibbles, - = no match)"
+        % _nibble_source_map(want, have),
+    ]
+    if shift is not None and shift > 0:
+        lines.append(
+            "the whole pattern appears %d nibble(s) late, so the capture point "
+            "is %d SCK off (D16 read phase, tACLK / read data valid after "
+            "falling SCK)" % (shift, shift)
+        )
+    elif chunked[: len(pattern)] != framed[: len(pattern)]:
+        lines.append(
+            "the two reads disagree, so what comes back depends on the frame "
+            "length: the fault is in the read path, not in the stored bytes"
+        )
+    else:
+        lines.append(
+            "both reads agree and both differ from what was written, so the "
+            "stored bytes really are wrong: the fault is in the write path"
+        )
+    raise AssertionError("\n".join(lines))
+
+
+def _nibble_lag_hint(want, have):
+    """Name the one-SCK read misalignment when the read-back shows it.
+
+    Each byte is two SCK on the wire, high nibble first. If the capture point
+    is one clock late, the low nibble of every observed byte holds the high
+    nibble of the byte that was really installed, and the installed low
+    nibbles are never clocked out at all. Requires a non-zero installed high
+    nibble so an all-zero image cannot match by accident.
+    """
+    if len(want) != len(have) or not any(value >> 4 for value in want):
+        return None
+    if not all((h & 0x0F) == (w >> 4) for w, h in zip(want, have)):
+        return None
+    return (
+        "every observed low nibble equals the installed high nibble: the QPI "
+        "read is capturing one SCK late, so each byte is the turnaround "
+        "sample followed by the real high nibble. Run probe_qpi_read_phase"
+    )
+
+
+def _read_head(session):
+    """QPI-read the fixed head TCD as plain bytes; undefined reads as 0."""
+    observed = session.read_spans(((HEAD_DEVICE, HEAD_ADDRESS, TCD_BYTES),))
+    return bytes(
+        observed.get((HEAD_DEVICE, HEAD_ADDRESS + offset), 0)
+        for offset in range(TCD_BYTES)
+    )
+
+
+def check_head_tcd_installed(case, session):
+    """QPI-read the fixed head TCD and require it to match the install image.
+
+    Call after the last `write_spans` and before START. A mismatch means the
+    MCU QPI install did not land: the device is still in SPI, the PIO write
+    did not store, or the QPI read path is broken. Grant LEDs flashing is not
+    enough; the 11 bytes must actually read back.
+
+    An all-zero head is a `TRANSFER_LEN=0` self-pointing TCD without `QUIT`
+    (D35). The QSPI engine is cycle-counted (no device ready handshake), so
+    START still drops DONE, fetches those zeros, and never returns to idle.
+
+    On mismatch the head is read a second time, with no write in between, to
+    split two very different faults apart. See the `re-read` line in the
+    failure text.
+    """
+    memory = _case_memory(case)
+    want = bytes(memory.read(HEAD_DEVICE, HEAD_ADDRESS, TCD_BYTES))
+    have = _read_head(session)
+    if want == have:
+        return
+
+    lines = [
+        "head TCD at %d:%s did not read back after QPI install (before START)"
+        % (HEAD_DEVICE, format_address(HEAD_ADDRESS)),
+        "installed  %s" % format_bytes(want),
+        "read back  %s" % format_bytes(have),
+    ]
+    if have == bytes(TCD_BYTES):
+        lines.append(
+            "read-back is all zeros: START would fetch a no-op self-pointing "
+            "TCD without QUIT and hang with DONE low (D35)"
+        )
+
+    again = _read_head(session)
+    unstable = sum(1 for first, second in zip(have, again) if first != second)
+    lines.append("re-read    %s" % format_bytes(again))
+    if unstable == 0:
+        lines.append(
+            "re-read is identical, so the stored bytes are stable: a "
+            "deterministic install or read-path fault, not array decay"
+        )
+    elif unstable * 4 <= len(have):
+        lines.append(
+            "re-read moves in %d of %d bytes, so the data is essentially "
+            "stable. A couple of unstable samples at a phase boundary is a "
+            "bus-turnaround or sampling-margin problem, not array decay"
+            % (unstable, len(have))
+        )
+    else:
+        lines.append(
+            "re-read moves in %d of %d bytes with no write in between, so the "
+            "array contents are changing on their own. Suspect blocked "
+            "refresh: tCEM (max CE# low pulse width, 4 us extended grade) "
+            "exceeded by host work inside the CE#-low window"
+            % (unstable, len(have))
+        )
+
+    lag = _nibble_lag_hint(want, have)
+    if lag is not None:
+        lines.append(lag)
+
+    lines.append(
+        "PSRAM must be in QPI (Enter Quad 0x35) and the 11-byte head must be "
+        "stored; the ASIC does not wait for a device handshake"
+    )
+    raise AssertionError("\n".join(lines))
 
 
 def check_descriptors_intact(case, session, *, locations=None):
@@ -320,7 +544,7 @@ def check_descriptors_intact(case, session, *, locations=None):
         rows.append(
             (
                 device,
-                _addr_text(address),
+                format_address(address),
                 format_bytes(want),
                 format_bytes(have),
                 ",".join(str(i) for i in offsets),
@@ -334,7 +558,7 @@ def check_descriptors_intact(case, session, *, locations=None):
         % (len(rows), len(slots))
     ]
     lines.extend(
-        _table(("dev", "address", "installed", "read back", "bad offsets"), rows)
+        format_table(("dev", "address", "installed", "read back", "bad offsets"), rows)
     )
     raise AssertionError("\n".join(lines))
 
@@ -398,7 +622,7 @@ def check_host_status(status, *, label="host status"):
     if oe != OE_HIZ:
         problems.append(
             "oe=%s, expected 0x%02X (MCU Hi-Z off the bus, D26)"
-            % (_byte_text(oe) if isinstance(oe, int) else repr(oe), OE_HIZ)
+            % (format_byte(oe) if isinstance(oe, int) else repr(oe), OE_HIZ)
         )
     if problems:
         raise AssertionError(
@@ -462,9 +686,9 @@ def format_windowed_mismatch(result, dumped, window=3):
         "first mismatch dev=%d addr=%s expected=%s got=%s; oracle log "
         % (
             device,
-            _addr_text(address),
-            _byte_text(expected.get(first_key), NO_EXPECTATION),
-            _byte_text(observed.get(first_key)),
+            format_address(address),
+            format_byte(expected.get(first_key), NO_EXPECTATION),
+            format_byte(observed.get(first_key)),
         )
     )
     if index is None:
@@ -490,10 +714,14 @@ __all__ = [
     "MAX_REPORTED_ROWS",
     "check_descriptors_intact",
     "check_dest_writes",
+    "check_head_tcd_installed",
     "check_guard_bytes",
     "check_host_status",
     "collapse_extents",
     "contiguous_spans",
+    "format_address",
+    "format_byte",
     "format_repro_banner",
+    "format_table",
     "format_windowed_mismatch",
 ]

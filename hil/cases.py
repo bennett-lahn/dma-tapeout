@@ -396,7 +396,7 @@ def case_restart() -> HilCase:
         "TC-RESTART",
         "restart re-fetches fixed head",
         build,
-        markers=("restart",),
+        markers=("restart", "start"),
     )
 
 

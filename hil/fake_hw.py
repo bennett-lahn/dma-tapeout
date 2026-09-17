@@ -25,7 +25,6 @@ controller DONE-low pulse. The chain engine does use tapeout N=5
 that is still not coverage of the RTL handshake.
 """
 
-from firmware.board.board import EXPECTED_MODE
 from firmware.board.pins import (
     BUS_GNT_BIT,
     BUS_REQ_BIT,
@@ -38,7 +37,12 @@ from firmware.board.pins import (
     START_BIT,
     UI_IN_UNUSED_MASK,
 )
-from firmware.board.qspi import SPI_PIN_MODES
+from firmware.board.qspi import (
+    QspiError,
+    SPI_PIN_MODES,
+    require_read_fits_fifo,
+    require_write_fits_fifo,
+)
 from firmware.constants import (
     CMD_ENTER_QPI,
     CMD_EXIT_QPI,
@@ -54,7 +58,17 @@ from firmware.constants import (
     SCK_HZ_DEFAULT,
     TCD_BYTES,
 )
+from firmware.psram import qpi_chunk_bytes
 from firmware.tcd import decode_tcd
+
+# What actually bounds a single `0xEB` frame. `MCU_QPI_PAYLOAD_MAX` is a write
+# limit: `qpi_write_cpha0` prefills a joined 8-word TX FIFO, so a write frame
+# cannot exceed that depth. A read frame is bounded instead by tCEM (max CE#
+# low pulse width) and by the read SM's joined RX FIFO, since the dummy cycles
+# are pushed like data and the SM cannot stall mid-burst without losing bit
+# alignment. `qpi_chunk_bytes` plans both. Keeping this apart from the write
+# limit lets a bring-up probe read one multi-byte frame.
+READ_FRAME_MAX = qpi_chunk_bytes(CMD_QPI_READ, SCK_HZ_DEFAULT)
 
 # info.yaml top_module; the M7 FPGA bitstream is enabled under the same name.
 DESIGN_NAME = "tt_um_lahnb_sgdma"
@@ -177,15 +191,18 @@ class FakeQspi:
         memory=None,
         oe_getter=None,
         max_payload_per_ce=MCU_QPI_PAYLOAD_MAX,
+        read_frame_max=READ_FRAME_MAX,
     ):
         self.mem = {device: {} for device in DEVICES} if memory is None else memory
         self.oe_getter = oe_getter
         self.max_payload_per_ce = max_payload_per_ce
+        self.read_frame_max = read_frame_max
         self.qpi = {device: False for device in DEVICES}
         self.log = []
         self.sleeps = []
         self.ce_pulses = 0
         self.pin_modes = None
+        self.released = 0
 
     def sleep_us(self, us):
         """Record a requested nap. tPU / tRST are wall-clock waits in `Psram`."""
@@ -194,6 +211,11 @@ class FakeQspi:
     def restore_spi_pins(self):
         """Put SIO back in SPI-safe directions (MOSI out, MISO / SD2 / SD3 in)."""
         self.pin_modes = dict(SPI_PIN_MODES)
+
+    def release_pins(self):
+        """Hand the PIO-owned pads back to the ASIC (the real Hi-Z; D26)."""
+        self.pin_modes = None
+        self.released += 1
 
     def _oe(self):
         return OE_HIZ if self.oe_getter is None else int(self.oe_getter())
@@ -229,7 +251,10 @@ class FakeQspi:
 
     def qpi_write(self, cs, data):
         """One QPI frame: opcode, optional 24-bit address, optional payload."""
-        payload = bytes(data)
+        try:
+            payload = require_write_fits_fifo(data)
+        except QspiError as error:
+            raise FakeHardwareError(str(error))
         opcode = payload[0] if payload else 0
         self._require_oe(OE_QPI, "QPI write")
         self._require_mode(cs, True, opcode)
@@ -260,11 +285,15 @@ class FakeQspi:
             )
         self._require_oe(OE_QPI_READ, "QPI read")
         self._require_mode(cs, True, opcode)
-        if self.max_payload_per_ce is not None and n > self.max_payload_per_ce:
+        if self.read_frame_max is not None and n > self.read_frame_max:
             raise FakeHardwareError(
                 "CE# held for %d read bytes (max %d); raise CE# between chunks"
-                % (n, self.max_payload_per_ce)
+                % (n, self.read_frame_max)
             )
+        try:
+            require_read_fits_fifo(dummy_cycles, n)
+        except QspiError as error:
+            raise FakeHardwareError(str(error))
         self.ce_pulses += 1
         self.log.append(("qpi_read", cs, header, dummy_cycles, n))
         address = 0
@@ -327,7 +356,10 @@ class FakeDemoBoard:
         self.uo_out = BitPort(1 << DONE_BIT)  # DONE=1, BUS_GNT=0
         self.uio_oe_pico = BitPort(OE_HIZ, self._on_oe)
         self.shuttle = FakeShuttle(design_name)
-        self.mode = EXPECTED_MODE
+        # The real SDK's current mode is an RPMode enum. This in-process
+        # fake intentionally has no SDK mode object, so Board skips the
+        # hardware-only mux-mode check.
+        self.mode = None
         self.clock_hz = None
         self.instant_complete = instant_complete
         self.never_complete = never_complete

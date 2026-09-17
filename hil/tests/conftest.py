@@ -22,8 +22,12 @@ _MARKERS = (
     "length: transfer-length corner cases",
     "quit: QUIT / empty-chain cases",
     "restart: second-START / fixed-head restart cases",
+    "start: START pulse / restart cases",
     "address: wide-address / ptr[23] cases",
     "overlap: overlapping src/dest chunking cases",
+    "bus: BUS_REQ / BUS_GNT handoff cases",
+    "reset: rst_n kill and recovery cases",
+    "random: seeded random chain campaign",
 )
 
 

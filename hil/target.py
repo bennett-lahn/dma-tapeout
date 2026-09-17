@@ -17,6 +17,7 @@ from pathlib import Path
 
 from firmware.board.pins import PROJECT_CLOCK_HZ
 from firmware.constants import SCK_HZ_DEFAULT
+from hil.fpga.tool import fpga_clock_hz
 
 from .session import (
     DESIGN_NAME,
@@ -60,10 +61,11 @@ def create_target_profile(
             raise SessionError("bitstream not found: %s" % (path,))
         recorded = str(path.resolve())
 
+    default_clock_hz = fpga_clock_hz() if name == "fpga" else PROJECT_CLOCK_HZ
     return TargetProfile(
         name,
         design_name=DESIGN_NAME if design_name is None else design_name,
-        clock_hz=PROJECT_CLOCK_HZ if clock_hz is None else clock_hz,
+        clock_hz=default_clock_hz if clock_hz is None else clock_hz,
         sck_hz=SCK_HZ_DEFAULT if sck_hz is None else sck_hz,
         bitstream=recorded,
     )
