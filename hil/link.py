@@ -8,7 +8,8 @@ or a `RemoteError`.
 Two transports implement the same tiny surface (`exec(code) -> stdout`,
 `reset()`, optional `close()`):
 
-* `SerialTransport` - real demoboard over `mpremote` on a USB CDC port.
+* `SerialTransport` - real demoboard over one persistent `mpremote` raw REPL
+  on a USB CDC port (exclusive lock for the pytest session).
 * `LoopbackTransport` - no hardware at all. Runs the statement in an
   in-process namespace against the real `firmware.session` module, with
   `hil.fake_hw.FakeHardware` bound as the session's hardware factory, and
@@ -33,6 +34,10 @@ from firmware.link import ERR_PREFIX, OK_PREFIX, b64decode, b64encode
 # Statement sent once per connection (and again after a reset) so later calls
 # can be written as `session.<entry point>(...)`.
 PREAMBLE = "import firmware.session as session"
+
+# Same statement the mpremote CLI uses for `mpremote reset` (a hard reset via
+# `machine.reset`, not a REPL soft-reset). The CDC port drops afterwards.
+HARD_RESET_CODE = "import time, machine; time.sleep_ms(100); machine.reset()"
 
 DEFAULT_TIMEOUT_S = 30
 # Seconds to let the MCU reboot and re-read config.ini after `mpremote reset`.
@@ -182,99 +187,190 @@ def parse_payload(output):
     raise TransportError("unparsable envelope line %r" % (line,))
 
 
+def _decode_repl(data):
+    """Turn mpremote `exec_raw` bytes (or a test double's str) into text."""
+    if data is None:
+        return ""
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="replace")
+    return str(data)
+
+
+def _default_connect(port):
+    """Open the CDC port through mpremote's serial transport (lazy import).
+
+    Host-only self-tests never call this, so they do not need `mpremote`
+    installed. `connect=` on `SerialTransport` injects a double for unit tests.
+    """
+    try:
+        from mpremote.transport_serial import SerialTransport as _MpSerial
+    except ImportError as error:
+        raise TransportError("cannot import mpremote: %s" % error) from error
+    return _MpSerial(port, exclusive=True)
+
+
 class SerialTransport:
-    """`mpremote` against a real demoboard on a USB CDC port.
+    """Persistent raw REPL against a real demoboard on a USB CDC port.
+
+    One connection is opened on the first `exec` and held until `close()` or
+    `reset()`. `enter_raw_repl(soft_reset=False)` is the library equivalent of
+    the mpremote CLI's `resume`: it does not wipe the Python heap, so the
+    preamble's `import firmware.session as session` (`Link.open()`) survives
+    every later statement. A default soft-reset would make every real call
+    fail with `NameError: name 'session' isn't defined`, on every run,
+    deterministically. Explicit resets (`reset()` below, remote
+    `session.reset_recovery()`) stay in charge of actually clearing board
+    state.
+
+    The exclusive port lock lasts for the pytest session. No `mpremote` CLI
+    verb may run concurrently. `reset()` releases the lock before the MCU
+    drops CDC.
 
     Not used by the unit tests in this repo (there is no board in CI); it is
     the drop-in replacement for `LoopbackTransport` once hardware is attached.
+    Tests inject `connect=` so this class never opens a real port under pytest.
     """
 
     def __init__(
         self,
         port=None,
-        mpremote="mpremote",
         timeout_s=DEFAULT_TIMEOUT_S,
         settle_s=DEFAULT_RESET_SETTLE_S,
         port_wait_s=DEFAULT_PORT_WAIT_S,
         port_retry_interval_s=DEFAULT_PORT_RETRY_INTERVAL_S,
+        connect=None,
     ):
         self.port = port
-        self.mpremote = mpremote
         self.timeout_s = timeout_s
         self.settle_s = settle_s
         self.port_wait_s = port_wait_s
         self.port_retry_interval_s = port_retry_interval_s
+        self._connect_factory = _default_connect if connect is None else connect
+        self._repl = None
+        self._dirty = False
 
-    def _run(self, args):
-        command = [self.mpremote]
-        if self.port:
-            command += ["connect", self.port]
-        command += args
+    def _drop(self, exit_repl=True):
+        """Release the exclusive port lock. Guards every step: the CDC may
+        already be gone (hard reset, unplug)."""
+        repl = self._repl
+        self._repl = None
+        self._dirty = False
+        if repl is None:
+            return
+        if exit_repl:
+            try:
+                if getattr(repl, "in_raw_repl", False):
+                    repl.exit_raw_repl()
+            except Exception:
+                pass
+        try:
+            repl.close()
+        except Exception:
+            pass
+
+    def _connect(self):
+        """Open the port and enter raw REPL, retrying CDC re-enumeration."""
+        if not self.port:
+            raise TransportError("serial port is required")
+        if self._repl is not None:
+            self._drop()
         deadline = time.monotonic() + float(self.port_wait_s)
+        last = ""
         while True:
             try:
-                done = subprocess.run(
-                    command,
-                    capture_output=True,
-                    text=True,
-                    timeout=self.timeout_s,
-                )
-            except OSError as error:
-                raise TransportError("cannot run %s: %s" % (self.mpremote, error))
-            except subprocess.TimeoutExpired:
+                self._repl = self._connect_factory(self.port)
+                self._repl.enter_raw_repl(soft_reset=False)
+                self._dirty = False
+                return
+            except TransportError:
+                self._drop()
+                raise
+            except Exception as error:
+                last = str(error)
+                self._drop()
+                if (
+                    self.port_wait_s
+                    and (
+                        is_transient_port_error(last)
+                        or is_transient_repl_error(last)
+                    )
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(self.port_retry_interval_s)
+                    continue
                 raise TransportError(
-                    "%s timed out after %s s" % (" ".join(command), self.timeout_s)
-                )
-            if done.returncode == 0:
-                return done.stdout
-            detail = (done.stderr or done.stdout or "").strip()
-            if (
-                self.port_wait_s
-                and is_transient_port_error(detail)
-                and time.monotonic() < deadline
-            ):
-                time.sleep(self.port_retry_interval_s)
-                continue
-            raise TransportError(
-                "%s exited %d: %s" % (" ".join(command), done.returncode, detail)
-            )
+                    "cannot open raw REPL on %s: %s" % (self.port, last)
+                ) from error
+
+    def _resync(self):
+        """Re-enter raw REPL after a failed exec, without wiping MCU state.
+
+        `enter_raw_repl(soft_reset=False)` sends ctrl-C, flushes the input
+        buffer, and re-enters raw REPL. If that fails, drop the handle and
+        reopen the port. Never retries the failed statement: `write_span` is
+        idempotent but `pulse_start` is not.
+        """
+        try:
+            self._repl.enter_raw_repl(soft_reset=False)
+            self._dirty = False
+        except Exception:
+            self._drop()
+            self._connect()
+
+    def _ensure_connected(self):
+        if self._repl is None:
+            self._connect()
+            return
+        if self._dirty:
+            self._resync()
 
     def exec(self, code):
         """Run one statement on the MCU and return its stdout.
 
-        Every call is its own `mpremote` subprocess (see `_run`), i.e. its
-        own fresh connection. By default `mpremote` auto soft-resets the
-        device (wipes the Python heap, drops every import) the first time it
-        runs `exec` on a new connection - so without `resume` here, the
-        preamble's `import firmware.session as session` (`Link.open()`)
-        would always be wiped again before the very next `exec` call ever
-        sees it, and every real statement would fail with `NameError: name
-        'session' isn't defined`, on every run, deterministically. `resume`
-        is mpremote's own documented way to keep interpreter state across
-        separate connections; explicit resets (`reset()` below,
-        `session.reset_recovery()`) stay in charge of actually clearing
-        board state.
+        Uses `exec_raw` (not mpremote's `Transport.exec`) so the timeout is
+        ours, not the library's hard-coded 10 s. A device traceback on stderr
+        is a `TransportError`, matching how `LoopbackTransport` reports a
+        statement that raised. The failed exec is not retried; the stream is
+        marked dirty so the next call resyncs instead of poisoning the run.
         """
-        return self._run(["resume", "exec", code])
+        self._ensure_connected()
+        try:
+            data, data_err = self._repl.exec_raw(code, timeout=self.timeout_s)
+        except TransportError:
+            self._dirty = True
+            raise
+        except Exception as error:
+            self._dirty = True
+            raise TransportError("raw REPL exec failed: %s" % error) from error
+        err_text = _decode_repl(data_err).strip()
+        if err_text:
+            self._dirty = True
+            raise TransportError("remote exec raised: %s" % err_text)
+        return _decode_repl(data)
 
     def reset(self):
-        """Soft-reboot the MCU, dropping all module state.
+        """Hard-reset the MCU, dropping all module state.
 
-        After the reset command returns, the USB CDC port disappears until
-        the bootloader re-enumerates. Sleep `settle_s`, then wait until
-        `mpremote` can open the port again so the next `exec` is not a
-        "failed to access" race.
+        Sends the same `machine.reset()` statement the mpremote CLI uses for
+        `mpremote reset`, then closes the exclusive lock. After the command
+        returns, the USB CDC port disappears until the bootloader
+        re-enumerates. Sleep `settle_s`, then reopen the raw REPL so the next
+        `exec` is not a "failed to access" race.
         """
-        self._run(["reset"])
+        if self._repl is not None:
+            try:
+                self._repl.exec_raw_no_follow(HARD_RESET_CODE)
+            except Exception:
+                pass
+            # Do not exit_raw_repl: the MCU is about to drop the CDC interface.
+            self._drop(exit_repl=False)
         if self.settle_s:
             time.sleep(self.settle_s)
-        if self.port_wait_s:
-            wait_for_mpremote_port(
-                self.port,
-                mpremote=self.mpremote,
-                timeout_s=self.port_wait_s,
-                interval_s=self.port_retry_interval_s,
-            )
+        self._connect()
+
+    def close(self):
+        """Leave raw REPL and close the CDC port."""
+        self._drop()
 
 
 class LoopbackTransport:
@@ -343,9 +439,10 @@ class Link:
     not touch hardware.
     """
 
-    def __init__(self, transport, preamble=PREAMBLE):
+    def __init__(self, transport, preamble=PREAMBLE, owns_transport=True):
         self.transport = transport
         self.preamble = preamble
+        self.owns_transport = owns_transport
         self.last_output = ""
         self._opened = False
 
@@ -358,8 +455,14 @@ class Link:
             self.transport.exec(self.preamble)
 
     def close(self):
-        """Close the transport, if it has anything to close."""
+        """Close the transport, if this `Link` owns it.
+
+        A shared, session-scoped transport outlives each per-test `Link`;
+        those pass `owns_transport=False` so teardown does not drop the REPL.
+        """
         self._opened = False
+        if not self.owns_transport:
+            return
         close = getattr(self.transport, "close", None)
         if close is not None:
             close()
@@ -416,6 +519,7 @@ __all__ = [
     "DEFAULT_PORT_WAIT_S",
     "DEFAULT_RESET_SETTLE_S",
     "DEFAULT_TIMEOUT_S",
+    "HARD_RESET_CODE",
     "PREAMBLE",
     "Link",
     "LinkError",

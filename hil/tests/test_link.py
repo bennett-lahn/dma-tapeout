@@ -17,6 +17,7 @@ from firmware.link import (
 )
 from hil.fake_hw import FakeDemoBoard, FakeHardware, FakeHardwareError
 from hil.link import (
+    HARD_RESET_CODE,
     PREAMBLE,
     Link,
     LoopbackTransport,
@@ -50,6 +51,71 @@ class StubTransport:
 
     def close(self):
         self.closes += 1
+
+
+class FakeMpSerial:
+    """Stand-in for `mpremote.transport_serial.SerialTransport` (no board)."""
+
+    def __init__(self, factory, port):
+        self.factory = factory
+        self.port = port
+        self.in_raw_repl = False
+        self.calls = []
+
+    def enter_raw_repl(self, soft_reset=True, timeout_overall=10):
+        self.calls.append(("enter_raw_repl", soft_reset))
+        error = self.factory.enter_error
+        if error is not None:
+            self.factory.enter_error = None
+            raise error
+        self.in_raw_repl = True
+
+    def exec_raw(self, command, timeout=10, data_consumer=None):
+        self.calls.append(("exec_raw", command, timeout))
+        error = self.factory.exec_error
+        if error is not None:
+            self.factory.exec_error = None
+            raise error
+        return self.factory.replies.get(command, (b"OK\n", b""))
+
+    def exec_raw_no_follow(self, command):
+        self.calls.append(("exec_raw_no_follow", command))
+
+    def exit_raw_repl(self):
+        self.calls.append(("exit_raw_repl",))
+        self.in_raw_repl = False
+
+    def close(self):
+        self.calls.append(("close",))
+
+
+class FakeMpFactory:
+    """Injectable `connect=` for `SerialTransport` unit tests."""
+
+    def __init__(self):
+        self.instances = []
+        self.fail_connects = 0
+        self.connect_error = OSError(
+            "failed to access COM10 (it may be in use by another program)"
+        )
+        self.enter_error = None
+        self.exec_error = None
+        self.replies = {}
+
+    def __call__(self, port):
+        if self.fail_connects > 0:
+            self.fail_connects -= 1
+            raise self.connect_error
+        instance = FakeMpSerial(self, port)
+        self.instances.append(instance)
+        return instance
+
+
+def _serial(factory, **kwargs):
+    kwargs.setdefault("settle_s", 0)
+    kwargs.setdefault("port_wait_s", 0)
+    kwargs.setdefault("port", "COM10")
+    return SerialTransport(connect=factory, **kwargs)
 
 
 # --- base64 payload codec ---
@@ -231,72 +297,100 @@ def test_selftest_link_call_json_rejects_a_non_json_payload():
         link.call_json("text")
 
 
-def test_selftest_serial_transport_builds_the_mpremote_command(monkeypatch):
-    """The real-hardware path, checked without a board: only the argv is built."""
-    calls = []
-
-    class Done:
-        returncode = 0
-        stdout = "OK qpi\n"
-        stderr = ""
-
-    def fake_run(command, **kwargs):
-        calls.append(command)
-        return Done()
-
-    monkeypatch.setattr(hil.link.subprocess, "run", fake_run)
-    transport = SerialTransport(port="/dev/ttyACM0", settle_s=0, port_wait_s=0)
+def test_selftest_serial_transport_opens_one_raw_repl_for_every_exec():
+    """The whole point of the persistent REPL: one connect, N statements."""
+    factory = FakeMpFactory()
+    factory.replies["session.status()"] = (b"OK qpi\n", b"")
+    transport = _serial(factory)
     assert transport.exec("session.status()") == "OK qpi\n"
-    transport.reset()
-    assert calls == [
-        # `resume` disables mpremote's default auto-soft-reset, which would
-        # otherwise wipe the board's Python heap (and any prior import) at
-        # the start of this connection, before `exec` even runs.
-        ["mpremote", "connect", "/dev/ttyACM0", "resume", "exec", "session.status()"],
-        ["mpremote", "connect", "/dev/ttyACM0", "reset"],
+    assert transport.exec("session.status()") == "OK qpi\n"
+    assert len(factory.instances) == 1
+    repl = factory.instances[0]
+    assert repl.calls == [
+        ("enter_raw_repl", False),
+        ("exec_raw", "session.status()", transport.timeout_s),
+        ("exec_raw", "session.status()", transport.timeout_s),
     ]
 
 
-def test_selftest_serial_transport_reports_a_missing_mpremote_binary():
-    transport = SerialTransport(mpremote="mpremote-not-installed-here")
-    with pytest.raises(TransportError, match="cannot run"):
+def test_selftest_serial_transport_enters_raw_repl_without_soft_reset():
+    """Library equivalent of CLI `resume`: MCU heap (and the preamble) survives."""
+    factory = FakeMpFactory()
+    transport = _serial(factory)
+    transport.exec("session.status()")
+    enters = [
+        call for call in factory.instances[0].calls if call[0] == "enter_raw_repl"
+    ]
+    assert enters == [("enter_raw_repl", False)]
+
+
+def test_selftest_serial_transport_reports_a_device_traceback_as_transport_error():
+    factory = FakeMpFactory()
+    factory.replies["session.status()"] = (
+        b"",
+        b"Traceback (most recent call last):\r\nNameError: name 'session' isn't defined\r\n",
+    )
+    transport = _serial(factory)
+    with pytest.raises(TransportError, match="NameError"):
         transport.exec("session.status()")
 
 
-def test_selftest_serial_transport_reports_a_nonzero_exit(monkeypatch):
-    class Done:
-        returncode = 1
-        stdout = ""
-        stderr = "could not enter raw repl"
-
-    monkeypatch.setattr(hil.link.subprocess, "run", lambda command, **kw: Done())
-    with pytest.raises(TransportError, match="could not enter raw repl"):
-        SerialTransport(port_wait_s=0).exec("session.status()")
+def test_selftest_serial_transport_resyncs_after_a_failed_exec_without_retrying_it():
+    factory = FakeMpFactory()
+    factory.exec_error = RuntimeError("timeout waiting for first EOF reception")
+    factory.replies["session.pulse_start()"] = (b"OK\n", b"")
+    transport = _serial(factory)
+    with pytest.raises(TransportError, match="timeout waiting for first EOF"):
+        transport.exec("session.pulse_start()")
+    assert transport.exec("session.pulse_start()") == "OK\n"
+    assert len(factory.instances) == 1
+    repl = factory.instances[0]
+    assert repl.calls == [
+        ("enter_raw_repl", False),
+        ("exec_raw", "session.pulse_start()", transport.timeout_s),
+        ("enter_raw_repl", False),
+        ("exec_raw", "session.pulse_start()", transport.timeout_s),
+    ]
 
 
 def test_selftest_serial_transport_retries_until_the_port_reappears(monkeypatch):
-    calls = []
-
-    class Done:
-        def __init__(self, code, err="", out=""):
-            self.returncode = code
-            self.stdout = out
-            self.stderr = err
-
-    def fake_run(command, **kwargs):
-        calls.append(command)
-        if len(calls) < 3:
-            return Done(
-                1,
-                err="mpremote: failed to access COM10 (it may be in use by another program)",
-            )
-        return Done(0, out="OK\n")
-
-    monkeypatch.setattr(hil.link.subprocess, "run", fake_run)
     monkeypatch.setattr(hil.link.time, "sleep", lambda s: None)
-    transport = SerialTransport(port="COM10", settle_s=0, port_wait_s=5)
+    factory = FakeMpFactory()
+    factory.fail_connects = 2
+    transport = _serial(factory, port_wait_s=5)
     assert transport.exec("import firmware.session as session") == "OK\n"
-    assert len(calls) == 3
+    assert factory.fail_connects == 0
+    assert len(factory.instances) == 1
+
+
+def test_selftest_serial_transport_close_exits_raw_repl_then_closes():
+    factory = FakeMpFactory()
+    transport = _serial(factory)
+    transport.exec("session.status()")
+    transport.close()
+    assert factory.instances[0].calls == [
+        ("enter_raw_repl", False),
+        ("exec_raw", "session.status()", transport.timeout_s),
+        ("exit_raw_repl",),
+        ("close",),
+    ]
+
+
+def test_selftest_serial_transport_reset_hard_resets_and_reconnects():
+    factory = FakeMpFactory()
+    transport = _serial(factory)
+    transport.exec("session.status()")
+    transport.reset()
+    assert len(factory.instances) == 2
+    assert factory.instances[0].calls == [
+        ("enter_raw_repl", False),
+        ("exec_raw", "session.status()", transport.timeout_s),
+        ("exec_raw_no_follow", HARD_RESET_CODE),
+        ("close",),
+    ]
+    assert factory.instances[1].calls == [("enter_raw_repl", False)]
+    assert factory.instances[0].in_raw_repl is True
+    assert factory.instances[1].in_raw_repl is True
 
 
 def test_selftest_wait_for_mpremote_port_times_out(monkeypatch):
@@ -325,6 +419,14 @@ def test_selftest_link_close_closes_the_transport():
     link.exec("session.status()")
     link.close()
     assert transport.closes == 1
+
+
+def test_selftest_link_close_leaves_a_borrowed_transport_open():
+    transport = StubTransport()
+    link = Link(transport, owns_transport=False)
+    link.exec("session.status()")
+    link.close()
+    assert transport.closes == 0
 
 
 # --- loopback transport against firmware.session ---
