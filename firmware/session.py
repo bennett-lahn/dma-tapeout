@@ -1,13 +1,13 @@
 """Module-level TinyDMA session: one Board / DmaController / Psram set kept
 alive across remote exec calls.
 
-The host drives the MCU one statement at a time (`mpremote exec`), so nothing
-can live in a caller's local scope. This module owns that state and exposes the
-remote entry points. Every public name is `envelope`-wrapped and prints one
-``OK`` / ``ERR`` line; the plain implementation stays available under the
-leading-underscore name so entry points can compose (`_start_and_wait` calls
-`_pulse_start` and `_wait_idle`, not the printing wrappers, which would emit
-three lines).
+The host drives the MCU one statement at a time over a persistent raw REPL,
+so nothing can live in a caller's local scope. This module owns that state and
+exposes the remote entry points. Every public name is `envelope`-wrapped and
+prints one ``OK`` / ``ERR`` line; the plain implementation stays available
+under the leading-underscore name so entry points can compose
+(`_start_and_wait` calls `_pulse_start` and `_wait_idle`, not the printing
+wrappers, which would emit three lines).
 
 Bus discipline here is the frozen host contract, not a convenience:
 
@@ -35,10 +35,10 @@ from .board.pins import (
     OE_SPI,
     PROJECT_CLOCK_HZ,
 )
-from .constants import DEVICES, SCK_HZ_DEFAULT
+from .constants import DEVICES, QPI_DUMMY_CYCLES, SCK_HZ_DEFAULT
 from .dma import DmaController
 from .link import b64decode, envelope
-from .psram import Psram
+from .psram import Psram, qpi_read_cmd_addr
 
 DEFAULT_TIMEOUT_MS = 5000
 
@@ -118,7 +118,7 @@ def _init(design_name, clock_hz=PROJECT_CLOCK_HZ, sck_hz=SCK_HZ_DEFAULT):
     global board, dma, psram, in_qpi, design
     tt, transport, sleep_us = _hardware(sck_hz)
     board = Board(tt, sleep_us=sleep_us)
-    dma = DmaController(board)
+    dma = DmaController(board, transport=transport)
     dma.enable_design(design_name, clock_hz=clock_hz)
     psram = Psram(transport, sck_hz=sck_hz, dma=dma)
     in_qpi = False
@@ -191,6 +191,33 @@ def _read_span(device, addr, length):
     dma.request_bus(oe=OE_QPI_READ)
     try:
         return psram.read(cs, addr, int(length))
+    finally:
+        dma.release_bus()
+
+
+def _qpi_probe_read(device, addr, length):
+    """Bring-up probe: QPI-read *length* bytes in a single `0xEB` frame.
+
+    `read_span` splits a span into `Psram.eb_chunk` frames (currently
+    `MCU_QPI_PAYLOAD_MAX`, the FIFO payload ceiling). This bypasses the
+    chunker to expose one uninterrupted capture, which is what makes a
+    residual read-phase error (capturing one SCK too early or too late)
+    visible as a nibble shift across the frame.
+
+    Diagnostics only: the caller is responsible for keeping `length` small
+    enough that CE# stays within tCEM (max CE# low pulse width).
+
+    Returns:
+        bytes: the frame payload, which `envelope` sends as base64.
+    """
+    _require_ready()
+    cs = _device_cs(device)
+    addr = int(addr)
+    dma.request_bus(oe=OE_QPI_READ)
+    try:
+        return psram.transport.qpi_read(
+            cs, qpi_read_cmd_addr(addr), QPI_DUMMY_CYCLES, int(length)
+        )
     finally:
         dma.release_bus()
 
@@ -315,6 +342,7 @@ init = envelope(_init)
 bring_up_psram = envelope(_bring_up_psram)
 write_span = envelope(_write_span)
 read_span = envelope(_read_span)
+qpi_probe_read = envelope(_qpi_probe_read)
 pulse_start = envelope(_pulse_start)
 wait_idle = envelope(_wait_idle)
 start_and_wait = envelope(_start_and_wait)

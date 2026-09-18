@@ -173,6 +173,36 @@ def test_wait_done_timeout_kills_the_transfer():
     assert dma.rst_n_low is True
 
 
+def test_hiz_releases_the_transport_pins_before_the_oe_write():
+    # uio_oe_pico is an SIO output-enable register and does not reach a pad
+    # the PIO owns, so releasing the transport is the real Hi-Z (D26).
+    class _Transport:
+        def __init__(self):
+            self.released = 0
+            self.oe_at_release = None
+
+        def release_pins(self):
+            self.released += 1
+            self.oe_at_release = int(tt.uio_oe_pico)
+
+    tt = MockDemoBoard()
+    transport = _Transport()
+    board = Board(tt, sleep_us=lambda us: None)
+    dma = DmaController(board, transport=transport)
+    dma.request_bus()
+    dma.release_bus()
+    assert transport.released >= 1
+    assert transport.oe_at_release == OE_QPI
+    assert int(tt.uio_oe_pico) == OE_HIZ
+
+
+def test_hiz_without_a_transport_still_works():
+    dma, tt = _dma()
+    dma.request_bus()
+    dma.hiz()
+    assert int(tt.uio_oe_pico) == OE_HIZ
+
+
 def test_kill_dma_hi_zs_before_asserting_reset():
     dma, tt = _dma()
     dma.request_bus()

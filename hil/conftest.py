@@ -341,14 +341,33 @@ def _prepare_fpga_bitstream(request):
     )
 
 
+@pytest.fixture(scope="session")
+def _persistent_repl(request, _prepare_fpga_bitstream):
+    """One raw REPL for the whole run (fpga/asic only; loopback stays per-test).
+
+    Depends on `_prepare_fpga_bitstream` so the upload's `mpremote fs cp` /
+    `reset` subprocesses finish before this takes the exclusive port lock.
+    Loopback must stay function-scoped: the autouse
+    `_clear_firmware_session_state` detaches `HARDWARE_FACTORY` between tests
+    and would break a session-scoped `LoopbackTransport`.
+    """
+    if request.config.getoption("--target") in (None, "loopback"):
+        yield None
+        return
+    transport = SerialTransport(port=request.config.getoption("--port"))
+    try:
+        yield transport
+    finally:
+        transport.close()
+
+
 @pytest.fixture
-def link(request, target_profile):
-    """Envelope `Link`: loopback fake, or mpremote serial for fpga/asic."""
+def link(target_profile, _persistent_repl):
+    """Envelope `Link`: loopback fake, or the session-scoped mpremote REPL."""
     if target_profile.name == "loopback":
-        transport = LoopbackTransport()
+        lnk = Link(LoopbackTransport())
     else:
-        transport = SerialTransport(port=request.config.getoption("--port"))
-    lnk = Link(transport)
+        lnk = Link(_persistent_repl, owns_transport=False)
     yield lnk
     lnk.close()
 

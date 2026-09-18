@@ -22,6 +22,22 @@ class BoardError(Exception):
     """Missing DemoBoard API, wrong mux mode, or an unknown shuttle design."""
 
 
+def select_rp_control_mode(tt):
+    """Select and verify the current SDK mode required by this driver.
+
+    The FPGA breakout starts in `ASIC_MANUAL_INPUTS` so the SDK can safely
+    configure it. TinyDMA firmware then needs RP control to drive `ui_in`, so
+    select `RPMode.ASIC_RP_CONTROL` before programming the design.
+    """
+    try:
+        from ttboard.mode import RPMode  # type: ignore[import-not-found]
+    except ImportError:
+        return False
+    if tt.mode != RPMode.ASIC_RP_CONTROL:
+        tt.mode = RPMode.ASIC_RP_CONTROL
+    return tt.mode == RPMode.ASIC_RP_CONTROL
+
+
 def as_int(port):
     if hasattr(port, "value") and not isinstance(port, (int, bool)):
         try:
@@ -186,8 +202,8 @@ class Board:
         if not name:
             raise BoardError("enable_design requires a project name")
         mode = getattr(self.tt, "mode", None)
-        if mode is not None and str(mode) != EXPECTED_MODE:
-            raise BoardError("expected mode %s, got %s" % (EXPECTED_MODE, mode))
+        if mode is not None and not select_rp_control_mode(self.tt):
+            raise BoardError("cannot select mode %s, got %s" % (EXPECTED_MODE, mode))
         self.zero_ui_in()
         self.reset_design(True)
         self._enable_shuttle_design(name)

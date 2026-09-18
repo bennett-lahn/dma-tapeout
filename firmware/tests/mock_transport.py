@@ -6,7 +6,12 @@ for tCEM (max CE# low time) that host pytest cannot measure in wall clock.
 """
 
 from firmware.board.pins import OE_QPI_READ, SIO_OE_MASK
-from firmware.board.qspi import SPI_PIN_MODES, QspiError
+from firmware.board.qspi import (
+    SPI_PIN_MODES,
+    QspiError,
+    require_read_fits_fifo,
+    require_write_fits_fifo,
+)
 from firmware.constants import (
     CMD_ENTER_QPI,
     CMD_EXIT_QPI,
@@ -26,6 +31,7 @@ class MockTransport:
         self.oe_getter = oe_getter
         self.oe_during_read = []
         self.pin_modes = None
+        self.released = 0
         self.max_payload_per_ce = max_payload_per_ce
         self.ce_pulses = 0
 
@@ -36,6 +42,11 @@ class MockTransport:
     def restore_spi_pins(self):
         self.pin_modes = dict(SPI_PIN_MODES)
         self.log.append(("restore_spi_pins", dict(self.pin_modes)))
+
+    def release_pins(self):
+        """Hand the shared pads back; on hardware this is the real Hi-Z."""
+        self.pin_modes = None
+        self.released += 1
 
     def spi_write(self, cs, data):
         payload = bytes(data)
@@ -50,7 +61,7 @@ class MockTransport:
     def qpi_write(self, cs, data):
         if not self.qpi.get(cs):
             raise QspiError("QPI write while CS %s is not in QPI" % cs)
-        payload = bytes(data)
+        payload = require_write_fits_fifo(data)
         sck = 2 * len(payload)
         n_payload = max(0, len(payload) - 4)
         if payload == bytes([CMD_EXIT_QPI]):
@@ -83,6 +94,7 @@ class MockTransport:
                     "SIO OE must be 0 during QPI read (have 0x%02X, expect 0x%02X)"
                     % (oe, OE_QPI_READ)
                 )
+        require_read_fits_fifo(dummy_cycles, n)
         self.ce_pulses += 1
         self.log.append(("qpi_read", cs, header, dummy_cycles, n))
         addr = 0

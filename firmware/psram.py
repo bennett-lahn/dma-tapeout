@@ -26,6 +26,8 @@ from .constants import (
     CMD_RESET_ENABLE,
     EB_OVERHEAD_SCK,
     MCU_QPI_PAYLOAD_MAX,
+    MCU_QPI_READ_FRAME_MAX,
+    MCU_QPI_WRITE_PAYLOAD_FIFO_MAX,
     QPI_DUMMY_CYCLES,
     SCK_HZ_DEFAULT,
     SCK_PER_BYTE_QPI,
@@ -61,6 +63,12 @@ def qpi_chunk_bytes(
 
     SCK-only planning ignores Python put overhead. Pass *mcu_payload_max* so the
     MCU path raises CE# between small chunks (tCEM: max CE# low time).
+
+    A `0xEB` chunk is bounded by the read SM's joined RX FIFO as well as by
+    tCEM, because the dummy cycles are pushed like data and the SM cannot stall
+    mid-burst without losing bit alignment. A `0x02` chunk is bounded by the
+    write SM's joined TX FIFO: the whole `0x02`+addr+payload frame is prefilling
+    an idle SM, so one extra byte hangs on `put()`.
     """
     if opcode == CMD_QPI_READ:
         overhead = EB_OVERHEAD_SCK
@@ -69,6 +77,10 @@ def qpi_chunk_bytes(
     else:
         raise PsramError("chunk planner is for QPI 0xEB / 0x02, got 0x%02X" % opcode)
     n = math.floor((sck_budget(sck_hz, tcem_us, margin) - overhead) / SCK_PER_BYTE_QPI)
+    if opcode == CMD_QPI_READ:
+        n = min(n, MCU_QPI_READ_FRAME_MAX)
+    elif opcode == CMD_QPI_WRITE:
+        n = min(n, MCU_QPI_WRITE_PAYLOAD_FIFO_MAX)
     if mcu_payload_max is not None:
         n = min(n, int(mcu_payload_max))
     if n < 1:

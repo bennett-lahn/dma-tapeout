@@ -11,6 +11,7 @@ from firmware.board.pins import (
 )
 
 from mock_board import PROJECT_NAME, MockDemoBoard
+from ttboard.mode import RPMode
 
 
 class IntPortBoard:
@@ -20,7 +21,7 @@ class IntPortBoard:
         self.ui_in = 0
         self.uo_out = 0x01
         self.uio_oe_pico = 0
-        self.mode = "ASIC_RP_CONTROL"
+        self.mode = RPMode.ASIC_RP_CONTROL
         self.clock_hz = None
         self.held = None
 
@@ -68,12 +69,19 @@ def test_enable_design_rejects_unknown_design():
         board.enable_design("tt_um_not_on_this_shuttle")
 
 
-def test_enable_design_rejects_wrong_mux_mode():
+def test_enable_design_switches_fpga_manual_inputs_to_rp_control():
     tt = MockDemoBoard()
-    tt.mode = "SAFE"
+    tt.mode = 2  # Current SDK's FPGA startup mode: ASIC_MANUAL_INPUTS.
     board, _tt = _board(tt)
-    with pytest.raises(BoardError, match="ASIC_RP_CONTROL"):
-        board.enable_design(PROJECT_NAME)
+    board.enable_design(PROJECT_NAME)
+    assert tt.mode == RPMode.ASIC_RP_CONTROL
+
+
+def test_enable_design_accepts_sdk_rp_mode_enum():
+    tt = MockDemoBoard()
+    tt.mode = RPMode.ASIC_RP_CONTROL
+    board, _tt = _board(tt)
+    board.enable_design(PROJECT_NAME)
 
 
 def test_rst_n_low_tracks_reset_project_without_in_reset_attr():

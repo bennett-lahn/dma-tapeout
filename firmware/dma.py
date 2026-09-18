@@ -31,8 +31,9 @@ class DmaError(Exception):
 class DmaController:
     """MCU-side stand-in for grant / START / kill against the TinyDMA host port."""
 
-    def __init__(self, board):
+    def __init__(self, board, transport=None):
         self.board = board
+        self.transport = transport
         self._awaiting_done_fall = False
         self._saw_busy = False
 
@@ -81,6 +82,17 @@ class DmaController:
         self.enable_drive(OE_SPI)
 
     def hiz(self):
+        """Release the MCU QSPI drive.
+
+        The transport's pins go first, and they are what actually floats the
+        bus. `uio_oe_pico` is an SIO output-enable register: the PIO-owned
+        QSPI pads do not follow it, and the frozen ttboard build on the ETR
+        cannot clear uio[0] through it at all. The OE write stays as the D26
+        statement of intent and for the bits it does reach.
+        """
+        release = getattr(self.transport, "release_pins", None)
+        if release is not None:
+            release()
         self.board.hiz()
 
     # --- bring-up / reset ---

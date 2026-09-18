@@ -1,6 +1,7 @@
 """CPython mock of Tiny Tapeout DemoBoard pin ports (no serial, no ttboard)."""
 
 PROJECT_NAME = "tt_um_lahnb_sgdma"
+ASIC_RP_CONTROL = 1
 
 
 class BitPort:
@@ -69,7 +70,7 @@ class MockDemoBoard:
         self.uio_oe_pico = BitPort(0, self._on_oe)
         self.shuttle = MockShuttle()
         self.clock_hz = None
-        self.mode = "ASIC_RP_CONTROL"
+        self.mode = ASIC_RP_CONTROL
         self.auto_ack_start = auto_ack_start
         self.instant_complete = instant_complete
         self.auto_grant = auto_grant
