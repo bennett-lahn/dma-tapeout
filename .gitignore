@@ -40,6 +40,13 @@ hil/.last-selection
 *.fst
 *.log
 sim_build/
+
+# Official tt_fpga.py / hil FPGA artifacts (not sim / not CI)
+build/
+src/_tt_fpga_top.v
+hil/fpga/stage/
+hil/fpga/build/
+.venv-win
 test/runs/*
 !test/runs/.gitkeep
 results.xml
