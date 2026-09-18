@@ -48,6 +48,7 @@ from cocotb.triggers import RisingEdge
 from common.clocks import apply_engine_reset, apply_gl_reset, apply_reset, start_clock
 from common.config import parse_run_config, timing_env_overrides
 from common.constants import DEFAULT_CLOCK_PERIOD_NS, DEFAULT_RESET_CYCLES
+from common.engine_bfm import level_or_none
 from common.lifecycle import REASON_CLEAR, REASON_STOP, finalize_all
 from models.psram import (
     PsramDevice,
@@ -238,13 +239,6 @@ def _optional(dut, name):
         return None
 
 
-def _level(handle) -> "int | None":
-    try:
-        return int(handle.value)
-    except ValueError:
-        return None
-
-
 async def _assert_engine_idle_after_reset(dut, bringup: BringUp) -> None:
     """CE#/SCK idle self-check absorbed from retired ``test_engine_attach``.
 
@@ -256,14 +250,14 @@ async def _assert_engine_idle_after_reset(dut, bringup: BringUp) -> None:
     for _ in range(ENGINE_IDLE_SETTLE_CYCLES):
         await RisingEdge(dut.clk)
 
-    assert _level(dut.psram0_ce_n) == 1, (
+    assert level_or_none(dut.psram0_ce_n) == 1, (
         "bring_up_engine: PSRAM0 CE# not idle high after reset"
     )
-    assert _level(dut.psram1_ce_n) == 1, (
+    assert level_or_none(dut.psram1_ce_n) == 1, (
         "bring_up_engine: PSRAM1 CE# not idle high after reset "
         "(unselected device must stay high when only one agent is attached)"
     )
-    assert _level(dut.psram_sck) == 0, (
+    assert level_or_none(dut.psram_sck) == 0, (
         "bring_up_engine: SCK not parked low while deselected after reset"
     )
     for device in bringup.devices:

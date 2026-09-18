@@ -62,6 +62,7 @@ from common.directed import (
 )
 from common.constants import BUS_GNT_MASK, GRANT_TIMEOUT_CYCLES, STATE_TIMEOUT_CYCLES
 from common.dispose import REVIEW, dispose_run
+from common.engine_bfm import level_or_none
 from common.host import BUS_REQ_BIT, START_BIT, assert_bus_req, pulse_start
 from common import injection as _inj
 from common.injection import (
@@ -154,12 +155,6 @@ _ENGINE_PHASE_RESET_TARGETS = (
 )
 
 # -- signal / hierarchy access ----------------------------------------------
-
-def _level(handle) -> "int | None":
-    try:
-        return int(handle.value)
-    except ValueError:
-        return None
 
 def _done(dut) -> int:
     return int(dut.uo_out.value) & DONE_MASK
@@ -417,7 +412,7 @@ async def _bus_req_cycle(
                 "BUS_GNT asserted while the QPI engine is still busy "
                 f"(transaction not atomic). {repro}"
             )
-            assert _level(dut.bus_ram_a_cs_n) == 1 and _level(dut.bus_ram_b_cs_n) == 1, (
+            assert level_or_none(dut.bus_ram_a_cs_n) == 1 and level_or_none(dut.bus_ram_b_cs_n) == 1, (
                 "BUS_GNT asserted with a RAM CE# still low. " + repro
             )
             await NextTimeStep()
@@ -493,13 +488,13 @@ async def _assert_reset_safe(dut, *, window: str, cycles: int = _RESET_SETTLE_CY
     for _ in range(cycles):
         await RisingEdge(dut.clk)
         await ReadOnly()
-        assert _level(dut.rst_n) == 0, f"{window}: rst_n not held low across sampled edge"
+        assert level_or_none(dut.rst_n) == 0, f"{window}: rst_n not held low across sampled edge"
         assert _done(dut) == 1, f"{window}: DONE not 1 after sampled reset"
         assert _bus_gnt(dut) == 0, f"{window}: BUS_GNT not 0 after sampled reset"
         await NextTimeStep()
 
-    assert _level(dut.bus_ram_a_cs_n) == 1, f"{window}: PSRAM0 CE# not idle high"
-    assert _level(dut.bus_ram_b_cs_n) == 1, f"{window}: PSRAM1 CE# not idle high"
+    assert level_or_none(dut.bus_ram_a_cs_n) == 1, f"{window}: PSRAM0 CE# not idle high"
+    assert level_or_none(dut.bus_ram_b_cs_n) == 1, f"{window}: PSRAM1 CE# not idle high"
 
 async def _release_reset(dut) -> None:
     dut.rst_n.value = 1

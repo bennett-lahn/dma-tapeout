@@ -32,6 +32,7 @@ Public API (frozen for M2):
 * :func:`engine_qpi_write` -> :class:`EngineWriteResult`
 * :func:`engine_qpi_read` -> :class:`EngineReadResult`
 * :func:`bytes_to_nibbles` / :func:`nibbles_to_bytes`
+* :func:`level_or_none` - ``int(handle.value)``, or ``None`` on X/Z (``ValueError``)
 """
 
 from dataclasses import dataclass, field
@@ -65,7 +66,13 @@ def nibbles_to_bytes(nibbles) -> bytes:
     return bytes(out)
 
 
-def _level(handle) -> "int | None":
+def level_or_none(handle) -> "int | None":
+    """Return ``int(handle.value)``, or ``None`` when the value is X/Z.
+
+    Catches ``ValueError`` only. This is the int-or-None handle helper for
+    BFM and directed tests. Monitor pin/arb/timing copies that stringify X/Z
+    stay local; do not swap those for this.
+    """
     try:
         return int(handle.value)
     except ValueError:
@@ -110,11 +117,11 @@ class EngineWriteResult(EngineTxnResult):
 
 
 def _assert_idle(dut, what: str) -> None:
-    assert _level(dut.busy) == 0, f"engine busy before {what} start"
-    assert _level(dut.psram0_ce_n) == 1 and _level(dut.psram1_ce_n) == 1, (
+    assert level_or_none(dut.busy) == 0, f"engine busy before {what} start"
+    assert level_or_none(dut.psram0_ce_n) == 1 and level_or_none(dut.psram1_ce_n) == 1, (
         f"a PSRAM CE# was already low before {what} start"
     )
-    assert _level(dut.psram_sck) == 0, f"SCK not parked low before {what} start"
+    assert level_or_none(dut.psram_sck) == 0, f"SCK not parked low before {what} start"
 
 
 def _drive_request(dut, *, cmd: int, device: int, address: int, byte_len: int) -> None:
@@ -126,9 +133,9 @@ def _drive_request(dut, *, cmd: int, device: int, address: int, byte_len: int) -
 
 def _sample_ce(dut):
     return (
-        _level(dut.psram0_ce_n),
-        _level(dut.psram1_ce_n),
-        _level(dut.psram_sck),
+        level_or_none(dut.psram0_ce_n),
+        level_or_none(dut.psram1_ce_n),
+        level_or_none(dut.psram_sck),
     )
 
 
@@ -162,13 +169,13 @@ async def engine_qpi_read(
     for _ in range(timeout_cycles):
         await RisingEdge(dut.clk)
         await ReadOnly()
-        busy = _level(dut.busy)
+        busy = level_or_none(dut.busy)
         if busy:
             saw_busy = True
             result.busy_cycles += 1
             result.ce_trace.append(_sample_ce(dut))
-        if _level(dut.rdata_valid) == 1:
-            raw_rdata = _level(dut.rdata)
+        if level_or_none(dut.rdata_valid) == 1:
+            raw_rdata = level_or_none(dut.rdata)
             result.nibbles.append(None if raw_rdata is None else (raw_rdata & 0xF))
         await NextTimeStep()
         if saw_busy and busy == 0:
@@ -226,8 +233,8 @@ async def engine_qpi_write(
         # read-only region before driving; see the module docstring for why a
         # bare post-edge deposit is not equivalent.
         await ReadOnly()
-        busy = _level(dut.busy)
-        wdata_next = _level(dut.wdata_next)
+        busy = level_or_none(dut.busy)
+        wdata_next = level_or_none(dut.wdata_next)
         if busy:
             saw_busy = True
             result.busy_cycles += 1

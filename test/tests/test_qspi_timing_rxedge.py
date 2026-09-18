@@ -12,13 +12,12 @@ Test-case IDs:
 """
 
 import cocotb
-from cocotb.triggers import RisingEdge, with_timeout
+from cocotb.triggers import with_timeout
 from cocotb.triggers import SimTimeoutError
 
 from common.bringup import bring_up_top
 from common.runlog import begin_run
 from common.constants import (
-    DONE_MASK,
     DONE_TIMEOUT_NS,
     DST_ADDR,
     DST_SENTINEL,
@@ -29,16 +28,11 @@ from common.constants import (
     SRC_BYTE,
     TCD_HEAD_ADDR,
 )
+from common.directed import wait_for_done_pulse
 from common.dispose import dispose_run
 from common.host import pulse_start
 from monitors.timing import Q_RXEDGE
 from reference.tcd import Tcd, encode_tcd
-
-async def _wait_for_done_pulse(dut) -> None:
-    while int(dut.uo_out.value) & DONE_MASK:
-        await RisingEdge(dut.clk)
-    while not (int(dut.uo_out.value) & DONE_MASK):
-        await RisingEdge(dut.clk)
 
 @cocotb.test()
 async def qspi_rxedge_l1_read_pass(dut):
@@ -72,7 +66,7 @@ async def qspi_rxedge_l1_read_pass(dut):
 
     await pulse_start(dut)
     try:
-        await with_timeout(_wait_for_done_pulse(dut), DONE_TIMEOUT_NS, "ns")
+        await with_timeout(wait_for_done_pulse(dut), DONE_TIMEOUT_NS, "ns")
     except SimTimeoutError as exc:
         raise AssertionError(
             f"TC-RXEDGE-L1-READ-PASS: DONE did not return. {repro}"

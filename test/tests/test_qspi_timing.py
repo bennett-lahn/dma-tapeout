@@ -21,13 +21,13 @@ Test-case IDs:
 """
 
 import cocotb
-from cocotb.triggers import RisingEdge, Timer
+from cocotb.triggers import Timer
 
 from common.bringup import bring_up_top
 from common.runlog import begin_run
 from common.constants import FILL, LEGAL_GAP_NS
 from common.dispose import dispose_run, expect
-from common.host import UIO_PSRAM_CE_BITS, QpiPassthroughMaster, assert_bus_req
+from common.host import UIO_PSRAM_CE_BITS, QpiPassthroughMaster, await_bus_gnt
 from monitors.timing import Q_CEM, Q_CPH, start_ce_timing_monitor
 
 # Directed-test thresholds: short enough to keep the module fast, still above
@@ -36,14 +36,6 @@ DIRECTED_TCEM_NS = 100.0
 DIRECTED_TCPH_NS = 18.0
 SHORT_GAP_NS = 5.0  # < tCPH
 LONG_PULSE_NS = 150.0  # > directed tCEM
-
-async def _await_bus_gnt(dut, *, cycles: int = 32) -> None:
-    await assert_bus_req(dut, hold=True)
-    for _ in range(cycles):
-        await RisingEdge(dut.clk)
-        if (int(dut.uo_out.value) >> 1) & 1:
-            return
-    raise AssertionError("BUS_GNT did not assert after BUS_REQ")
 
 async def _bring_up(dut):
     """Shared top bring-up, directed CE# monitor, BUS_GNT, parked MCU master.
@@ -64,7 +56,7 @@ async def _bring_up(dut):
         arbitration_monitor=False,
         controller_monitor=False,
     )
-    await _await_bus_gnt(dut)
+    await await_bus_gnt(dut)
 
     master = QpiPassthroughMaster(dut)
     await master.park()

@@ -16,6 +16,7 @@ conditions before driving. This is not a sim-only exception.
 from cocotb.triggers import RisingEdge, Timer
 
 from common.constants import (
+    BUS_GNT_MASK,
     BUS_REQ_BIT,
     DONE_MASK,
     SCK_PERIOD_NS,
@@ -90,6 +91,26 @@ async def assert_bus_req(dut, hold: bool = True, *, wait_sync: bool = True) -> N
                 break
             assert level == 1, "assert_bus_req returned before synchronized bus_req was high"
             break
+
+
+async def await_bus_gnt(dut, *, cycles: int = 32) -> None:
+    """Assert ``BUS_REQ`` and wait until ``uo_out`` ``BUS_GNT`` is high."""
+    await assert_bus_req(dut, hold=True)
+    for _ in range(cycles):
+        await RisingEdge(dut.clk)
+        if int(dut.uo_out.value) & BUS_GNT_MASK:
+            return
+    raise AssertionError("BUS_GNT did not assert after BUS_REQ")
+
+
+async def release_bus_gnt(dut, *, cycles: int = 32) -> None:
+    """Release ``BUS_REQ`` and wait until ``uo_out`` ``BUS_GNT`` is low."""
+    await assert_bus_req(dut, hold=False)
+    for _ in range(cycles):
+        await RisingEdge(dut.clk)
+        if not (int(dut.uo_out.value) & BUS_GNT_MASK):
+            return
+    raise AssertionError("BUS_GNT did not drop after BUS_REQ release")
 
 
 class QpiPassthroughMaster:

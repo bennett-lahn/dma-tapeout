@@ -40,7 +40,12 @@ import cocotb
 
 from common.bringup import bring_up_top
 from common.runlog import begin_run
-from common.directed import run_directed_window as _run_directed_window
+from common.directed import (
+    pin_by_kind as _pin_by_kind,
+    pin_log as _pin_log,
+    run_device_copy,
+    run_directed_window as _run_directed_window,
+)
 from reference.chain import DATA_READ, DATA_WRITE, FETCH_READ, HEAD_ADDRESS, HEAD_DEVICE
 from reference.constants import PTR_BIT23, PTR_MAX
 from reference.generator import (
@@ -71,26 +76,6 @@ def _chunk_pairs(length: int, depth: int) -> int:
         return 0
     return -(-length // depth)
 
-def _pin_log(pin, golden, *, test: str, repro: str):
-    """Return pin transactions aligned 1:1 with the golden ordered log.
-
-    Device, address, length, and opcode come from pins. Kind labels
-    (``FETCH_READ`` vs ``DATA_READ``) come from the golden log because an
-    11-byte payload read is indistinguishable from a TCD fetch on wires
-    alone. Scoreboard compare already proved the zip. *pin* is the
-    pre-dispose snapshot on the window's :class:`DisposeReport`.
-    """
-    pin = list(pin)
-    expected = list(golden.transactions)
-    assert len(pin) == len(expected), (
-        f"{test}: pin log length {len(pin)} != golden {len(expected)}. " + repro
-    )
-    return pin, expected
-
-def _pin_by_kind(pin, golden, kind: str, *, test: str, repro: str):
-    pin, expected = _pin_log(pin, golden, test=test, repro=repro)
-    return [obs for obs, exp in zip(pin, expected) if exp.kind == kind]
-
 def _assert_ranges_overlap(tcd, *, test: str, repro: str) -> None:
     src_range = set(range(tcd.src_ptr, tcd.src_ptr + tcd.transfer_len))
     dest_range = set(range(tcd.dest_ptr, tcd.dest_ptr + tcd.transfer_len))
@@ -103,7 +88,8 @@ def _assert_ranges_overlap(tcd, *, test: str, repro: str) -> None:
 @cocotb.test()
 async def tcd_big_endian_flags(dut):
     """TC-TCD-BE: known 11-byte descriptor encoding and flag decode."""
-    config, repro = begin_run(dut, "tcd_big_endian_flags", test="TC-TCD-BE")
+    test = "TC-TCD-BE"
+    config, repro = begin_run(dut, "tcd_big_endian_flags", test=test)
 
     bringup = await bring_up_top(dut)
 
@@ -146,7 +132,8 @@ def _or_head_ptr_bit23(chain) -> None:
 @cocotb.test()
 async def tcd_dest1_bit23(dut):
     """TC-TCD-DEST1: dest_device=1 with dest_ptr[23]=1; pins see A[22:0]."""
-    config, repro = begin_run(dut, "tcd_dest1_bit23", test="TC-TCD-DEST1")
+    test = "TC-TCD-DEST1"
+    config, repro = begin_run(dut, "tcd_dest1_bit23", test=test)
 
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
@@ -198,111 +185,72 @@ async def tcd_dest1_bit23(dut):
 @cocotb.test()
 async def same_device_psram0(dut):
     """TC-SAME-0: PSRAM0 to PSRAM0 copy."""
-    config, repro = begin_run(dut, "same_device_psram0", test="TC-SAME-0")
-
-    bringup = await bring_up_top(dut)
-    chain = build_directed_chain(
-        [TcdSpec(transfer_len=8, src_device=0, dest_device=0)], seed=1002
-    )
-    _, report = await _run_directed_window(
-        dut, bringup, chain, test=test, config=config, repro=repro
-    )
-
-    observed_devices = {txn.device for txn in report.pin_transactions}
-    assert observed_devices == {0}, (
-        f"{test}: expected only PSRAM0 selected, observed device(s) "
-        f"{sorted(observed_devices)}. " + repro
+    test = "TC-SAME-0"
+    config, repro = begin_run(dut, "same_device_psram0", test=test)
+    await run_device_copy(
+        dut,
+        lambda: bring_up_top(dut),
+        src=0,
+        dest=0,
+        seed=1002,
+        test=test,
+        config=config,
+        repro=repro,
     )
 
 @cocotb.test()
 async def same_device_psram1(dut):
     """TC-SAME-1: PSRAM1 to PSRAM1 copy after head fetch on PSRAM0."""
-    config, repro = begin_run(dut, "same_device_psram1", test="TC-SAME-1")
-
-    bringup = await bring_up_top(dut)
-    chain = build_directed_chain(
-        [TcdSpec(transfer_len=8, src_device=1, dest_device=1)], seed=1003
-    )
-    golden, report = await _run_directed_window(
-        dut, bringup, chain, test=test, config=config, repro=repro
-    )
-    pin = report.pin_transactions
-
-    fetch_devices = {txn.device for txn in _pin_by_kind(
-        pin, golden, FETCH_READ, test=test, repro=repro
-    )}
-    data_devices = {
-        txn.device
-        for txn in _pin_by_kind(pin, golden, DATA_READ, test=test, repro=repro)
-        + _pin_by_kind(pin, golden, DATA_WRITE, test=test, repro=repro)
-    }
-    assert fetch_devices == {0}, (
-        f"{test}: descriptor fetches must stay on PSRAM0, pin log "
-        f"{fetch_devices}. " + repro
-    )
-    assert data_devices == {1}, (
-        f"{test}: data transactions must land on PSRAM1, pin log "
-        f"{data_devices}. " + repro
+    test = "TC-SAME-1"
+    config, repro = begin_run(dut, "same_device_psram1", test=test)
+    await run_device_copy(
+        dut,
+        lambda: bring_up_top(dut),
+        src=1,
+        dest=1,
+        seed=1003,
+        test=test,
+        config=config,
+        repro=repro,
     )
 
 @cocotb.test()
 async def cross_device_0_to_1(dut):
     """TC-CROSS-01: PSRAM0 source to PSRAM1 destination."""
-    config, repro = begin_run(dut, "cross_device_0_to_1", test="TC-CROSS-01")
-
-    bringup = await bring_up_top(dut)
-    chain = build_directed_chain(
-        [TcdSpec(transfer_len=8, src_device=0, dest_device=1)], seed=1004
-    )
-    golden, report = await _run_directed_window(
-        dut, bringup, chain, test=test, config=config, repro=repro
-    )
-    pin = report.pin_transactions
-
-    reads = {
-        txn.device
-        for txn in _pin_by_kind(pin, golden, DATA_READ, test=test, repro=repro)
-    }
-    writes = {
-        txn.device
-        for txn in _pin_by_kind(pin, golden, DATA_WRITE, test=test, repro=repro)
-    }
-    assert reads == {0} and writes == {1}, (
-        f"{test}: expected pin reads on PSRAM0 and writes on PSRAM1, observed "
-        f"reads={reads} writes={writes}. " + repro
+    test = "TC-CROSS-01"
+    config, repro = begin_run(dut, "cross_device_0_to_1", test=test)
+    await run_device_copy(
+        dut,
+        lambda: bring_up_top(dut),
+        src=0,
+        dest=1,
+        seed=1004,
+        test=test,
+        config=config,
+        repro=repro,
     )
 
 @cocotb.test()
 async def cross_device_1_to_0(dut):
     """TC-CROSS-10: PSRAM1 source to PSRAM0 destination."""
-    config, repro = begin_run(dut, "cross_device_1_to_0", test="TC-CROSS-10")
-
-    bringup = await bring_up_top(dut)
-    chain = build_directed_chain(
-        [TcdSpec(transfer_len=8, src_device=1, dest_device=0)], seed=1005
-    )
-    golden, report = await _run_directed_window(
-        dut, bringup, chain, test=test, config=config, repro=repro
-    )
-    pin = report.pin_transactions
-
-    reads = {
-        txn.device
-        for txn in _pin_by_kind(pin, golden, DATA_READ, test=test, repro=repro)
-    }
-    writes = {
-        txn.device
-        for txn in _pin_by_kind(pin, golden, DATA_WRITE, test=test, repro=repro)
-    }
-    assert reads == {1} and writes == {0}, (
-        f"{test}: expected pin reads on PSRAM1 and writes on PSRAM0, observed "
-        f"reads={reads} writes={writes}. " + repro
+    test = "TC-CROSS-10"
+    config, repro = begin_run(dut, "cross_device_1_to_0", test=test)
+    await run_device_copy(
+        dut,
+        lambda: bring_up_top(dut),
+        src=1,
+        dest=0,
+        seed=1005,
+        test=test,
+        config=config,
+        repro=repro,
     )
 
 @cocotb.test()
 async def multi_tcd_chain(dut):
     """TC-CHAIN: at least three executable TCDs followed by quit."""
-    config, repro = begin_run(dut, "multi_tcd_chain", test="TC-CHAIN")
+    test = "TC-CHAIN"
+    config, repro = begin_run(dut, "multi_tcd_chain", test=test)
 
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
@@ -332,7 +280,8 @@ async def multi_tcd_chain(dut):
 @cocotb.test()
 async def next_device_alternate(dut):
     """TC-NEXT-DEVICE: chain with alternating NEXT_DEVICE selection."""
-    config, repro = begin_run(dut, "next_device_alternate", test="TC-NEXT-DEVICE")
+    test = "TC-NEXT-DEVICE"
+    config, repro = begin_run(dut, "next_device_alternate", test=test)
 
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
@@ -366,7 +315,8 @@ async def next_device_alternate(dut):
 @cocotb.test()
 async def transfer_length_corners(dut):
     """TC-LEN-CORNERS: lengths 0, 1, N-1, N, N+1, 2N-1, 2N, 2N+1, and 255."""
-    config, repro = begin_run(dut, "transfer_length_corners", test="TC-LEN-CORNERS")
+    test = "TC-LEN-CORNERS"
+    config, repro = begin_run(dut, "transfer_length_corners", test=test)
 
     bringup = await bring_up_top(dut)
     depth = config["dma_buf_depth"]
@@ -409,7 +359,8 @@ async def transfer_length_corners(dut):
 @cocotb.test()
 async def len_addr_corners(dut):
     """One window: 2N-1/2N/2N+1 plus COV-ADDR src:zero and next:highest."""
-    config, repro = begin_run(dut, "len_addr_corners", test="TC-LEN-ADDR-CORNERS")
+    test = "TC-LEN-ADDR-CORNERS"
+    config, repro = begin_run(dut, "len_addr_corners", test=test)
 
     bringup = await bring_up_top(dut)
     depth = config["dma_buf_depth"]
@@ -432,7 +383,8 @@ async def len_addr_corners(dut):
 @cocotb.test()
 async def quit_descriptor_priority(dut):
     """TC-QUIT: quit TCD with nonzero pointer and length fields."""
-    config, repro = begin_run(dut, "quit_descriptor_priority", test="TC-QUIT")
+    test = "TC-QUIT"
+    config, repro = begin_run(dut, "quit_descriptor_priority", test=test)
 
     bringup = await bring_up_top(dut)
     chain = build_directed_chain(
@@ -468,7 +420,8 @@ async def quit_descriptor_priority(dut):
 @cocotb.test()
 async def empty_chain_at_head(dut):
     """TC-EMPTY: quit TCD at fixed head 0x000000 on PSRAM0."""
-    config, repro = begin_run(dut, "empty_chain_at_head", test="TC-EMPTY")
+    test = "TC-EMPTY"
+    config, repro = begin_run(dut, "empty_chain_at_head", test=test)
 
     bringup = await bring_up_top(dut)
     chain = build_directed_chain((), seed=1009)
@@ -491,7 +444,8 @@ async def empty_chain_at_head(dut):
 @cocotb.test()
 async def restart_after_completion(dut):
     """TC-RESTART: complete a chain then issue a new START."""
-    config, repro = begin_run(dut, "restart_after_completion", test="TC-RESTART")
+    test = "TC-RESTART"
+    config, repro = begin_run(dut, "restart_after_completion", test=test)
 
     bringup = await bring_up_top(dut)
 
@@ -526,7 +480,8 @@ _ADDR_WIDE_CASES = (
 @cocotb.test()
 async def wide_address_space(dut):
     """TC-ADDR-WIDE: valid addresses below, at, and above 0x010000."""
-    config, repro = begin_run(dut, "wide_address_space", test="TC-ADDR-WIDE")
+    test = "TC-ADDR-WIDE"
+    config, repro = begin_run(dut, "wide_address_space", test=test)
 
     bringup = await bring_up_top(dut)
     for index, (label, addr_class) in enumerate(_ADDR_WIDE_CASES):
@@ -593,7 +548,8 @@ async def wide_address_space(dut):
 @cocotb.test()
 async def overlapping_same_device_ranges(dut):
     """TC-OVERLAP: same-device overlapping source and destination."""
-    config, repro = begin_run(dut, "overlapping_same_device_ranges", test="TC-OVERLAP")
+    test = "TC-OVERLAP"
+    config, repro = begin_run(dut, "overlapping_same_device_ranges", test=test)
 
     bringup = await bring_up_top(dut)
     depth = config["dma_buf_depth"]

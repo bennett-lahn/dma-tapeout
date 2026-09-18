@@ -26,6 +26,7 @@ from common.engine_bfm import (
     bytes_to_nibbles,
     engine_qpi_read,
     engine_qpi_write,
+    level_or_none,
     nibbles_to_bytes,
 )
 from monitors.handshake import CHK_HS_OPCODE
@@ -57,12 +58,6 @@ _WRITE_CASES = (
     (1, 0x000400, 1, bytes([0xC3])),
     (1, 0x004000, 11, bytes((0xD0 + i) & 0xFF for i in range(11))),
 )
-
-def _level(handle) -> "int | None":
-    try:
-        return int(handle.value)
-    except ValueError:
-        return None
 
 def _assert_ce_trace(ce_trace, device: int, *, repro: str) -> None:
     """Selected CE# must go low; the other device must stay deselected."""
@@ -199,9 +194,9 @@ async def qpi_read_variants(dut):
             dut, device=device, address=address, length=length
         )
 
-        assert _level(dut.psram0_ce_n) == 1, f"PSRAM0 CE# not high after read. {case_repro}"
-        assert _level(dut.psram1_ce_n) == 1, f"PSRAM1 CE# not high after read. {case_repro}"
-        assert _level(dut.psram_sck) == 0, f"SCK not parked low after read. {case_repro}"
+        assert level_or_none(dut.psram0_ce_n) == 1, f"PSRAM0 CE# not high after read. {case_repro}"
+        assert level_or_none(dut.psram1_ce_n) == 1, f"PSRAM1 CE# not high after read. {case_repro}"
+        assert level_or_none(dut.psram_sck) == 0, f"SCK not parked low after read. {case_repro}"
         _assert_ce_trace(result.ce_trace, device, repro=case_repro)
 
         assert len(result.nibbles) == 2 * length, (
@@ -297,9 +292,9 @@ async def qpi_write_variants(dut):
             dut, device=device, address=address, payload=payload
         )
 
-        assert _level(dut.psram0_ce_n) == 1, f"PSRAM0 CE# not high after write. {case_repro}"
-        assert _level(dut.psram1_ce_n) == 1, f"PSRAM1 CE# not high after write. {case_repro}"
-        assert _level(dut.psram_sck) == 0, f"SCK not parked low after write. {case_repro}"
+        assert level_or_none(dut.psram0_ce_n) == 1, f"PSRAM0 CE# not high after write. {case_repro}"
+        assert level_or_none(dut.psram1_ce_n) == 1, f"PSRAM1 CE# not high after write. {case_repro}"
+        assert level_or_none(dut.psram_sck) == 0, f"SCK not parked low after write. {case_repro}"
         _assert_ce_trace(result.ce_trace, device, repro=case_repro)
 
         assert len(psram.agent.transactions) == before_sel + 1, (
@@ -410,7 +405,7 @@ async def qpi_asic_selected_unresolved_sio(dut):
     async def _contend_sio_while_selected() -> None:
         for _ in range(BUSY_TIMEOUT_CYCLES):
             await RisingEdge(dut.clk)
-            if _level(dut.psram0_ce_n) == 0:
+            if level_or_none(dut.psram0_ce_n) == 0:
                 # Disagreeing 0xF vs ASIC command/data nibbles → X on SIO.
                 agent.inject_sio_drive(0xF)
                 return

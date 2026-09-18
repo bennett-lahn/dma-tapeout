@@ -49,7 +49,8 @@ from common.host import (
     UIO_PSRAM_CE_BITS,
     UIO_SCK_BIT,
     QpiPassthroughMaster,
-    assert_bus_req,
+    await_bus_gnt,
+    release_bus_gnt,
 )
 from models.psram import (
     QSPI_CMD_FAST_READ,
@@ -113,22 +114,6 @@ async def _park_clean(dut, bringup) -> None:
         agent.violations.clear()
         agent.transactions.clear()
 
-async def _await_bus_gnt(dut, *, cycles: int = 32) -> None:
-    await assert_bus_req(dut, hold=True)
-    for _ in range(cycles):
-        await RisingEdge(dut.clk)
-        if (int(dut.uo_out.value) >> 1) & 1:
-            return
-    raise AssertionError("BUS_GNT did not assert after BUS_REQ")
-
-async def _release_bus_gnt(dut, *, cycles: int = 32) -> None:
-    await assert_bus_req(dut, hold=False)
-    for _ in range(cycles):
-        await RisingEdge(dut.clk)
-        if not ((int(dut.uo_out.value) >> 1) & 1):
-            return
-    raise AssertionError("BUS_GNT did not drop after BUS_REQ release")
-
 def _assert_detail(bus, check_id: str, *, test: str, detail_substr: str, timing_id: str) -> list:
     """Require recorded events for *check_id* carry the expected detail / timing."""
     events = bus.violations_for(check_id)
@@ -146,14 +131,14 @@ async def _tc_own_baseline(dut, bringup, repro: str) -> None:
     psram0, psram1 = bringup.psram0, bringup.psram1
     await _park_clean(dut, bringup)
 
-    await _await_bus_gnt(dut)
+    await await_bus_gnt(dut)
     master = QpiPassthroughMaster(dut)
     await master.park()
     psram1.write(0x001000, b"\xDE\xAD")
     await master.frame(0, QSPI_CMD_WRITE, 0x000040, write_data=b"\x11\x22")
     await master.frame(1, QSPI_CMD_FAST_READ, 0x001000, dummy_cycles=6, read_bytes=2)
     await master.park()
-    await _release_bus_gnt(dut)
+    await release_bus_gnt(dut)
     await Timer(20, unit="ns")
 
     assert psram0.read(0x000040, 2) == b"\x11\x22"
@@ -266,7 +251,7 @@ async def _tc_own_sio_dual_selected(dut, bringup, repro: str) -> None:
     bus = bringup.bus
     agent = bringup.psram0.agent
     await _park_clean(dut, bringup)
-    await _await_bus_gnt(dut)
+    await await_bus_gnt(dut)
     master = QpiPassthroughMaster(dut)
     await master.park()
     await master.open(0)
@@ -314,7 +299,7 @@ async def _tc_own_cs_mutex_selected(dut, bringup, repro: str) -> None:
     """
     bus = bringup.bus
     await _park_clean(dut, bringup)
-    await _await_bus_gnt(dut)
+    await await_bus_gnt(dut)
     master = QpiPassthroughMaster(dut)
     await master.park()
     await master.open(0)
@@ -485,7 +470,7 @@ async def _tc_gnt_quiet_ce_oe_x(dut, bringup, repro: str) -> None:
     arb = bringup.arbitration
     assert arb is not None, "TC-OWN-GNT-QUIET-OE-X requires ArbitrationMonitor"
     await _park_clean(dut, bringup)
-    await _await_bus_gnt(dut)
+    await await_bus_gnt(dut)
     await RisingEdge(dut.clk)
 
     # MSB-first 8-bit string: bit 6 (RAM A CE#) is the second character.

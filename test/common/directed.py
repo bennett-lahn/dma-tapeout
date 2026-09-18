@@ -1,10 +1,11 @@
-"""Shared L1 directed-suite plumbing for chain install, DONE wait, and dual-axis compare.
+"""Shared L1/L2 directed-suite plumbing for chain install, DONE wait, and compare.
 
-Used by ``tests.test_dma_directed`` and ``tests.test_reset_and_bus``. Both suites
-are DUT-master: backdoor-install descriptors/payload into bring-up PSRAM models,
-hand the ASIC one accepted START (or more specialized START/BUS/reset stimulus),
-then compare the pin-decoded ordered transaction log and backdoor-read final
-memory against :mod:`reference.chain`'s golden interpretation before
+Used by ``tests.test_dma_directed``, ``tests.test_reset_and_bus``, and
+``tests.test_gate_level``. Suites are DUT-master: backdoor-install
+descriptors/payload into bring-up PSRAM models, hand the ASIC one accepted
+START (or more specialized START/BUS/reset stimulus), then compare the
+pin-decoded ordered transaction log and backdoor-read final memory against
+:mod:`reference.chain`'s golden interpretation before
 :func:`common.dispose.dispose_run`.
 """
 
@@ -16,7 +17,9 @@ from common.coverage_l1 import L1CoverageAdapter
 from common.constants import DONE_MASK, DONE_TIMEOUT_NS
 from common.dispose import dispose_run
 from common.host import pulse_start
+from reference.chain import DATA_READ, DATA_WRITE, FETCH_READ
 from reference.coverage import FRAGMENT_FILENAME, CoverageSampler
+from reference.generator import TcdSpec, build_directed_chain
 from reference.scoreboard import RunContext, Scoreboard
 from reference.tcd import TCD_BYTES
 
@@ -101,6 +104,96 @@ async def wait_until_done(dut) -> None:
     """Wait until DONE is high (no-op if already idle after an overlapped window)."""
     while (int(dut.uo_out.value) & DONE_MASK) != 1:
         await RisingEdge(dut.clk)
+
+
+def pin_log(pin, golden, *, test: str, repro: str):
+    """Return pin transactions aligned 1:1 with the golden ordered log.
+
+    Device, address, length, and opcode come from pins. Kind labels
+    (``FETCH_READ`` vs ``DATA_READ``) come from the golden log because an
+    11-byte payload read is indistinguishable from a TCD fetch on wires
+    alone. Scoreboard compare already proved the zip. *pin* is the
+    pre-dispose snapshot on the window's :class:`DisposeReport`.
+    """
+    pin = list(pin)
+    expected = list(golden.transactions)
+    assert len(pin) == len(expected), (
+        f"{test}: pin log length {len(pin)} != golden {len(expected)}. " + repro
+    )
+    return pin, expected
+
+
+def pin_by_kind(pin, golden, kind: str, *, test: str, repro: str):
+    """Pin transactions whose golden twin has *kind* (``FETCH_READ`` / data)."""
+    pin, expected = pin_log(pin, golden, test=test, repro=repro)
+    return [obs for obs, exp in zip(pin, expected) if exp.kind == kind]
+
+
+async def run_device_copy(
+    dut,
+    bring_up,
+    *,
+    src: int,
+    dest: int,
+    seed: int,
+    test: str,
+    config: dict,
+    repro: str,
+):
+    """One length-8 same-device or cross-device copy, then pin-device checks.
+
+    *bring_up* is an async zero-arg callable so L1 passes
+    ``lambda: bring_up_top(dut)`` and L2 passes its own prelude. The eight
+    named tests keep their ``TC-SAME-*`` / ``TC-CROSS-*`` / ``TC-GL-*`` IDs
+    (``TC-*``: directed test IDs) and pytest node ids; this helper does not
+    change stimulus, scoreboard compare, or dispose.
+    """
+    bringup = await bring_up()
+    chain = build_directed_chain(
+        [TcdSpec(transfer_len=8, src_device=src, dest_device=dest)], seed=seed
+    )
+    golden, report = await run_directed_window(
+        dut, bringup, chain, test=test, config=config, repro=repro
+    )
+    pin = report.pin_transactions
+    if src == dest == 0:
+        observed_devices = {txn.device for txn in pin}
+        assert observed_devices == {0}, (
+            f"{test}: expected only PSRAM0 selected, observed device(s) "
+            f"{sorted(observed_devices)}. " + repro
+        )
+    elif src == dest == 1:
+        fetch_devices = {
+            txn.device
+            for txn in pin_by_kind(pin, golden, FETCH_READ, test=test, repro=repro)
+        }
+        data_devices = {
+            txn.device
+            for txn in pin_by_kind(pin, golden, DATA_READ, test=test, repro=repro)
+            + pin_by_kind(pin, golden, DATA_WRITE, test=test, repro=repro)
+        }
+        assert fetch_devices == {0}, (
+            f"{test}: descriptor fetches must stay on PSRAM0, pin log "
+            f"{fetch_devices}. " + repro
+        )
+        assert data_devices == {1}, (
+            f"{test}: data transactions must land on PSRAM1, pin log "
+            f"{data_devices}. " + repro
+        )
+    else:
+        reads = {
+            txn.device
+            for txn in pin_by_kind(pin, golden, DATA_READ, test=test, repro=repro)
+        }
+        writes = {
+            txn.device
+            for txn in pin_by_kind(pin, golden, DATA_WRITE, test=test, repro=repro)
+        }
+        assert reads == {src} and writes == {dest}, (
+            f"{test}: expected pin reads on PSRAM{src} and writes on PSRAM{dest}, "
+            f"observed reads={reads} writes={writes}. " + repro
+        )
+    return golden, report
 
 
 def run_context(config: dict, test: str, repro: str) -> RunContext:

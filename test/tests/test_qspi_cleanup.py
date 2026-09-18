@@ -1,13 +1,13 @@
 """Directed lifecycle cleanup evidence for controller and live CE# windows."""
 
 import cocotb
-from cocotb.triggers import RisingEdge, Timer
+from cocotb.triggers import Timer
 
 from common.bringup import bring_up_top
 from common.runlog import begin_run
 from common.constants import FILL
 from common.dispose import dispose_run, expect
-from common.host import QpiPassthroughMaster, assert_bus_req
+from common.host import QpiPassthroughMaster, await_bus_gnt
 from models.psram import QSPI_CMD_FAST_READ, Q_PHASE
 from monitors.handshake import CHK_CTRL_DATA_PAIR
 
@@ -20,13 +20,7 @@ async def _bring_up(dut, *, handshake_monitor: bool = False):
         handshake_monitor=handshake_monitor,
         arbitration_monitor=False,
     )
-    await assert_bus_req(dut, hold=True)
-    for _ in range(32):
-        await RisingEdge(dut.clk)
-        if (int(dut.uo_out.value) >> 1) & 1:
-            break
-    else:
-        raise AssertionError("cleanup directed setup did not receive BUS_GNT")
+    await await_bus_gnt(dut)
     master = QpiPassthroughMaster(dut)
     await master.park()
     bringup.clear()

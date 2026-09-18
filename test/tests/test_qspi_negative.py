@@ -39,13 +39,14 @@ Test-case IDs:
 """
 
 import cocotb
-from cocotb.triggers import RisingEdge, Timer
+from cocotb.triggers import Timer
 
 from common.bringup import bring_up_top
 from common.runlog import begin_run
 from common.constants import FILL, UIO_PSRAM_CE_BITS, UIO_SCK_BIT
 from common.dispose import REVIEW, dispose_run, expect
-from common.host import QpiPassthroughMaster, assert_bus_req
+from common.engine_bfm import level_or_none
+from common.host import QpiPassthroughMaster, await_bus_gnt, release_bus_gnt
 from models.psram import (
     CLASS_FAIL,
     CLASS_RESET_TRUNCATED,
@@ -69,23 +70,6 @@ from monitors.qspi import CHK_PIN_KNOWN, CHK_PIN_SCK_PARK
 QSPI_CMD_QUAD_WRITE = 0x38  # device-supported, outside the frozen V1 allowlist
 
 TOP_ADDR = PSRAM_ADDR_MASK  # 0x7FFFFF
-_BUS_GNT_BIT = 1
-
-async def _await_bus_gnt(dut, *, cycles: int = 32) -> None:
-    await assert_bus_req(dut, hold=True)
-    for _ in range(cycles):
-        await RisingEdge(dut.clk)
-        if (int(dut.uo_out.value) >> _BUS_GNT_BIT) & 1:
-            return
-    raise AssertionError("BUS_GNT did not assert after BUS_REQ")
-
-async def _release_bus_gnt(dut, *, cycles: int = 32) -> None:
-    await assert_bus_req(dut, hold=False)
-    for _ in range(cycles):
-        await RisingEdge(dut.clk)
-        if not ((int(dut.uo_out.value) >> _BUS_GNT_BIT) & 1):
-            return
-    raise AssertionError("BUS_GNT did not drop after BUS_REQ release")
 
 async def _bring_up_passthrough(dut, **bringup_kwargs):
     """Attach via shared bring-up, grant the bus, and park the MCU master.
@@ -105,7 +89,7 @@ async def _bring_up_passthrough(dut, **bringup_kwargs):
     kwargs.update(bringup_kwargs)
     bringup = await bring_up_top(dut, **kwargs)
     bringup.clear()
-    await _await_bus_gnt(dut)
+    await await_bus_gnt(dut)
     master = QpiPassthroughMaster(dut)
     await master.park()
     return bringup, master
@@ -113,7 +97,7 @@ async def _bring_up_passthrough(dut, **bringup_kwargs):
 async def _finish(bringup, master, dut, *, test: str, repro: str, expect_fail=()):
     """Park the master, release ``BUS_GNT``, and dispose the run."""
     await master.park()
-    await _release_bus_gnt(dut)
+    await release_bus_gnt(dut)
     return dispose_run(
         bringup,
         test=test,
@@ -127,12 +111,6 @@ def _model_records(bringup) -> list:
     for device in bringup.devices:
         records.extend(device.agent.violations)
     return records
-
-def _level(handle) -> "int | None":
-    try:
-        return int(handle.value)
-    except ValueError:
-        return None
 
 def _read_launches(device) -> int:
     """Count wrapper ``read-launch`` events (falling SCK that sourced a nibble)."""
@@ -553,7 +531,7 @@ async def qpi_negative_sck_hiz_is_not_fall(dut):
     master._oe &= ~(1 << UIO_SCK_BIT) & 0xFF
     master._apply()
     await Timer(10, unit="ns")
-    assert _level(dut.bus_sck) is None, f"SCK not physical Z after host OE clear. {repro}"
+    assert level_or_none(dut.bus_sck) is None, f"SCK not physical Z after host OE clear. {repro}"
     assert falls["n"] == before_falls, (
         f"1->Z fabricated a falling SCK (falls {before_falls} -> {falls['n']}). {repro}"
     )
@@ -609,14 +587,14 @@ async def qpi_negative_grant_reset_sck_float(dut):
         ce_monitor=False,
     )
     bringup.clear()
-    await _await_bus_gnt(dut)
+    await await_bus_gnt(dut)
     await Timer(20, unit="ns")
 
-    assert _level(dut.bus_gnt) == 1, f"BUS_GNT not high. {repro}"
+    assert level_or_none(dut.bus_gnt) == 1, f"BUS_GNT not high. {repro}"
     assert int(dut.uio_oe.value) == 0, f"ASIC uio_oe not clear under grant. {repro}"
     assert int(dut.host_uio_oe.value) == 0, f"host OE not clear. {repro}"
-    assert _level(dut.asic_sck_oe) == 0, f"asic_sck_oe not 0 under grant. {repro}"
-    assert _level(dut.bus_sck) is None, (
+    assert level_or_none(dut.asic_sck_oe) == 0, f"asic_sck_oe not 0 under grant. {repro}"
+    assert level_or_none(dut.bus_sck) is None, (
         "grant SCK must be physical Z, not a resolver 0. " + repro
     )
     assert _read_launches(bringup.psram0) == 0
@@ -634,8 +612,8 @@ async def qpi_negative_grant_reset_sck_float(dut):
     dut.rst_n.value = 0
     await Timer(20, unit="ns")
     assert int(dut.uio_oe.value) == 0, f"ASIC uio_oe not clear in reset. {repro}"
-    assert _level(dut.asic_sck_oe) == 0, f"asic_sck_oe not 0 in reset. {repro}"
-    assert _level(dut.bus_sck) is None, (
+    assert level_or_none(dut.asic_sck_oe) == 0, f"asic_sck_oe not 0 in reset. {repro}"
+    assert level_or_none(dut.bus_sck) is None, (
         "reset SCK must be physical Z, not a resolver 0. " + repro
     )
     assert _read_launches(bringup.psram0) == 0

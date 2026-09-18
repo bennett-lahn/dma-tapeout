@@ -40,22 +40,14 @@ Test-case IDs:
 """
 
 import cocotb
-from cocotb.triggers import RisingEdge, Timer
+from cocotb.triggers import Timer
 
 from common.bringup import bring_up_top
 from common.runlog import begin_run
 from common.constants import FILL, LEGAL_GAP_NS
 from common.dispose import dispose_run, expect
-from common.host import UIO_PSRAM_CE_BITS, UIO_SCK_BIT, QpiPassthroughMaster, assert_bus_req
+from common.host import UIO_PSRAM_CE_BITS, UIO_SCK_BIT, QpiPassthroughMaster, await_bus_gnt
 from monitors.timing import Q_CHD, Q_CSP, Q_TERM, start_ce_timing_monitor
-
-async def _await_bus_gnt(dut, *, cycles: int = 32) -> None:
-    await assert_bus_req(dut, hold=True)
-    for _ in range(cycles):
-        await RisingEdge(dut.clk)
-        if (int(dut.uo_out.value) >> 1) & 1:
-            return
-    raise AssertionError("BUS_GNT did not assert after BUS_REQ")
 
 async def _bring_up(dut, *, read_expected_nibbles=None):
     """Shared top bring-up + directed CE timing monitor under ``TIMING_PROFILE=nominal``.
@@ -82,7 +74,7 @@ async def _bring_up(dut, *, read_expected_nibbles=None):
         f"{bringup.timing_profile!r} (production defaults live in "
         "models.psram_timing; this suite does not redefine them)"
     )
-    await _await_bus_gnt(dut)
+    await await_bus_gnt(dut)
 
     master = QpiPassthroughMaster(dut)
     await master.park()

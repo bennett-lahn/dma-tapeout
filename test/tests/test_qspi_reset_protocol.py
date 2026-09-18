@@ -30,7 +30,9 @@ from common.constants import (
     SRC_BYTE,
     TCD_HEAD_ADDR,
 )
+from common.directed import wait_for_done_pulse
 from common.dispose import REQUIRE, dispose_run
+from common.engine_bfm import bytes_to_nibbles, level_or_none
 from common.host import pulse_start
 from models.psram import QSPI_CMD_WRITE
 from monitors.qspi import sck_is_parked
@@ -41,19 +43,6 @@ POST_SRC_BYTE = 0x5A
 _MID_TXN_TIMEOUT_CYCLES = 256
 _ENGINE_WRITE_LEN = 11
 _ENGINE_WRITE_ADDR = 0x003100
-
-def _level(handle) -> "int | None":
-    try:
-        return int(handle.value)
-    except ValueError:
-        return None
-
-def _bytes_to_nibbles(data: bytes) -> list:
-    nibbles = []
-    for value in data:
-        nibbles.append((value >> 4) & 0xF)
-        nibbles.append(value & 0xF)
-    return nibbles
 
 def _dispose_reset_window(bringup, *, test: str, log, repro: str) -> list:
     """Review every ``RESET-TRUNCATED`` finding from the abort window.
@@ -87,12 +76,6 @@ def _load_smoke_chain(psram0, *, src_byte: int) -> None:
     psram0.write(SRC_ADDR, bytes([src_byte]))
     psram0.write(DST_ADDR, bytes([DST_SENTINEL]))
 
-async def _wait_for_done_pulse(dut) -> None:
-    while int(dut.uo_out.value) & DONE_MASK:
-        await RisingEdge(dut.clk)
-    while not (int(dut.uo_out.value) & DONE_MASK):
-        await RisingEdge(dut.clk)
-
 async def _await_mid_txn_top(dut, *, repro: str) -> None:
     """Reach an in-flight ASIC CE# select with shared OE driven."""
     for _ in range(_MID_TXN_TIMEOUT_CYCLES):
@@ -104,11 +87,11 @@ async def _await_mid_txn_top(dut, *, repro: str) -> None:
 
     for _ in range(_MID_TXN_TIMEOUT_CYCLES):
         await RisingEdge(dut.clk)
-        if _level(dut.bus_ram_a_cs_n) == 0 and int(dut.uio_oe.value) != 0:
+        if level_or_none(dut.bus_ram_a_cs_n) == 0 and int(dut.uio_oe.value) != 0:
             # Hold a few clocks inside the CE# window so cmd/addr is in progress.
             for _ in range(4):
                 await RisingEdge(dut.clk)
-                assert _level(dut.bus_ram_a_cs_n) == 0, (
+                assert level_or_none(dut.bus_ram_a_cs_n) == 0, (
                     f"CE# rose before reset could be asserted. {repro}"
                 )
             return
@@ -125,7 +108,7 @@ async def _assert_sampled_reset_status_top(dut, *, test: str, cycles: int = 5) -
     for _ in range(cycles):
         await RisingEdge(dut.clk)
         await ReadOnly()
-        assert _level(dut.rst_n) == 0, f"{test}: rst_n not held low across sampled edge"
+        assert level_or_none(dut.rst_n) == 0, f"{test}: rst_n not held low across sampled edge"
         status = int(dut.uo_out.value)
         assert status & DONE_MASK, (
             f"{test}: DONE not 1 after sampled reset (uo_out=0x{status:02X})"
@@ -133,8 +116,8 @@ async def _assert_sampled_reset_status_top(dut, *, test: str, cycles: int = 5) -
         assert not ((status >> 1) & 1), (
             f"{test}: BUS_GNT not 0 after sampled reset (uo_out=0x{status:02X})"
         )
-    assert _level(dut.bus_ram_a_cs_n) == 1, f"{test}: PSRAM0 CE# not idle high"
-    assert _level(dut.bus_ram_b_cs_n) == 1, f"{test}: PSRAM1 CE# not idle high"
+    assert level_or_none(dut.bus_ram_a_cs_n) == 1, f"{test}: PSRAM0 CE# not idle high"
+    assert level_or_none(dut.bus_ram_b_cs_n) == 1, f"{test}: PSRAM1 CE# not idle high"
     assert sck_is_parked(dut), f"{test}: SCK not parked after reset"
     # Leave ReadOnly before the caller drives host inputs / releases rst_n.
     await NextTimeStep()
@@ -189,7 +172,7 @@ async def _q_rst_top(dut, config: dict, repro: str) -> None:
     _load_smoke_chain(psram0, src_byte=POST_SRC_BYTE)
     await pulse_start(dut)
     try:
-        await with_timeout(_wait_for_done_pulse(dut), DONE_TIMEOUT_NS, "ns")
+        await with_timeout(wait_for_done_pulse(dut), DONE_TIMEOUT_NS, "ns")
     except SimTimeoutError as exc:
         raise AssertionError(
             f"{test}: post-reset DONE did not return within {DONE_TIMEOUT_NS} ns. "
@@ -224,9 +207,9 @@ async def _await_mid_txn_engine(dut, *, repro: str) -> None:
     for the full ``byte_len`` window, which is enough to prove mid-txn abort.
     """
     payload = bytes(range(0x40, 0x40 + _ENGINE_WRITE_LEN))
-    nibbles = _bytes_to_nibbles(payload)
+    nibbles = bytes_to_nibbles(payload)
 
-    assert _level(dut.busy) == 0, f"engine busy before start. {repro}"
+    assert level_or_none(dut.busy) == 0, f"engine busy before start. {repro}"
     dut.cmd.value = QSPI_CMD_WRITE
     dut.addr.value = _ENGINE_WRITE_ADDR
     dut.device_sel.value = 0
@@ -238,11 +221,11 @@ async def _await_mid_txn_engine(dut, *, repro: str) -> None:
 
     for _ in range(_MID_TXN_TIMEOUT_CYCLES):
         await RisingEdge(dut.clk)
-        if _level(dut.busy) == 1 and _level(dut.psram0_ce_n) == 0:
+        if level_or_none(dut.busy) == 1 and level_or_none(dut.psram0_ce_n) == 0:
             for _ in range(8):
                 await RisingEdge(dut.clk)
-                assert _level(dut.busy) == 1, f"busy cleared before reset. {repro}"
-                assert _level(dut.psram0_ce_n) == 0, f"CE# rose before reset. {repro}"
+                assert level_or_none(dut.busy) == 1, f"busy cleared before reset. {repro}"
+                assert level_or_none(dut.psram0_ce_n) == 0, f"CE# rose before reset. {repro}"
             return
     raise AssertionError(f"never observed mid-txn engine busy/CE#. {repro}")
 
@@ -266,11 +249,11 @@ async def _q_rst_engine(dut, config: dict, repro: str) -> None:
     for _ in range(5):
         await RisingEdge(dut.clk)
         await ReadOnly()
-        assert _level(dut.rst_n) == 0, f"{test}: rst_n not held low across sampled edge"
-        assert _level(dut.busy) == 0, f"{test}: busy not cleared after sampled reset"
+        assert level_or_none(dut.rst_n) == 0, f"{test}: rst_n not held low across sampled edge"
+        assert level_or_none(dut.busy) == 0, f"{test}: busy not cleared after sampled reset"
         assert int(dut.sio_oe.value) == 0, f"{test}: sio_oe not cleared after reset"
-        assert _level(dut.psram0_ce_n) == 1 and _level(dut.psram1_ce_n) == 1
-        assert _level(dut.psram_sck) == 0
+        assert level_or_none(dut.psram0_ce_n) == 1 and level_or_none(dut.psram1_ce_n) == 1
+        assert level_or_none(dut.psram_sck) == 0
     await NextTimeStep()
 
     truncated = _dispose_reset_window(
@@ -292,7 +275,7 @@ async def _q_rst_engine(dut, config: dict, repro: str) -> None:
 
     # Subsequent legal short write must complete cleanly.
     payload = bytes([0xA5])
-    nibbles = _bytes_to_nibbles(payload)
+    nibbles = bytes_to_nibbles(payload)
     dut.cmd.value = QSPI_CMD_WRITE
     dut.addr.value = 0x000500
     dut.device_sel.value = 0
@@ -307,8 +290,8 @@ async def _q_rst_engine(dut, config: dict, repro: str) -> None:
     for _ in range(_MID_TXN_TIMEOUT_CYCLES):
         await RisingEdge(dut.clk)
         await ReadOnly()
-        busy = _level(dut.busy)
-        wn = _level(dut.wdata_next)
+        busy = level_or_none(dut.busy)
+        wn = level_or_none(dut.wdata_next)
         await NextTimeStep()
         if wn == 1 and nibble_idx + 1 < len(nibbles):
             nibble_idx += 1

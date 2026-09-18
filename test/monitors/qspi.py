@@ -37,12 +37,12 @@ physical bus aliases (``bus_sck``, ``bus_ram_*_cs_n``, ``bus_sio``) and never
 consults a model's access log, so agreement between the two is evidence rather
 than a tautology (``05-reference-model.md``, "Independence and review rules").
 
-:func:`common.dispose.dispose_run` / :func:`dispose_pin_checks` prefer the pin
-monitor when one ran (``via=pin``). :func:`dispose_model_pin_checks` /
-:func:`assert_model_pin_disposition` remain the model-evidence fallback for
-runs that do not start a pin monitor, via ``Q-SIO-X``. Either
-way every applicable L0/L1 run prints an explicit disposition, never a silent
-skip.
+Ordinary dispose is :func:`common.dispose.dispose_run`, which prefers the pin
+monitor when one ran (``via=pin``). Model-plane ``Q-SIO-X`` (SIO must not be X
+when sampled in a host-driven phase) evidence without mapping onto
+``CHK-PIN-KNOWN`` (pin CE#/SCK/SIO must be resolved where protocol requires a
+value) remains in ``test_qspi_pin_disposition``. Every applicable L0/L1 run
+still prints an explicit disposition, never a silent skip.
 
 Coarse ``Q-CEM`` / ``Q-CPH`` CE# pulse and gap checks live in
 :mod:`monitors.timing` (:func:`monitors.timing.start_ce_timing_monitor`), not
@@ -768,77 +768,6 @@ def start_shared_bus_monitor(dut, *psram_agents, strict: bool = False, **kwargs)
     return monitor
 
 
-# -- Model disposition for KNOWN (M1; ADDR23 retired by D35) ---------------
-
-
-def _agent_violation_records(*devices_or_agents) -> list:
-    """Flatten violation records from :class:`PsramDevice` or agent objects."""
-    records = []
-    for item in devices_or_agents:
-        agent = getattr(item, "agent", item)
-        violations = getattr(agent, "violations", None)
-        if violations is None:
-            continue
-        records.extend(violations)
-    return records
-
-
-def dispose_model_pin_checks(*devices_or_agents, log=None) -> "dict[str, str]":
-    """Dispose ``CHK-PIN-KNOWN`` via model ``Q-SIO-X``.
-
-    Returns a per-ID ``pass``/``fail`` map and always prints each disposition so
-    the catalog rows are never silently skipped. Count is the number of matching
-    model violation records observed on the supplied agents.
-    """
-    records = _agent_violation_records(*devices_or_agents)
-    codes = [record.code for record in records]
-    results = {}
-    parts = []
-    for check_id in MODEL_PIN_CHECK_IDS:
-        model_id = MODEL_DISPOSE_VIA[check_id]
-        count = sum(1 for code in codes if code == model_id)
-        result = RESULT_FAIL if count else RESULT_PASS
-        results[check_id] = result
-        parts.append(f"{check_id}={result} via={model_id} count={count}")
-    summary = " ".join(parts)
-    if log is not None:
-        log.info("PIN-DISPOSE %s", summary)
-    return results
-
-
-def assert_model_pin_disposition(
-    *devices_or_agents,
-    log=None,
-    expect_fail=(),
-    test: str = "",
-) -> "dict[str, str]":
-    """Assert model pin dispositions match *expect_fail* (empty means both pass).
-
-    *expect_fail* lists ``CHK-PIN-*`` IDs that must report ``fail`` (their model
-    ``Q-*`` counterpart must have fired at least once). Every other model-pin
-    catalog ID must report ``pass``.
-    """
-    expect_fail = set(expect_fail)
-    unknown = expect_fail - set(MODEL_PIN_CHECK_IDS)
-    if unknown:
-        raise ValueError(f"unknown model-pin check IDs in expect_fail: {sorted(unknown)}")
-
-    results = dispose_model_pin_checks(*devices_or_agents, log=log)
-    prefix = f"{test}: " if test else ""
-    for check_id, result in results.items():
-        model_id = MODEL_DISPOSE_VIA[check_id]
-        if check_id in expect_fail:
-            assert result == RESULT_FAIL, (
-                f"{prefix}{check_id} expected fail via {model_id}, observed pass "
-                f"(no {model_id} records)"
-            )
-        else:
-            assert result == RESULT_PASS, (
-                f"{prefix}{check_id} expected pass via {model_id}, observed fail"
-            )
-    return results
-
-
 # -- Independent pin decode (QspiPinMonitor) -------------------------------
 
 ADDR23_BIT = PTR_BIT23
@@ -1556,47 +1485,3 @@ def start_qspi_pin_monitor(
     )
     monitor.start()
     return monitor
-
-
-def dispose_pin_checks(*sources, log=None) -> "dict[str, str]":
-    """Dispose ``CHK-PIN-KNOWN`` from the best evidence.
-
-    *sources* may mix :class:`QspiPinMonitor` instances with PSRAM devices or
-    agents. A started pin monitor is authoritative because it decodes the pins
-    independently; the per-device model ``Q-SIO-X`` records are the fallback
-    for a run that started no pin monitor (or whose monitor is ``blocked``).
-    The printed line always names which evidence was used.
-
-    Raises:
-        ValueError: no usable evidence source was supplied, which would
-            otherwise report a silent pass.
-    """
-    monitors = [item for item in sources if isinstance(item, QspiPinMonitor)]
-    usable = [monitor for monitor in monitors if not monitor.blocked]
-    others = [item for item in sources if not isinstance(item, QspiPinMonitor)]
-    records = _agent_violation_records(*others)
-
-    if not usable and not others:
-        raise ValueError(
-            "dispose_pin_checks needs a started QspiPinMonitor or a PSRAM "
-            "device/agent; with no evidence source both rows would report a "
-            "silent pass"
-        )
-
-    codes = [record.code for record in records]
-    results = {}
-    parts = []
-    for check_id in PIN_MONITOR_CHECK_IDS:
-        if usable:
-            count = sum(monitor.counts()[check_id] for monitor in usable)
-            via = "pin"
-        else:
-            via = MODEL_DISPOSE_VIA[check_id]
-            count = sum(1 for code in codes if code == via)
-        result = RESULT_FAIL if count else RESULT_PASS
-        results[check_id] = result
-        parts.append(f"{check_id}={result} via={via} count={count}")
-
-    if log is not None:
-        log.info("PIN-DISPOSE %s", " ".join(parts))
-    return results

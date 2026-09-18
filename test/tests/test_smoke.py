@@ -5,13 +5,12 @@ Test-case IDs:
 """
 
 import cocotb
-from cocotb.triggers import RisingEdge, with_timeout
+from cocotb.triggers import with_timeout
 from cocotb.triggers import SimTimeoutError
 
 from common.bringup import bring_up_top
 from common.runlog import begin_run
 from common.constants import (
-    DONE_MASK,
     DONE_TIMEOUT_NS,
     DST_ADDR,
     DST_SENTINEL,
@@ -20,18 +19,12 @@ from common.constants import (
     SRC_BYTE,
     TCD_HEAD_ADDR,
 )
+from common.directed import wait_for_done_pulse
 from common.dispose import REVIEW, dispose_run
 from common.host import pulse_start
 from reference.chain import MemoryImage, interpret_chain
 from reference.scoreboard import RunContext, Scoreboard
 from reference.tcd import Tcd, encode_tcd
-
-async def _wait_for_done_pulse(dut) -> None:
-    """DONE (uo_out[0]) is high in IDLE; wait for it to drop then return high."""
-    while int(dut.uo_out.value) & DONE_MASK:
-        await RisingEdge(dut.clk)
-    while not (int(dut.uo_out.value) & DONE_MASK):
-        await RisingEdge(dut.clk)
 
 @cocotb.test()
 async def smoke_same_device_copy(dut):
@@ -71,7 +64,7 @@ async def smoke_same_device_copy(dut):
     await pulse_start(dut)
 
     try:
-        await with_timeout(_wait_for_done_pulse(dut), DONE_TIMEOUT_NS, "ns")
+        await with_timeout(wait_for_done_pulse(dut), DONE_TIMEOUT_NS, "ns")
     except SimTimeoutError:
         dut._log.error(repro)
         raise AssertionError(

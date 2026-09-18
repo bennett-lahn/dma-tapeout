@@ -5,11 +5,7 @@ violations, CE# timing, ``RESET-TRUNCATED`` review, expected-negative IDs).
 This module is the single place that turns recorded findings into a pass/fail
 decision, so no test can quietly drop a catalog row.
 
-Preferred API: :func:`dispose_run` (and, for pin rows alone,
-:func:`monitors.qspi.dispose_pin_checks`). Prefer those over the legacy
-:func:`monitors.qspi.dispose_model_pin_checks` /
-:func:`monitors.qspi.assert_model_pin_disposition` helpers; M1 call-sites of
-the model-only path remain until a later migration wave.
+Preferred API: :func:`dispose_run` only.
 
 Contract, from ``docs/llm/verification/06-checkers.md`` and
 ``04-timing-in-sim.md``:
