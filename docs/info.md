@@ -1,37 +1,90 @@
-# TinyDMA: A Descriptor-Based Dual-PSRAM Bulk Mover
+# TinyDMA: A Descriptor-Based Dual-PSRAM Memory Mover
 
 ## How it works
 
-**TinyDMA** for Tiny Tapeout IHP (**TTIHP26b**). After the host pulses **START**, the ASIC masters the shared QSPI bus and copies bytes between two APS6404L-class PSRAM devices using 11-byte in-memory transfer control descriptors (TCDs).
+**TinyDMA** is an asychronous memory mover targeting the Tiny Tapeout QSPI PMOD. It uses chains of memory-based descriptors to transfer memory between PSRAM chips (no flash support).
 
-Each TCD names a source pointer, destination pointer, length, next-TCD pointer, and flags (which device is src/dest/next, and **QUIT** to end the chain). The first TCD is always at address 0 on PSRAM 0. Same-device and cross-device copies are supported. The ASIC does not talk to the PMOD flash; that stays MCU pass-through.
+After the host pulses **START**, the ASIC copies bytes between two PSRAM chips using 11-byte in-memory transfer control descriptors (TCDs).
+
+Each TCD names a source pointer, destination pointer, length, next-TCD pointer, and control flags. Flags indicate the write source/destination, device location for next TCD pointer and **QUIT** if that chain is the last in the sequence. 
+
+The first TCD is always at address 0 on PSRAM 0. Same-device and cross-device copies are supported. The ASIC does not read/write to the PMOD flash, but the MCU can still use it by raising **BUS_REQ** (`ui_in[2]`) and waiting for **BUS_GNT** (`uo_out[1]`).
+
+For an in-depth description of the architecture, firmware, and verification, see the [full TinyDMA documentation](https://github.com/bennett-lahn/dma-tapeout/tree/main/docs).
 
 Host pins:
 
 - `ui_in[0]` **START** - accepted only while idle and `BUS_REQ` is low
-- `ui_in[2]` **BUS_REQ** - MCU wants the shared QSPI pins
+- `ui_in[2]` **BUS_REQ** - MCU wants the QSPI bus
 - `uo_out[0]` **DONE** - high whenever the DMA is idle
 - `uo_out[1]` **BUS_GNT** - MCU may drive `uio`
+- `uio_out` - **QSPI PMOD**
 
-While out of reset and not granted, the ASIC parks flash CS and both RAM CS high and SCK low. Kill a runaway chain with `rst_n`. Target clock is 66 MHz; SCK is clk/2.
+Infinite TCD chains should be avoided. Terminate using `rst_n`. Target clock is 66 MHz; SCK is clk/2.
 
 ## How to test
 
-On a Tiny Tapeout demoboard (or FPGA stand-in in the same connector):
+The associated GitHub repo has MicroPython firmware under `firmware/`, including an existing testbench.
 
-1. Enable this design and set the project clock to 66 MHz.
-2. Release reset. Expect **DONE** high and **BUS_GNT** low (ASIC parking the bus).
-3. Assert **BUS_REQ**, wait for **BUS_GNT**, then drive the QSPI pins from the MCU.
-4. Put **both** PSRAM devices into QPI mode (Enter Quad `0x35`). The ASIC never issues that command.
-5. Write a TCD chain starting at `0x000000` on PSRAM 0. End the chain with `QUIT=1`. Stage any source payloads.
-6. High-Z the MCU QSPI drivers, drop **BUS_REQ**, wait for **BUS_GNT** low.
-7. Pulse **START** while **DONE** is high. Wait until **DONE** falls (START accepted), then until **DONE** rises again (chain finished).
-8. Request the bus again and read back destination bytes.
+**One-time setup**
 
-A mid-run **BUS_REQ** pauses after the current QPI transaction. There is no soft abort; use `rst_n` to stop a run.
+1. Set `config.ini` on the board for `ASIC_RP_CONTROL` and `clock_frequency = 66e6`.
+2. From a PC (WSL/Linux): `pip install mpremote`, then copy firmware and reset:
+  ```text
+   mpremote fs cp -r firmware :/firmware
+   mpremote reset
+  ```
+3. Connect the QSPI PMOD and enable this design on the mux (`tt_um_lahnb_sgdma`).
+
+**Interactive REPL**
+
+Open the USB serial REPL, then:
+
+```python
+import firmware.session as session
+session.init("tt_um_lahnb_sgdma")   # mux, 66 MHz clk, reset, idle check
+session.bring_up_psram()            # SPI reset + Enter Quad on both RAMs
+session.status()
+```
+
+**Run one memory copy using REPL**
+
+Minimal smoke test (8 bytes from PSRAM0 `0x000100` to `0x000200`, head TCD at `0`, quit TCD at `0x000010`):
+
+```python
+from firmware.tcd import Tcd, encode_tcd
+from firmware.link import b64encode, b64decode
+
+src, dst, quit_slot = 0x000100, 0x000200, 0x000010
+session.write_span(0, src, b64encode(bytes(range(8))))
+session.write_span(0, 0, b64encode(encode_tcd(Tcd(
+    src_ptr=src, dest_ptr=dst, transfer_len=8,
+    next_tcd=quit_slot, src_device=0, dest_device=0, next_device=0))))
+session.write_span(0, quit_slot, b64encode(encode_tcd(Tcd(quit=True))))
+session.start_and_wait()
+line = session.read_span(0, dst, 8)
+dest = b64decode(line.split(" ", 1)[1])
+# expect dest == bytes(range(8))
+```
+
+- `device`: `0` = PSRAM A, `1` = PSRAM B.
+- `session.write_span(device, addr, b64_data)` - Writes decoded bytes at `addr`. Each call takes **BUS_REQ**, writes in small chunks, then releases the bus again.
+- `session.read_span(device, addr, length)` - Reads PSRAM. Returns an `OK <base64>` line (decode the part after `OK`  with `firmware.link.b64decode`).
+- `session.start_and_wait()` - pulses **START** and waits until **DONE** rises.
+
+**Automated tests from the host PC**
+
+All hardware tests are in `hil/` and use the included reference model. From the repo root (after using `source test/env.sh` if using the project venv):
+
+```text
+pytest hil/tests/ -v --target=fpga        # builds/uploads bitstream, then runs on Tiny Tapeout FPGA
+pytest hil/tests/ -v --target=asic        # same tests on silicon
+python -m hil --target=asic               # interactive menu for selecting test cases
+```
+
+The MCU host builds TCDs, installs memory over QPI, pulses **START**, dumps memory contents, and compares against a reference model. Full API and bus rules: [docs/human/architecture/firmware.md](human/architecture/firmware.md).
 
 ## External hardware
 
-- Tiny Tapeout QSPI PMOD with **dual** APS6404L (or compatible) PSRAM. Flash on the same PMOD is optional and MCU-only.
-- Shared `uio` map: flash CS, SIO0, SIO1, SCK, SIO2, SIO3, RAM A CS, RAM B CS.
-- Board 10 kOhm pull-ups on the three CS nets are expected.
+- Tiny Tapeout QSPI PMOD with dual APS6404L (or compatible) PSRAM.
+

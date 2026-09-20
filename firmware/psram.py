@@ -194,10 +194,12 @@ class Psram:
 
     def write(self, cs, addr, data):
         payload = bytes(data)
+        if not payload:
+            return
+        self._qpi_write_oe()
         offset = 0
         while offset < len(payload):
             n = min(self.wr_chunk, len(payload) - offset)
-            self._qpi_write_oe()
             self.transport.qpi_write(
                 cs, qpi_write_frame(addr + offset, payload[offset : offset + n])
             )
@@ -205,11 +207,13 @@ class Psram:
 
     def read(self, cs, addr, n):
         out = bytearray()
-        offset = 0
         remaining = int(n)
+        if remaining <= 0:
+            return bytes(out)
+        self._qpi_read_oe()
+        offset = 0
         while remaining > 0:
             k = min(self.eb_chunk, remaining)
-            self._qpi_read_oe()
             chunk = self.transport.qpi_read(
                 cs,
                 qpi_read_cmd_addr(addr + offset),

@@ -21,6 +21,10 @@ once and this module never re-inits those five pins mid-transaction. While the
 PIO holds them, `uio_oe_pico` (a plain SIO `GPIO_OE` write) cannot change their
 direction: `set(pindirs, ...)` is the only real output enable, and
 `release_pins()` is the only real Hi-Z.
+
+`StateMachine.exec` accepts either an instruction string or an encoded word,
+and the string form re-runs the PIO assembler on every call. Only encoded
+words reach `exec` here; see `pio_word`.
 """
 
 try:
@@ -112,6 +116,45 @@ RELEASED_PINS = (
 
 class QspiError(Exception):
     """Transport contract violation: no rp2, or a state machine misuse."""
+
+
+# Every PIO program in this module declares exactly one side-set pin (SCK), so
+# one encoding width serves all of them. `asm_pio_encode` needs the count to
+# place the side-set field, and `StateMachine.exec` uses its own program's
+# count for the string form, so these words must be encoded at 1 to behave
+# identically to the strings they replace.
+PIO_SIDESET_COUNT = 1
+
+_PIO_WORD_CACHE = {}
+
+
+def pio_word(instr, sideset_count=PIO_SIDESET_COUNT):
+    """Return the encoded PIO word for *instr*, assembling it only once.
+
+    `StateMachine.exec("nop()")` re-assembles the instruction source on every
+    call, which is exponentially slower than passing a cached value.
+
+    Memoized rather than precomputed into constants so any new `exec` call
+    site gets the caching by construction.
+
+    Raises:
+        QspiError: no `rp2`, so nothing can be assembled (CPython tests).
+    """
+    key = (instr, sideset_count)
+    try:
+        return _PIO_WORD_CACHE[key]
+    except KeyError:
+        pass
+    if rp2 is None:
+        raise QspiError("encoding PIO instruction %r requires rp2" % (instr,))
+    word = rp2.asm_pio_encode(instr, sideset_count)
+    _PIO_WORD_CACHE[key] = word
+    return word
+
+
+def pindirs_word(dirs, sideset_count=PIO_SIDESET_COUNT):
+    """Return the encoded `set(pindirs, N)` word for a PINDIRS_* mask."""
+    return pio_word("set(pindirs, %d)" % int(dirs), sideset_count)
 
 
 def require_write_fits_fifo(frame):
@@ -398,6 +441,13 @@ if rp2 is not None:
             self._qpi_rd = None
             self.pin_modes = None
             self.pindirs = None
+            # Assemble every instruction the transaction paths exec() before
+            # any of them run.
+            self._word_nop = pio_word("nop()")
+            self._pindirs_words = {
+                dirs: pindirs_word(dirs)
+                for dirs in (PINDIRS_SPI, PINDIRS_QPI_TX, PINDIRS_QPI_RX)
+            }
 
         def arm(self):
             """Claim CS and the GPIO26..30 PIO window. Idempotent per grant.
@@ -454,7 +504,11 @@ if rp2 is not None:
             register. The exec'd word carries side-set 0, so it also parks SCK
             low. Safe only while the write SM is stopped.
             """
-            self._qpi_wr.exec("set(pindirs, %d)" % dirs)
+            word = self._pindirs_words.get(dirs)
+            if word is None:
+                word = pindirs_word(dirs)
+                self._pindirs_words[dirs] = word
+            self._qpi_wr.exec(word)
             self.pindirs = dirs
 
         def restore_spi_pins(self):
@@ -499,7 +553,7 @@ if rp2 is not None:
         def _park_sck(self):
             """Drive SCK low. An exec'd word side-sets 0 onto the SCK pin."""
             if self._qpi_wr is not None:
-                self._qpi_wr.exec("nop()")
+                self._qpi_wr.exec(self._word_nop)
 
         def _select(self, cs):
             self.flash_cs.on()
