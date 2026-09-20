@@ -4,7 +4,7 @@
 ![timing](https://github.com/bennett-lahn/dma-tapeout/actions/workflows/timing.yaml/badge.svg)
 ![fpga](https://img.shields.io/badge/fpga-passing-brightgreen)
 
-# TinyDMA: A Descriptor-Based Dual-PSRAM Bulk Mover
+# TinyDMA: A Descriptor-Based Dual-PSRAM Memory Mover
 
 **TinyDMA** is a **1x1** Tiny Tapeout ASIC (**TTIHP26b** / IHP SG13G2) that copies bytes between two QSPI PSRAM devices using descriptors stored in memory.
 
