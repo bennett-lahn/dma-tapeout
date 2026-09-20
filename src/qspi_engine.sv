@@ -11,8 +11,9 @@
 // cmd          in   FAST_READ 0xEB / WRITE 0x02 (hold until ~busy); packed as
 //                   logic[7:0] so the TT wrapper can stay package-free
 // addr         in   24-bit QPI address phase; addr[23] don't-care (D35); A[22:0] in addr[22:0]
-// device_sel      in   0/1 -> which ram_*_cs_n; packed as logic so wrapper stays package-free
-// byte_len     in   payload bytes this CE#; width QPI_BYTE_LEN_W; hold until ~busy
+// device_sel   in   0/1 -> which ram_*_cs_n; packed as logic so wrapper stays package-free
+// byte_len     in   payload bytes this CE#; width QPI_BYTE_LEN_W; hold until ~busy. 
+//                   Must not be 0 when txn_valid asserted.
 // wdata        in   write nibble; must be valid on txn_valid; when wdata_next
 //                   asserts, next nibble must be on wdata before the next clk
 //                   (same-cycle) to preserve setup into the SPI/SIO path
@@ -27,7 +28,7 @@
 // ram_b_cs_n   out  registered RAM B CE#
 // sio_out      out  pad SIO drive data
 // sio_oe       out  pad SIO output enable; driven except while listening
-//              (dummy/wait, read-data); FSM grants uio_oe at top
+//                   (dummy/wait, read-data); FSM grants uio_oe at top
 
 module qspi_engine
    import qspi_pkg::*;
@@ -111,13 +112,13 @@ always_comb begin
       end
       READ_DATA: begin
          // 2 SCLK nibbles per byte
-         if (cycle_cnt == (byte_len << 1))
+         if (cycle_cnt == (qpi_payload_nibble_cnt_t'(byte_len) << 1))
             next_state = SCLK_OFF;
          else
             next_state = READ_DATA;
       end
       WRITE_DATA: begin
-         if (cycle_cnt == (byte_len << 1))
+         if (cycle_cnt == (qpi_payload_nibble_cnt_t'(byte_len) << 1))
             next_state = SCLK_OFF;
          else
             next_state = WRITE_DATA;
@@ -156,7 +157,6 @@ always_ff @(posedge clk) begin
                sio_out <= addr[23:20];
             else if (sclk_will_fall)
                unique case (cycle_cnt)
-                  'd0: sio_out <= addr[23:20];
                   'd1: sio_out <= addr[19:16];
                   'd2: sio_out <= addr[15:12];
                   'd3: sio_out <= addr[11:8];
@@ -174,7 +174,7 @@ always_ff @(posedge clk) begin
       sio_oe_reg <= '0;
    end else begin
       if (next_state == WAIT || next_state == READ_DATA || 
-          cmd == QSPI_CMD_FAST_READ && (next_state == SCLK_OFF || next_state == CS_OFF))
+         (cmd == QSPI_CMD_FAST_READ && (next_state == SCLK_OFF || next_state == CS_OFF)))
          sio_oe_reg <= 1'b0;
       else
          sio_oe_reg <= 1'b1;
