@@ -6,13 +6,13 @@
 
 # TinyDMA: A Descriptor-Based Dual-PSRAM Memory Mover
 
-**TinyDMA** is a **1x1** Tiny Tapeout ASIC (**TTIHP26b** / IHP SG13G2) that copies bytes between two QSPI PSRAM devices using descriptors stored in memory.
+TinyDMA is a 1x1 Tiny Tapeout ASIC (TTIHP26b / IHP SG13G2) that copies bytes between two QSPI PSRAM devices using descriptors stored in memory.
 
 Shuttle datasheet: [docs/info.md](docs/info.md).
 
 ## Overview
 
-Classic DMA spends on-chip resources storing source, destination, and length for every transaction. This design keeps only the **active** transaction on-chip and stores the rest in memory as a linked list. After the host programs the ASIC and pulses START, the ASIC uses the shared QSPI bus to copy memory until a transaction with the QUIT flag ends the chain.
+Classic DMA spends on-chip resources storing source, destination, and length for every transaction. This design keeps only the active transaction on-chip and stores the rest in memory as a linked list. After the host programs the ASIC and pulses START, the ASIC uses the shared QSPI bus to copy memory until a transaction with the QUIT flag ends the chain.
 
 
 |                   |                                                  |
