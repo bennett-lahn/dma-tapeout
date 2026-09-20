@@ -2,7 +2,7 @@
 ![docs](https://github.com/bennett-lahn/dma-tapeout/actions/workflows/docs.yaml/badge.svg)
 ![test](https://github.com/bennett-lahn/dma-tapeout/actions/workflows/test.yaml/badge.svg)
 ![timing](https://github.com/bennett-lahn/dma-tapeout/actions/workflows/timing.yaml/badge.svg)
-![fpga](https://img.shields.io/badge/fpga-no%20status-lightgrey)
+![fpga](https://img.shields.io/badge/fpga-passing-brightgreen)
 
 # TinyDMA: A Descriptor-Based Dual-PSRAM Bulk Mover
 
