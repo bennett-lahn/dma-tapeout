@@ -1,5 +1,6 @@
 """board.qspi transports and helpers on CPython (rp2 absent; PIO is untested here)."""
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from firmware.board.pins import (
     PIN_SD2,
     PIN_SD3,
 )
+from firmware.board import qspi
 from firmware.board.qspi import (
     PINDIRS_QPI_RX,
     PINDIRS_QPI_TX,
@@ -156,6 +158,55 @@ def test_pindir_masks_cover_the_five_pin_window():
     assert PINDIRS_QPI_RX & sio == 0
     # SPI drives MOSI only; MISO/SD2/SD3 stay inputs (HOLD#/WP# pulled up).
     assert PINDIRS_SPI == sck | (1 << 0)
+
+
+def test_pio_instructions_are_assembled_once_and_then_cached(monkeypatch):
+    # Isolated string exec is 8.6 ms on the ETR against 13.3 us for an already
+    # encoded word; the write path must use the word form.
+    calls = []
+
+    class FakeRp2:
+        @staticmethod
+        def asm_pio_encode(instr, sideset_count):
+            calls.append((instr, sideset_count))
+            return 0xA042
+
+    monkeypatch.setattr(qspi, "rp2", FakeRp2)
+    monkeypatch.setattr(qspi, "_PIO_WORD_CACHE", {})
+    assert qspi.pio_word("nop()") == 0xA042
+    assert qspi.pio_word("nop()") == 0xA042
+    assert qspi.pindirs_word(PINDIRS_QPI_RX) == 0xA042
+    assert qspi.pindirs_word(PINDIRS_QPI_RX) == 0xA042
+    assert calls == [
+        ("nop()", 1),
+        ("set(pindirs, %d)" % PINDIRS_QPI_RX, 1),
+    ]
+    # Every program here declares one side-set pin, which is also the count
+    # StateMachine.exec would have used for the string form.
+    assert qspi.PIO_SIDESET_COUNT == 1
+
+
+def test_pio_word_without_rp2_is_refused_not_silently_skipped():
+    with pytest.raises(QspiError, match="requires rp2"):
+        qspi.pio_word("nop()")
+
+
+def test_no_instruction_string_reaches_state_machine_exec():
+    # A string makes StateMachine.exec re-run the PIO assembler on every call,
+    # so only pio_word output may be exec'd. CPython cannot catch a regression
+    # at runtime because every exec call site needs rp2.
+    tree = ast.parse(QSPI_SOURCE.read_text(encoding="utf-8"))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "exec"
+    ]
+    assert calls
+    for call in calls:
+        for arg in call.args:
+            assert not (isinstance(arg, ast.Constant) and isinstance(arg.value, str))
 
 
 def test_transactions_never_reinit_the_pio_owned_pins():

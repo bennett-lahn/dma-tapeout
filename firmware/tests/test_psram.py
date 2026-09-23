@@ -245,6 +245,49 @@ def test_oe_delegates_to_the_dma_controller_per_phase():
     assert dma.oe == OE_SPI
 
 
+def _oe_writes(tt):
+    return [row for row in tt.events if row[0] == "oe"]
+
+
+def test_write_asserts_the_phase_oe_once_per_call_not_once_per_chunk():
+    # The grant is held for the whole call, so a per-chunk re-assert only
+    # repeats a BUS_GNT read and an SDK port write: 8.4 ms per frame on the ETR.
+    dma, psram, transport, tt = _granted_psram()
+    psram.enter_qpi(0)
+    before = len(_oe_writes(tt))
+    psram.write(0, 0x100, bytes(4 * MCU_QPI_PAYLOAD_MAX))
+    assert len([row for row in transport.log if row[0] == "qpi_write"]) == 4
+    assert len(_oe_writes(tt)) - before == 1
+    assert dma.oe == OE_QPI
+
+
+def test_read_asserts_the_phase_oe_once_per_call_not_once_per_chunk():
+    dma, psram, transport, tt = _granted_psram()
+    psram.enter_qpi(0)
+    n = 4 * MCU_QPI_PAYLOAD_MAX
+    for i in range(n):
+        transport.mem[0][0x200 + i] = i
+    before = len(_oe_writes(tt))
+    assert psram.read(0, 0x200, n) == bytes(range(n))
+    assert len([row for row in transport.log if row[0] == "qpi_read"]) == 4
+    assert len(_oe_writes(tt)) - before == 1
+    assert dma.oe == OE_QPI_READ
+    # Each frame in the burst still ran with SIO floated, which is what D26
+    # requires of the read phase.
+    assert transport.oe_during_read == [OE_QPI_READ] * 4
+
+
+def test_an_empty_transfer_moves_nothing_and_leaves_the_oe_alone():
+    dma, psram, transport, tt = _granted_psram()
+    psram.enter_qpi(0)
+    before = len(_oe_writes(tt))
+    psram.write(0, 0x100, b"")
+    assert psram.read(0, 0x100, 0) == b""
+    assert [row for row in transport.log if row[0].startswith("qpi")] == []
+    assert len(_oe_writes(tt)) == before
+    assert dma.oe == OE_SPI
+
+
 def test_psram_without_a_dma_controller_never_touches_oe():
     tt = MockDemoBoard()
     board = Board(tt, sleep_us=lambda us: None)
